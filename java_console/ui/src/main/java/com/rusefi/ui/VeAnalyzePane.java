@@ -23,10 +23,10 @@ import java.util.Optional;
  * <p>Accumulates closed-loop (or steady-state) samples into the VE table's RPM × load
  * grid and, on request, writes a damped correction back to the ECU. The load axis is
  * resolved automatically from {@code veOverrideMode} + {@code fuelAlgorithm}; the lambda
- * source and target table follow {@code useLambdaOnInterface}.</p>
+ * source is the {@code lambdaValue} channel and the target is the lambda target table.</p>
  *
  * <p>No firmware changes required: it uses existing output channels ({@code RPMValue},
- * {@code MAPValue}/{@code TPSValue}, {@code lambdaValue}/{@code AFRValue}, {@code Gego}).</p>
+ * {@code MAPValue}/{@code TPSValue}, {@code lambdaValue}, {@code Gego}).</p>
  */
 public class VeAnalyzePane {
 
@@ -35,6 +35,13 @@ public class VeAnalyzePane {
 
     private static final double MIN_RPM = 500.0;
     private static final double MAX_EGO_DEVIATION_PERCENT = 20.0; // |Gego - 100| <= this -> near target / not a big transient
+
+    // The actual lambda is always read in lambda units. The target table (zBins = lambdaTable)
+    // is also always decoded in lambda units by the ini parser - IniField.parseDouble takes the
+    // TRUE branch of the {useLambdaOnInterface ? 1/147 : 1/10} multiplier expression
+    // ([tag:lambdaTable]), so getMultiplier() is 1/147 regardless of the AFR/lambda display mode.
+    private static final String LAMBDA_CHANNEL = "lambdaValue";
+    private static final String TARGET_TABLE = "lambdaTableTbl";
 
     private final UIContext uiContext;
 
@@ -57,9 +64,6 @@ public class VeAnalyzePane {
 
     // Live-data wiring resolved at connect time.
     private String loadChannel;
-    private String lambdaChannel;
-    private String targetTableName;
-    private boolean useLambda;
 
     private double[] targetRpmAxis;
     private double[] targetLoadAxis;
@@ -126,7 +130,7 @@ public class VeAnalyzePane {
         }
 
         try {
-            resolveAxisAndLambda(ini, image);
+            resolveLoadAxis(ini, image);
         } catch (RuntimeException e) {
             statusLabel.setText(STATUS_UNSUPPORTED);
             buttonStartStop.setEnabled(false);
@@ -185,7 +189,7 @@ public class VeAnalyzePane {
         return true;
     }
 
-    private void resolveAxisAndLambda(IniFileModel ini, ConfigurationImage image) {
+    private void resolveLoadAxis(IniFileModel ini, ConfigurationImage image) {
         int veOverride = readOrdinal(ini, image, "veOverrideMode");
         int fuelAlgo = readOrdinal(ini, image, "fuelAlgorithm");
 
@@ -203,14 +207,10 @@ public class VeAnalyzePane {
                 throw new IllegalStateException("MAF/Lua VE load axis has no live channel");
             }
         }
-
-        useLambda = readOrdinal(ini, image, "useLambdaOnInterface") != 0;
-        lambdaChannel = useLambda ? "lambdaValue" : "AFRValue";
-        targetTableName = useLambda ? "lambdaTableTbl" : "afrTableTbl";
     }
 
     private boolean bindTargetTable(IniFileModel ini, ConfigurationImage image) {
-        TableModel t = ini.getTable(targetTableName);
+        TableModel t = ini.getTable(TARGET_TABLE);
         if (t == null) {
             return false;
         }
@@ -237,7 +237,7 @@ public class VeAnalyzePane {
         SensorCentral sc = SensorCentral.getInstance();
         double rpm = sc.getValue("RPMValue");
         double load = sc.getValue(loadChannel);
-        double lambda = sc.getValue(lambdaChannel);
+        double lambda = sc.getValue(LAMBDA_CHANNEL);
         double gego = sc.getValue("Gego");
 
         if (!Double.isFinite(rpm) || !Double.isFinite(load) || rpm < MIN_RPM
@@ -257,9 +257,7 @@ public class VeAnalyzePane {
     }
 
     private boolean lambdaInRange(double lambda) {
-        double lo = useLambda ? 0.5 : 7.0;
-        double hi = useLambda ? 1.5 : 25.0;
-        return lambda >= lo && lambda <= hi;
+        return lambda >= 0.5 && lambda <= 1.5;
     }
 
     private double targetFor(double rpm, double load) {
