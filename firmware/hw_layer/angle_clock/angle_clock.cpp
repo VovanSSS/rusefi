@@ -681,4 +681,30 @@ void angleClockResetStats() {
     s_dwellRefusal.branch = 0xFF;  // sentinel: no refusal since last reset
 }
 
+// Runtime clock sanity for TMR2. The 2026-09-20 car session showed TIM2->CNT
+// advancing ~30 ticks/s instead of 4 MHz, so every angleClockArmDwell tick-past
+// check failed. Reads the APB1 clock-enable / sleep-enable bits plus CR1/PSC and
+// measures the live counter rate against NT (TIM5) so one lockstats dump names
+// the gate that killed the clock.
+void angleClockTimerDiag() {
+    const uint32_t apb1enr   = RCC->APB1ENR;
+    const uint32_t apb1lpenr = RCC->APB1LPENR;
+    const uint32_t cr1       = DWELL_TIMER->CR1;
+    const uint32_t psc       = DWELL_TIMER->PSC;
+
+    const uint32_t nt0 = getTimeNowLowerNt();
+    const uint32_t t20 = DWELL_TIMER->CNT;
+    chThdSleepMilliseconds(100);
+    const uint32_t nt1 = getTimeNowLowerNt();
+    const uint32_t t21 = DWELL_TIMER->CNT;
+
+    efiPrintf("tim2clk EN=%u LPEN=%u CEN=%u PSC=%u T2d=%u NTd=%u/100ms (want EN=1 LPEN=1 CEN=1 PSC~71 T2d~NTd~400000)",
+        (unsigned)((apb1enr & RCC_APB1ENR_TIM2EN) ? 1 : 0),
+        (unsigned)((apb1lpenr & RCC_APB1LPENR_TIM2LPEN) ? 1 : 0),
+        (unsigned)((cr1 & STM32_TIM_CR1_CEN) ? 1 : 0),
+        (unsigned)psc,
+        (unsigned)(t21 - t20),
+        (unsigned)(nt1 - nt0));
+}
+
 #endif // EFI_ANGLE_CLOCK && EFI_PROD_CODE

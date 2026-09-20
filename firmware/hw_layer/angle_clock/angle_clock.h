@@ -153,4 +153,10 @@ uint32_t angleClockInitPsc();
 
 void angleClockResetStats();
 
+// Runtime clock sanity for TMR2 (dwell). Reads the APB1 clock-enable and
+// sleep-enable bits, CR1 (CEN) and PSC, then measures TIM2->CNT vs NT over a
+// 100 ms sleep. Diagnostic for the 2026-09-20 failure where TMR2 counted
+// ~140000x too slow at runtime (tick-past on every dwell arm).
+void angleClockTimerDiag();
+
 #endif // EFI_ANGLE_CLOCK

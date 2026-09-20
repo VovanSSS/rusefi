@@ -1,5 +1,50 @@
 # Work Report
 
+## 2026-09-20 - m74_9: dwell lateArm ROOT CAUSE - TMR2 counts ~140000x too slow at runtime
+
+The 2026-09-19 failure-split telemetry pinned the root cause. New car log
+(efi_log_2026-09-20_12_16_51_398): all dwell refusals are tick-past
+(guard=0, tickPast=ALL), the phase is healthy (curPh == callerPh, rem 6.7-11.9
+deg valid), but the target tick atTick is ~636-944 s AHEAD of TMR2->CNT (cnt).
+
+Cross-checking cnt across snapshots proves TMR2->CNT is crawling:
+  12:27:04 cnt=15403
+  12:32:12 cnt=24203  (+8800  over 308 s = 28.6 Hz)
+  12:46:47 cnt=59012  (+34809 over 875 s = 39.8 Hz)
+
+while atTick (derived from the NT clock) advances at exactly 4 MHz (+1.23e9
+ticks over the same 308 s). So the dwell timer TMR2 runs ~140000x slower than
+its nominal 4 MHz at runtime, while TIM5 (NT), TMR3 (injection) and TMR4
+(spark) all run at 4 MHz. The tick-past check fails because atTick is always
+10-15 min ahead of the slow counter, wrapping the int32 comparison. This is
+the random no-load misfire: the timer intermittently freezes (100% lateArm)
+and recovers (0%).
+
+Why dwell only: spark arms "from now" (time domain, short 16-bit horizon),
+injection is 16-bit and both windows in one call - only dwell computes an
+absolute 32-bit tick from NT and compares against TMR2->CNT, so it alone
+exposes the slow counter.
+
+Root cause is a TMR2 clock gate (same class as the documented AT32 APB1LPENR
+sleep-gate saga) but TMR2-specific despite rccEnableTIM2(true): either the
+flashed build predates the fix, or APB1ENR/APB1LPENR TIM2 bits are cleared at
+runtime. Added a runtime probe.
+
+Change inventory:
+| File | Change |
+| --- | --- |
+| firmware/hw_layer/angle_clock/angle_clock.h/.cpp | angleClockTimerDiag(): reads RCC APB1ENR/APB1LPENR TIM2 bits + TIM2 CR1(CEN)/PSC, measures TIM2->CNT vs NT over a 100 ms sleep, prints 'tim2clk EN=.. LPEN=.. CEN=.. PSC=.. T2d=.. NTd=../100ms' |
+| firmware/config/boards/m74_9/board_configuration.cpp | lockstats now calls angleClockTimerDiag() |
+
+Validation:
+- compile_m74_9.sh -> BUILD SUCCESSFUL.
+- bundle (compile.sh -b) -> BUILD SUCCESSFUL; artifacts/rusefi_bundle_m74_9.zip.
+
+Open follow-ups:
+- Next car lockstats 'tim2clk' line names the exact gate (EN=0 vs LPEN=0 vs
+  CEN=0) and the measured rate; then fix the clear/re-init that kills TMR2's
+  clock (or re-assert rccEnableTIM2(true)).
+
 ## 2026-09-19 - m74_9: dwell lateArm 0->54->100% analysis + failure-split telemetry
 
 Investigated why angclk dwell falls back to TIM5 while spark/inj stay on the

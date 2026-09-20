@@ -1171,6 +1171,8 @@ void setup_custom_board_overrides() {
 			(unsigned)getInjectionCC2ScheduledCount(),
 			(unsigned)getInjectionCC2FiredCount(),
 			(unsigned)((NVIC->IP[50] >> 4) & 0xF));
+		// TMR2 runtime clock sanity (the 2026-09-20 dwell lateArm root cause).
+		angleClockTimerDiag();
 		angleClockResetStats();
 #endif // EFI_ANGLE_CLOCK
 
