@@ -40,6 +40,15 @@
 #define SPARK_TIMER  TIM4   // 16-bit APB1, VectorB8, IRQ 30
 #define INJ_TIMER    TIM3   // 16-bit APB1, VectorB4, IRQ 29
 
+// AT32-specific: TMR2/TMR5 are 32-bit timers but only when the "plus mode" bit
+// (CR1 bit 10, PMEN) is set. The STM32F4-derived fork header stops its TIM_CR1
+// defines at CKD (bits 9:8) - bit 10 is AT32-only, so it has no name here.
+// Without PMEN, TMR2 operates 16-bit and PR/CNT/CCR all truncate to 16 bits:
+// the 2026-09-20 ARR=0xFFFF bug (the dwell counter wrapped at 65536 instead of
+// 2^32, and every angleClockArmDwell tick-past check failed once the NT-domain
+// target exceeded 2^31).
+#define STM32_TIM_CR1_PMEN (1U << 10)
+
 // ── Shared constants ──────────────────────────────────────────────────────
 // Armed tick must be at least ARM_MARGIN_TICKS in the future so the CCR
 // write and CCxIE enable complete before the match.  4 us mirrors TIM5.
@@ -223,17 +232,22 @@ TRIGGER_RAM_CODE void STM32_TIM3_HANDLER(void) {   // injection
 } // extern "C"
 
 // ── Initialization ────────────────────────────────────────────────────────
-static void initTimerRegs(TIM_TypeDef* tmr, uint32_t psc) {
+static void initTimerRegs(TIM_TypeDef* tmr, uint32_t psc, uint32_t cr1Mode = 0) {
+    // cr1Mode carries AT32-specific CR1 control bits (STM32_TIM_CR1_PMEN for
+    // the 32-bit TMR2) that must be present BEFORE the ARR/CNT writes and kept
+    // while the counter runs - otherwise the 32-bit registers truncate to 16
+    // bits (see the PMEN comment above).
+    tmr->CR1   = cr1Mode;
     tmr->PSC   = psc;
     tmr->ARR   = 0xFFFFFFFFU;  // 16-bit timers naturally truncate CNT/ARR
-    tmr->CR1   = 0;
+    tmr->CR1   = cr1Mode;
     tmr->CCMR1 = STM32_TIM_CCMR1_OC1M(1) | STM32_TIM_CCMR1_OC2M(1);
     tmr->CCMR2 = STM32_TIM_CCMR1_OC1M(1) | STM32_TIM_CCMR1_OC2M(1);
     tmr->CCER  = 0;
     tmr->DIER  = 0;
     tmr->EGR   = STM32_TIM_EGR_UG;   // latch PSC/ARR, clear CNT
     tmr->SR    = 0;
-    tmr->CR1   = STM32_TIM_CR1_CEN;
+    tmr->CR1   = STM32_TIM_CR1_CEN | cr1Mode;
 }
 
 void initAngleClock() {
@@ -254,7 +268,7 @@ void initAngleClock() {
 
     // Start all three at the provisional PSC = 71 (assumes TIMCLK1 = 288 MHz
     // -> 4 MHz).  The measured rate below corrects it.
-    initTimerRegs(DWELL_TIMER, 71);
+    initTimerRegs(DWELL_TIMER, 71, STM32_TIM_CR1_PMEN);  // TMR2: 32-bit plus mode
     initTimerRegs(SPARK_TIMER, 71);
     initTimerRegs(INJ_TIMER,   71);
 
@@ -280,8 +294,10 @@ void initAngleClock() {
     uint32_t newPsc = (72U * acDelta + ntDelta / 2U) / ntDelta - 1U;
     if (newPsc > 0xFFFFU) newPsc = 0xFFFFU;
 
-    // Re-program all three with the measured PSC.
-    DWELL_TIMER->CR1 = 0; DWELL_TIMER->PSC = newPsc;
+    // Re-program all three with the measured PSC.  Keep PMEN on the 32-bit
+    // dwell timer across the stop/start (writing CR1=0 would drop it and make
+    // TMR2 16-bit again).
+    DWELL_TIMER->CR1 = STM32_TIM_CR1_PMEN; DWELL_TIMER->PSC = newPsc;
     SPARK_TIMER->CR1 = 0; SPARK_TIMER->PSC = newPsc;
     INJ_TIMER->CR1   = 0; INJ_TIMER->PSC   = newPsc;
     DWELL_TIMER->CNT = 0;
@@ -291,7 +307,7 @@ void initAngleClock() {
     SPARK_TIMER->EGR = STM32_TIM_EGR_UG;
     INJ_TIMER->EGR   = STM32_TIM_EGR_UG;
     DWELL_TIMER->SR  = 0; SPARK_TIMER->SR = 0; INJ_TIMER->SR = 0;
-    DWELL_TIMER->CR1 = STM32_TIM_CR1_CEN;
+    DWELL_TIMER->CR1 = STM32_TIM_CR1_CEN | STM32_TIM_CR1_PMEN;
     SPARK_TIMER->CR1 = STM32_TIM_CR1_CEN;
     INJ_TIMER->CR1   = STM32_TIM_CR1_CEN;
 

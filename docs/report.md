@@ -1,5 +1,48 @@
 # Work Report
 
+## 2026-09-20 (part 7) - m74_9: ROOT CAUSE FOUND + FIXED - missing PMEN bit made TMR2 a 16-bit timer
+
+The ARR dump in the 22:03-22:09 car session named it: `ARR=0000FFFF`, NOT
+`0xFFFFFFFF` as initTimerRegs writes it. This explains EVERY earlier observation
+(and corrects the part-4/5/6 "slow clock / hardware" conclusion - it was a code
+bug all along):
+
+- The counter wraps at 65536 (16.384 ms), not 2^32 (1073 s).
+- The "busy T2d ~6787" was NOT a 68 kHz clock - it is 400000 mod 65536 = 6784
+  (6 full wraps + remainder). The "reversal" (-58662) was a mid-measurement wrap.
+- The refusal cnt values (52967, 12873, 50532, 47110) were all < 65536 for the
+  same reason.
+- The clock was NEVER slow: TMR2 has always been running 4 MHz.
+
+ROOT CAUSE (a code bug, not hardware/errata): the AT32F435 TMR2/TMR5 are 32-bit
+timers ONLY when the "plus mode" bit PMEN (CTRL1/CR1 bit 10) is set. The fork's
+STM32F4-derived header stops its TIM_CR1 defines at CKD (bits 9:8) - bit 10 is
+AT32-only and unnamed. initTimerRegs() set CR1 = CEN without PMEN, so TMR2
+operated 16-bit: PR/CNT/CCR all truncate to 16 bits, ARR = 0xFFFF, counter wraps
+at 65536. (The ChibiOS-Contrib PWM LLD sets PMEN in pwm_lld_start: `if
+(pwmp->has_plus_mode) tmr->CTRL1 = AT32_TMR_CTRL1_PMEN;` before writing PR.)
+
+Why it is ACCUMULATIVE (matches "works ~10 min then degrades"): the dwell is
+armed with an absolute 32-bit NT-domain tick. With the counter wrapping at 65536,
+atTick - CNT grows at 4 MHz and exceeds 2^31 after ~537 s (~9 min), so the int32
+comparison in angleClockArmDwell wraps negative -> every arm is tick-past ->
+TIM5 fallback. Before that, the arms still "succeeded" (the CCR was written, but
+the compare fired late because the counter never reached the far-future tick).
+
+FIX (firmware/hw_layer/angle_clock/angle_clock.cpp): set STM32_TIM_CR1_PMEN
+(1U<<10) for DWELL_TIMER (TMR2) in initTimerRegs() BEFORE the ARR write, and
+keep it set across the PSC re-programming stop/start in initAngleClock (writing
+CR1=0 there would drop PMEN and make TMR2 16-bit again). TMR3/TMR4 stay 16-bit
+(no PMEN).
+
+Validation:
+- compile_m74_9.sh -> BUILD SUCCESSFUL (below).
+- bundle (compile.sh -b) -> BUILD SUCCESSFUL (below).
+
+Open follow-up:
+- Car check: tim2clk must now read ARR=FFFFFFFF, busy T2d ~400000, and dwell
+  lateArm must stay 0 indefinitely (no more ~9-minute tick-past onset).
+
 ## 2026-09-20 (part 6) - m74_9: errata ES0003 v2.0.16 checked - NO TMR2 clock errata
 
 Checked the errata sheet (at32ferrata.txt, ES0003, version 2.0.16, 2026-04-14,
