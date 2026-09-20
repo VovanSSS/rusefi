@@ -34,7 +34,7 @@
         <constant digits="2" name="afr_value1" units="AFR">15.0</constant>
         <constant digits="2" name="afr_value2" units="AFR">14.0</constant>
         <constant digits="4" name="afrExpAverageAlpha" units="">1.0</constant>
-        <constant name="afrOverrideMode">"Cyl Filling %"</constant>
+        <constant name="afrOverrideMode">"None"</constant>
         <constant cols="1" digits="1" name="afterCrankingIACtaperDuration" rows="6" units="cycles">
          100.0
          100.0
@@ -720,8 +720,8 @@
 </constant>
         <constant cols="8" digits="2" name="cltIdleCorrTable" rows="16" units="%">
          38.0 34.0 28.0 23.0 21.0 21.0 22.0 22.0
-         23.9 19.9 13.9 9.0 9.0 7.0 7.0 7.0
-         22.8 18.8 12.8 9.0 9.0 7.0 7.0 7.0
+         24.9 20.9 14.9 10.0 10.0 8.0 8.0 8.0
+         23.8 19.8 13.8 10.0 10.0 8.0 8.0 8.0
          34.7 30.7 24.7 19.7 17.7 17.7 19.7 19.7
          32.6 28.6 22.6 17.6 15.6 15.6 17.6 17.6
          33.5 29.5 23.5 18.5 16.5 16.5 18.5 18.5
@@ -907,7 +907,7 @@
         <constant digits="0" name="customSentTpsMax" units="">0</constant>
         <constant digits="0" name="customSentTpsMin" units="">0</constant>
         <constant name="cutFuelOnHardLimit">"yes"</constant>
-        <constant name="cutSparkOnHardLimit">"yes"</constant>
+        <constant name="cutSparkOnHardLimit">"no"</constant>
         <constant digits="0" name="cylinderBankSelect1" units="">1</constant>
         <constant digits="0" name="cylinderBankSelect10" units="">1</constant>
         <constant digits="0" name="cylinderBankSelect11" units="">1</constant>
@@ -1222,7 +1222,7 @@
         <constant digits="3" name="fordInjectorSmallPulseBreakPoint" units="mg">0.0</constant>
         <constant digits="3" name="fordInjectorSmallPulseSlope" units="g/s">0.0</constant>
         <constant name="fuelAlgorithm">"Speed Density"</constant>
-        <constant name="fuelClosedLoopCorrectionEnabled">"enabled"</constant>
+        <constant name="fuelClosedLoopCorrectionEnabled">"disabled"</constant>
         <constant name="FuelHighPressureSentInput">"None"</constant>
         <constant name="FuelHighPressureSentType">"None"</constant>
         <constant digits="4" name="fuelLevelAveragingAlpha" units="">0.001</constant>
@@ -1931,7 +1931,7 @@
         <constant digits="0" name="idleStepperTotalSteps" units="count">200</constant>
         <constant digits="4" name="idleTimingPid_dFactor" units="">0.0</constant>
         <constant digits="4" name="idleTimingPid_iFactor" units="">0.005</constant>
-        <constant digits="0" name="idleTimingPid_maxValue" units="">10</constant>
+        <constant digits="0" name="idleTimingPid_maxValue" units="">20</constant>
         <constant digits="0" name="idleTimingPid_minValue" units="">-20</constant>
         <constant digits="0" name="idleTimingPid_offset" units="">0</constant>
         <constant digits="0" name="idleTimingPid_periodMs" units="ms">0</constant>
@@ -2541,7 +2541,7 @@
         <constant name="isPhaseSyncRequiredForIgnition">"no"</constant>
         <constant name="isSdCardEnabled">"disabled"</constant>
         <constant digits="0" name="issFilterReciprocal" units="">2</constant>
-        <constant name="isTuningDetectorEnabled">"yes"</constant>
+        <constant name="isTuningDetectorEnabled">"no"</constant>
         <constant name="isWaveAnalyzerEnabled">"yes"</constant>
         <constant digits="0" name="justATempTest" units="">0</constant>
         <constant name="kickStartCranking">"no"</constant>
@@ -2831,7 +2831,7 @@
         <constant name="lps25BaroSensorSda">"NONE"</constant>
         <constant name="ltft_correctionEnabled">"no"</constant>
         <constant digits="1" name="ltft_deadband" units="%">0.5</constant>
-        <constant name="ltft_enabled">"yes"</constant>
+        <constant name="ltft_enabled">"no"</constant>
         <constant digits="1" name="ltft_maxAdd" units="%">12.5</constant>
         <constant digits="1" name="ltft_maxRemove" units="%">12.5</constant>
         <constant digits="1" name="ltft_timeConstant1" units="sec">3000.0</constant>
@@ -4807,7 +4807,7 @@
         <constant name="useBiQuadOnAuxSpeedSensors">"no"</constant>
         <constant name="useCicPidForIdle">"Industrial"</constant>
         <constant name="useCltBasedRpmLimit">"no"</constant>
-        <constant name="useCompensatedMap">"enabled"</constant>
+        <constant name="useCompensatedMap">"disabled"</constant>
         <constant name="useEeprom">"no"</constant>
         <constant name="useFixedBaroCorrFromMap">"yes"</constant>
         <constant name="useFordRedundantPps">"no"</constant>
@@ -5108,22 +5108,22 @@
          6250
 </constant>
         <constant cols="30" digits="1" name="veTable" rows="16" units="%">
-         48.6 48.6 50.2 51.9 53.5 55.2 56.8 58.5 60.1 61.7 62.9 64.0 65.2 61.3 62.5 63.6 64.8 65.5 64.7 64.0 63.2 62.4 61.6 60.8 60.0 59.2 58.4 57.6 56.8 56.6
-         50.8 51.0 52.2 53.9 55.6 57.3 59.0 60.7 62.4 63.9 65.3 66.5 67.7 63.9 65.1 66.3 67.3 67.7 67.4 66.7 65.8 65.0 64.2 63.3 62.5 61.7 60.9 60.1 59.5 59.5
-         52.0 52.6 53.8 55.5 57.2 59.0 60.8 62.6 64.3 65.9 67.3 68.6 69.8 66.1 67.3 68.5 69.5 70.0 69.7 68.9 68.0 67.2 66.3 65.5 64.6 63.7 62.9 62.1 61.4 61.0
-         53.1 54.0 55.0 56.9 58.7 60.6 62.4 64.2 66.0 67.7 69.1 70.4 71.7 68.0 69.2 70.5 71.5 72.0 71.7 70.9 70.0 69.1 68.2 67.4 66.5 65.6 64.7 63.9 63.2 62.5
-         54.7 55.4 56.7 58.5 60.4 62.3 64.1 66.0 67.9 69.6 71.0 72.4 73.7 70.0 71.4 72.6 73.7 74.2 73.9 73.1 72.1 71.2 70.3 69.4 68.5 67.6 66.7 65.8 65.1 64.6
-         56.3 57.0 58.4 60.2 62.1 64.1 66.0 68.0 69.9 71.6 73.1 74.5 75.9 72.3 73.6 75.0 76.1 76.6 76.2 75.4 74.5 73.5 72.6 71.6 70.7 69.7 68.8 67.9 67.2 66.7
-         57.9 58.6 60.0 61.9 63.9 65.9 67.9 69.9 71.9 73.7 75.3 76.7 78.1 74.6 76.0 77.3 78.5 79.0 78.6 77.8 76.8 75.8 74.9 73.9 72.9 71.9 71.0 70.0 69.3 68.8
-         59.5 60.3 61.7 63.6 65.7 67.8 69.9 71.9 73.9 75.8 77.4 78.9 80.4 76.8 78.3 79.7 80.9 81.4 81.0 80.2 79.2 78.2 77.1 76.1 75.1 74.1 73.1 72.2 71.4 70.9
-         61.1 61.9 63.4 65.4 67.5 69.6 71.8 73.9 76.0 77.9 79.6 81.1 82.6 79.1 80.6 82.1 83.3 83.8 83.4 82.5 81.5 80.5 79.4 78.4 77.4 76.3 75.3 74.3 73.5 73.0
-         62.7 63.5 65.0 67.1 69.3 71.5 73.7 75.9 78.0 80.0 81.7 83.3 84.9 81.4 82.9 84.4 85.7 86.2 85.9 84.9 83.9 82.8 81.7 80.7 79.6 78.5 77.5 76.5 75.6 75.1
-         64.3 65.1 66.7 68.8 71.1 73.3 75.6 77.8 80.0 82.1 83.9 85.5 87.1 83.6 85.2 86.8 88.1 88.6 88.2 87.3 86.2 85.1 84.0 82.9 81.8 80.7 79.6 78.6 77.7 77.2
-         65.9 66.6 68.2 70.4 72.7 75.1 77.4 79.7 82.0 84.0 85.9 87.5 89.2 85.8 87.4 89.0 90.3 90.9 90.5 89.5 88.4 87.3 86.1 85.0 83.9 82.8 81.6 80.6 79.7 79.3
-         67.2 68.0 69.7 71.9 74.3 76.7 79.0 81.4 83.7 85.9 87.7 89.4 91.1 87.8 89.4 91.1 92.4 93.0 92.6 91.6 90.4 89.3 88.1 87.0 85.8 84.7 83.5 82.4 81.6 81.0
-         68.4 69.4 71.0 73.3 75.7 78.2 80.6 83.0 85.4 87.6 89.5 91.2 92.9 89.6 91.3 93.0 94.4 94.9 94.5 93.5 92.3 91.2 90.0 88.8 87.6 86.5 85.3 84.2 83.3 82.6
-         69.7 70.6 72.3 74.7 77.2 79.6 82.1 84.6 87.0 89.3 91.2 93.0 94.7 91.4 93.2 94.9 96.3 97.0 96.5 95.4 94.2 93.0 91.8 90.6 89.4 88.2 87.0 85.9 84.9 84.3
-         71.0 71.0 73.5 76.1 78.6 81.1 83.7 86.2 88.7 91.2 92.9 94.7 96.5 93.3 95.0 96.8 98.6 99.8 98.5 97.3 96.1 94.9 93.6 92.4 91.2 90.0 88.8 87.5 86.3 86.0
+         49.6 42.6 44.2 45.9 58.5 60.2 61.8 63.5 65.1 66.7 67.9 69.0 70.2 66.3 67.5 68.6 69.8 70.5 69.7 69.0 68.2 67.4 66.6 65.8 65.0 64.2 63.4 62.6 61.8 61.6
+         51.8 45.0 46.2 47.9 60.6 62.3 64.0 65.7 67.4 68.9 70.3 71.5 72.7 68.9 70.1 71.3 72.3 72.7 72.4 71.7 70.8 70.0 69.2 68.3 67.5 66.7 65.9 65.1 64.5 64.5
+         53.0 46.6 47.8 49.5 62.2 64.0 65.8 67.6 69.3 70.9 72.3 73.6 74.8 71.1 72.3 73.5 74.5 75.0 74.7 73.9 73.0 72.2 71.3 70.5 69.6 68.7 67.9 67.1 66.4 66.0
+         54.1 43.5 44.5 50.9 63.7 65.6 67.4 69.2 71.0 72.7 74.1 75.4 76.7 73.0 74.2 75.5 76.5 77.0 76.7 75.9 75.0 74.1 73.2 72.4 71.5 70.6 69.7 68.9 68.2 67.5
+         55.7 47.1 48.5 52.5 65.4 67.3 69.1 71.0 72.9 74.6 76.0 77.4 78.7 75.0 76.4 77.6 78.7 79.2 78.9 78.1 77.1 76.2 75.3 74.4 73.5 72.6 71.7 70.8 70.1 69.6
+         56.0 57.0 58.4 60.2 67.1 69.1 71.0 73.0 74.9 76.6 78.1 79.5 80.9 77.3 78.6 80.0 81.1 81.6 81.2 80.4 79.5 78.5 77.6 76.6 75.7 74.7 73.8 72.9 72.2 71.7
+         57.6 58.6 60.0 61.9 68.9 70.9 72.9 74.9 76.9 78.7 80.3 81.7 83.1 79.6 81.0 82.3 83.5 84.0 83.6 82.8 81.8 80.8 79.9 78.9 77.9 76.9 76.0 75.0 74.3 73.8
+         59.8 60.3 60.5 63.6 70.7 72.8 74.9 76.9 78.9 80.8 82.4 83.9 85.4 81.8 83.3 84.7 85.9 86.4 86.0 85.2 84.2 83.2 82.1 81.1 80.1 79.1 78.1 77.2 76.4 75.9
+         63.1 61.9 63.4 65.4 72.5 74.6 76.8 78.9 81.0 82.9 84.6 86.1 87.6 84.1 85.6 87.1 88.3 88.8 88.4 87.5 86.5 85.5 84.4 83.4 82.4 81.3 80.3 79.3 78.5 78.0
+         64.7 63.5 65.0 67.1 74.3 76.5 78.7 80.9 83.0 85.0 86.7 88.3 89.9 86.4 87.9 89.4 90.7 91.2 90.9 89.9 88.9 87.8 86.7 85.7 84.6 83.5 82.5 81.5 80.6 80.1
+         66.3 65.1 66.7 68.8 76.1 78.3 80.6 82.8 85.0 87.1 88.9 90.5 92.1 88.6 90.2 91.8 93.1 93.6 93.2 92.3 91.2 90.1 89.0 87.9 86.8 85.7 84.6 83.6 82.7 82.2
+         67.9 66.6 68.2 70.4 77.7 80.1 82.4 84.7 87.0 89.0 90.9 92.5 94.2 90.8 92.4 94.0 95.3 95.9 95.5 94.5 93.4 92.3 91.1 90.0 88.9 87.8 86.6 85.6 84.7 84.3
+         69.2 68.0 69.7 71.9 79.3 81.7 84.0 86.4 88.7 90.9 92.7 94.4 96.1 92.8 94.4 96.1 97.4 98.0 97.6 96.6 95.4 94.3 93.1 92.0 90.8 89.7 88.5 87.4 86.6 86.0
+         70.4 69.4 71.0 73.3 80.7 83.2 85.6 88.0 90.4 92.6 94.5 96.2 97.9 94.6 96.3 98.0 99.4 99.9 99.5 98.5 97.3 96.2 95.0 93.8 92.6 91.5 90.3 89.2 88.3 87.6
+         71.7 70.6 72.3 74.7 82.2 84.6 87.1 89.6 92.0 94.3 96.2 98.0 99.7 96.4 98.2 99.9 101.3 102.0 101.5 100.4 99.2 98.0 96.8 95.6 94.4 93.2 92.0 90.9 89.9 89.3
+         73.0 71.0 73.5 76.1 83.6 86.1 88.7 91.2 93.7 96.2 97.9 99.7 101.5 98.3 100.0 101.8 103.6 104.8 103.5 102.3 101.1 99.9 98.6 97.4 96.2 95.0 93.8 92.5 91.3 91.0
 </constant>
         <constant name="vRefAdcChannel">"NONE"</constant>
         <constant name="vrThreshold1_pin">"NONE"</constant>
@@ -5332,8 +5332,8 @@
 </constant>
         <constant name="yesUnderstandLocking">"no"</constant>
     </page>
-    <versionInfo firmwareInfo="20260919" nPages="1" signature="rusEFI maccan-tx-fix.2026.09.19.m74_9.1654173061" version="5.0"/>
-    <bibliography author="rusEFI 20260919" writeDate="date"/>
+    <versionInfo firmwareInfo="20260920" nPages="1" signature="rusEFI maccan-tx-fix.2026.09.20.m74_9.1654173061" version="5.0"/>
+    <bibliography author="rusEFI 20260920" writeDate="date"/>
     <settings/>
     <userComments/>
 </msq>
