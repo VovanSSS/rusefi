@@ -1,5 +1,56 @@
 # Work Report
 
+## 2026-09-20 (part 4) - m74_9: busy-wait REFUTES the sleep-gate theory - TMR2 is ~68 kHz even awake
+
+The part-3 busy-wait probe ran on the car (efi_log_2026-09-20_21_10_59, lockstats
+21:11..21:26). The busy-wait (CPU NEVER in WFI) result is decisive and corrects
+the part-3 conclusion:
+
+  time       sleep T2d / busy T2d / NTd       dwell lateArm
+  21:11:13   5761 / 6787 / 398974            0
+  21:15:53   5508 / 6787 / 398721            0
+  21:18:44   3109 / 6787 / 396322            0
+  21:26:45   5864 / 4294908634 / 399147      35819  (busy counter reversed)
+
+busy T2d = 6787 (== ~68 kHz) in all three clean snapshots while NTd = 400000
+(== 4 MHz) - so TMR2 counts ~59x slow EVEN WHEN THE CPU IS AWAKE. This REFUTES
+the "WFI sleep gate" theory (part 3): a sleep gate would make busy T2d ~400000.
+Sleep T2d (3109-5900) is BELOW busy T2d (6787), so the sleep gate only adds a
+SECOND, smaller penalty on top of the base ~68 kHz crawl. getTimeNowLowerNt() is
+TIM5->CNT (microsecond_timer_stm32.cpp), so the busy-wait is a genuine register
+spin, not a hidden sleep.
+
+Additional facts:
+- busy T2d is EXACTLY 6787 in three snapshots - deterministic to the tick, so
+  TMR2's counter clock is a fixed ratio to NT (same PLL) or a deterministic
+  reset, but 6787/400000 has no clean integer divisor; unexplained.
+- 21:26:45 busy T2d = 0xFFFF25DA = -58662: the counter reversed ~59k ticks
+  MID-BUSY-WAIT, so the counter is being reset/discontinuous, not just slow.
+- No CRM timer-clock mux exists: AT32 CRM MISC1 (0xA0) holds only HICKDIV/
+  HICK_TO_USB/HICK_TO_SCLK/CLKOUT1DIV/CLKOUT2DIV - no timer source select.
+  AT32_TMRCLK1 (TMR2/3/4/5/6/7/12/13/14) = PCLK1 x 2, same for all. So there
+  is no register that could legally re-clock TMR2 to ~4.9 MHz.
+- TMR3/TMR4 (16-bit) and TIM5/TMR5 (32-bit) all run 4 MHz with the same
+  initTimerRegs() config, so it is not a shared config bug.
+
+Conclusion: TMR2's counter clock degrades at runtime (4 MHz at boot -> ~68 kHz
+later) by a TMR2-specific, hardware/CRM-level mechanism that is NOT sleep gating,
+NOT a clock-source mux, and NOT a firmware write (no runtime TIM2 register or
+CRM write exists). The counter additionally resets/discontinues. TMR2 is
+unusable as the dwell angle clock.
+
+Change inventory:
+| File | Change |
+| --- | --- |
+| firmware/hw_layer/angle_clock/angle_clock.cpp | angleClockTimerDiag(): also dump ARR/DIER/CCER to test the ARR-corruption hypothesis (a small ARR would explain the counter resets) |
+
+Fix direction (next): relocate dwell off TMR2 onto TIM5 CC3/CC4. TIM5 IS the NT
+domain (TIM5->CNT == getTimeNowLowerNt()), runs 4 MHz, is NOT affected by the
+TMR2 degradation, and the injection-close mini-queue already lives on TIM5 CC2.
+Dwell then uses atTick == NT directly (s_dwell_off == 0), so the int32 tick-past
+wrap cannot happen. Dwell needs up to 4 channels; TIM5 has CC3+CC4 free, so a
+2-channel assignment (or a per-cylinder queue like CC2) is required.
+
 ## 2026-09-20 (part 3) - m74_9: tim2clk proves TMR2 sleep-gated + counter reverses; busy-wait probe added
 
 The part-2 'tim2clk' probe ran on the car (efi_log_2026-09-20_18_41_04_668,

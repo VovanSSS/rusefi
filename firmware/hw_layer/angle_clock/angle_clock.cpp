@@ -694,6 +694,9 @@ void angleClockTimerDiag() {
     const uint32_t cr2       = DWELL_TIMER->CR2;
     const uint32_t smcr      = DWELL_TIMER->SMCR;
     const uint32_t psc       = DWELL_TIMER->PSC;
+    const uint32_t arr       = DWELL_TIMER->ARR;
+    const uint32_t dier      = DWELL_TIMER->DIER;
+    const uint32_t ccer      = DWELL_TIMER->CCER;
 
     // Sleep-based measurement: the CPU is in WFI between ISRs, so a timer whose
     // clock is gated in sleep (the 2026-09-20 TMR2 failure) crawls here.
@@ -714,12 +717,15 @@ void angleClockTimerDiag() {
     const uint32_t nt1b = getTimeNowLowerNt();
     const uint32_t t21b = DWELL_TIMER->CNT;
 
-    efiPrintf("tim2clk EN=%u LPEN=%u RST=%u CEN=%u PSC=%u SMCR=%08x CR2=%08x",
+    efiPrintf("tim2clk EN=%u LPEN=%u RST=%u CEN=%u PSC=%u ARR=%08x DIER=%08x CCER=%08x SMCR=%08x CR2=%08x",
         (unsigned)((apb1enr & RCC_APB1ENR_TIM2EN) ? 1 : 0),
         (unsigned)((apb1lpenr & RCC_APB1LPENR_TIM2LPEN) ? 1 : 0),
         (unsigned)((apb1rstr & RCC_APB1RSTR_TIM2RST) ? 1 : 0),
         (unsigned)((cr1 & STM32_TIM_CR1_CEN) ? 1 : 0),
         (unsigned)psc,
+        (unsigned)arr,
+        (unsigned)dier,
+        (unsigned)ccer,
         (unsigned)smcr,
         (unsigned)cr2);
     efiPrintf("tim2clk sleep T2d=%u NTd=%u busy T2d=%u NTd=%u/100ms (want EN=1 LPEN=1 RST=0 CEN=1 PSC~71, both T2d~NTd~400000)",
