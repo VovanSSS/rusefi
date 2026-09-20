@@ -698,6 +698,15 @@ void angleClockTimerDiag() {
     const uint32_t dier      = DWELL_TIMER->DIER;
     const uint32_t ccer      = DWELL_TIMER->CCER;
 
+    // Clock tree at runtime: proves the PLL is still locked at 288 MHz (SWS=
+    // PLL) and HSE/HEXT is still healthy (HSERDY) - rules out a PLL/HSE
+    // fallback to HICK as the TMR2 slowdown cause. PLLCFGR shows the
+    // multiplier/divider if a corrupt write changed it (TIM5 = 4 MHz already
+    // proves the tree is correct, but this names the register if it drifted).
+    const uint32_t rcc_cr   = RCC->CR;
+    const uint32_t rcc_cfgr = RCC->CFGR;
+    const uint32_t rcc_pll  = RCC->PLLCFGR;
+
     // Sleep-based measurement: the CPU is in WFI between ISRs, so a timer whose
     // clock is gated in sleep (the 2026-09-20 TMR2 failure) crawls here.
     const uint32_t nt0s = getTimeNowLowerNt();
@@ -728,6 +737,10 @@ void angleClockTimerDiag() {
         (unsigned)ccer,
         (unsigned)smcr,
         (unsigned)cr2);
+    efiPrintf("tim2clk CR=%08x CFGR=%08x PLLCFGR=%08x (want PLLON HSEON PLLRDY HSERDY, SWS=PLL, PLLMS=1 PLLNS=144 PLLFR=4)",
+        (unsigned)rcc_cr,
+        (unsigned)rcc_cfgr,
+        (unsigned)rcc_pll);
     efiPrintf("tim2clk sleep T2d=%u NTd=%u busy T2d=%u NTd=%u/100ms (want EN=1 LPEN=1 RST=0 CEN=1 PSC~71, both T2d~NTd~400000)",
         (unsigned)(t21s - t20s),
         (unsigned)(nt1s - nt0s),
