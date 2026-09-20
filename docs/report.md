@@ -1,5 +1,50 @@
 # Work Report
 
+## 2026-09-20 (part 5) - m74_9: exhaustive software audit - NO code path can slow TMR2 at runtime
+
+Challenged the "hardware mechanism" conclusion: if the datasheet shows TMR2 as
+a normal APB1 timer (PCLK1x2, same as TMR3/4/5), then a runtime 4 MHz -> ~68 kHz
+degradation should be a code bug. Audited every write path that could touch
+TMR2's clock or the CRM. Result: NONE can explain it.
+
+Ruled out (each verified in source):
+1. No runtime TIM2 register write. The only writers of TIM2 CR1/PSC/SMCR/ARR/CNT
+   are initAngleClock (boot) and the arm/refresh/cancel paths, which write only
+   SR/DIER/CCR (compare/interrupt), never the clock or prescaler. l9779.cpp
+   (wdaTimerCrossMeasure) only READS TIM2/TIM5/TMR7.
+2. No runtime CRM write that touches timers. The two RCC->CFGR/PLL writers found:
+   - m74_9AdcDivTest: manual console command, writes only ADC divider [18:16]
+     and restores the saved value; does not touch PPRE1 [12:10] or timers.
+   - osc_detector.cpp (OscDetector/reprogramPll): DEAD CODE on m74_9 -
+     board.h defines STM32_HSECLK=8000000, so the mcuconf_common fallback that
+     would set ENABLE_AUTO_DETECT_HSE=TRUE never runs, and the whole file body
+     is inside #if ENABLE_AUTO_DETECT_HSE -> compiled out.
+3. No timer clock mux. AT32 CRM MISC1 (0xA0) holds only HICKDIV/HICK_TO_USB/
+   HICK_TO_SCLK/CLKOUTx dividers; AT32_TMRCLK1 = PCLK1x2 for TMR2/3/4/5/6/7/
+   12/13/14 (ChibiOS-Contrib hal_lld.h) - no per-timer source select exists.
+4. DBGMCU freeze inert. initAngleClock sets DBGMCU->APB1FZ (0xE0042000+0x08)
+   DBG_TIM2/3/4_STOP under #if STM32F4XX (true via at32_registry.h). It only
+   freezes on debug halt (no debugger on the car), and TMR3/TMR4 carry the same
+   freeze bits yet run 4 MHz - so it is not the differentiator.
+5. TIM2 not claimed by any driver: mcuconf STM32_GPT/ICU/PWM_USE_TIM2 all FALSE.
+6. ChibiOS fork stm32_clock_init runs once at boot, writes APB dividers (PPRE1
+   [12:10]) correctly - proven by TIM5 running 4 MHz and USB 48 MHz / CAN / ADC
+   all correct. No runtime clock re-init path exists.
+
+Conclusion: the 4 MHz -> ~68 kHz TMR2 degradation is NOT produced by rusEFI or
+the ChibiOS fork source. It is either (a) an AT32F435 silicon/CRM errata (the
+ERRATA SHEET, which is a separate document from the datasheet feature list in
+at32f.txt - not available in-tree), or (b) peripheral-state corruption from the
+analog/power domain (the L9779 SBC is the board regulator and has documented
+VDD5_OV/V3V3_UV reset events). The counter resets (cnt always < 60000, one
+mid-busy-wait reversal) are consistent with the same corruption.
+
+Fix direction (unchanged from part 4): relocate dwell off TMR2 onto TIM5 CC3/CC4
+(TIM5 IS the NT domain, 4 MHz, demonstrably unaffected). This is robust against
+both the errata and any as-yet-unfound software path, and removes the
+atTick-vs-CNT absolute-offset drift class entirely (atTick == NT when s_dwell_off
+== 0).
+
 ## 2026-09-20 (part 4) - m74_9: busy-wait REFUTES the sleep-gate theory - TMR2 is ~68 kHz even awake
 
 The part-3 busy-wait probe ran on the car (efi_log_2026-09-20_21_10_59, lockstats
