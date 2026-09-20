@@ -1,5 +1,77 @@
 # Work Report
 
+## 2026-09-20 - m74_9: C9009 "skipped spark" - full analysis, suppression REVERTED, `counter - fall == 1` double-schedule to fix
+
+Follow-up to the dwell lateArm fix. The C9009 `looks like skipped spark event`
+warning fires ~1 per 1-2 min during normal driving, all with `charged=0
+bail=no`. The earlier attempt to silence it (requiring
+`output->currentLogicValue`) was REVERTED at the user's request - the warning
+is kept verbatim and the goal is to make the scheduling logic correct, not to
+hide the symptom.
+
+Fields (spark_logic.cpp `startDwellByTurningSparkPinHigh`):
+- `charged` = `output->currentLogicValue` (coil pin state).
+- `bail` = `signalFallSparkId >= sparkCounter` (out-of-order).
+- `fall` = `signalFallSparkId` (sparkCounter of the last fire on this coil).
+- `counter` = `event->sparkCounter` (assigned in `scheduleSparkEvent`).
+
+`counter - fall` shows TWO signatures:
+- `== cylinderCount (4)` - benign rpm-flap desync of the `prevSparkName`
+  tracker. Normal one-cycle gap; the coil state is correct.
+- `== 1` - REAL out-of-order double-schedule: the same coil is scheduled one
+  global slot after its own fire (the intermediate cylinder's slot is skipped).
+  NOT multispark (multisparkEnable=no). Seen only at ~1364-1392 rpm so far;
+  the `==4` noise appears at both idle (~800) and ~6000 rpm.
+
+Hypothesis (recorded, not yet proven): at fire,
+`prepareCylinderIgnitionSchedule` clears `dwellStartArmed=false` and recomputes
+a fixed absolute `dwellAngle`. A trigger resync / phase jump (or an early
+time-domain fire vs the angle-domain `sparkAngle`) can make that recomputed
+`dwellAngle` land in the very-next-tooth window, re-arming the SAME coil at
+slot N+1.
+
+INSTRUMENTATION ADDED (this session): `scheduleSparkEvent` now logs a
+`c9009diag` line at SCHEDULE time when `counter - fall == 1`, capturing
+coil/dwell/spark angles, current/next phase, angleOffset, the early-window
+flag, rpm, revolution and `gapAnchorCorrectionDeg`. This is the scheduling-side
+twin of the dwell-start C9009 warning (which lacks phase context).
+
+OPEN: one car session with this build pins the exact branch (resync vs early
+fire) from the `c9009diag` angle/phase deltas; then fix the scheduling, not the
+warning.
+
+## 2026-09-20 (part 8) - m74_9: PMEN fix CAR-CONFIRMED - TMR2 32-bit, dwell lateArm stays 0 past the old ~9-min wrap point
+
+The part-7 fix is validated on the car (new build, 22:29-22:44 session). The
+`tim2clk` discriminator and the dwell counters both confirm it, and the
+accumulative signature is gone:
+
+- `ARR=FFFFFFFF` - PMEN took effect, TMR2 is 32-bit (was 0000FFFF).
+- `busy T2d=399993 NTd=400006` and `sleep T2d=398858 NTd=398857` - TMR2 counts
+  at the full 4 MHz NT rate in BOTH awake and WFI sleep (was ~6787 busy / ~5000
+  sleep under the 16-bit wrap).
+- `angclk dwell lateArm=0` for the whole session. Decisive: at 22:44:00
+  `atTick=3417104445` (3.42e9), well past the 2^31 = 2.147e9 threshold where the
+  old build began accumulating tick-past lateArm (~9 min). lateArm=5 there, and
+  the refusal snapshot (`branch=2 win=1 rem=0.1 ... atTick=3417104445
+  cnt=3417104609`) shows a GENUINE edge case: only 0.1 deg remaining at the arm,
+  i.e. a handoff that ran right to the tooth edge - NOT the int32 wrap.
+
+Residual, unrelated to the dwell fix:
+- `C9009 skipped spark event` warnings still appear (charged=0 bail=no,
+  counter-fall == cylinderCount). These are the long-documented FALSE POSITIVES
+  from the rpm-sensor flap (see CLAUDE.md) - the coil state is correct, no spark
+  was actually skipped. They are not a regression and were present before the
+  PMEN fix.
+- `sched dwell n` (TIM5 fallback) == `angclk dwell lateArm` exactly (e.g. n=5 at
+  22:44:00), as expected - the remaining handful of fallbacks are edge cases, not
+  the wrap.
+
+CLOSED. No further action on the dwell angle clock. The parts 4/5/6 "slow
+clock / hardware / errata" conclusions remain retracted; part 7 (missing PMEN,
+a code bug) is the correct and now car-validated diagnosis - exactly as the user
+maintained from the start ("это баг в коде русефи или чибиос").
+
 ## 2026-09-20 (part 7) - m74_9: ROOT CAUSE FOUND + FIXED - missing PMEN bit made TMR2 a 16-bit timer
 
 The ARR dump in the 22:03-22:09 car session named it: `ARR=0000FFFF`, NOT

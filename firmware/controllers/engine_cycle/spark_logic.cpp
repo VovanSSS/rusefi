@@ -517,6 +517,35 @@ TRIGGER_RAM_CODE void scheduleSparkEvent(bool limitedSpark, IgnitionEvent *event
 	event->sparkCounter = engine->engineState.globalSparkCounter++;
 	event->wasSparkLimited = limitedSpark;
 
+#if !EFI_UNIT_TEST
+	// C9009 root-cause instrumentation (m74_9): detect the anomalous re-schedule
+	// of the SAME coil one global slot after its own fire (counter - fall == 1,
+	// vs the normal counter - fall == cylinderCount). This is the scheduling-side
+	// twin of the dwell-start C9009 warning in startDwellByTurningSparkPinHigh;
+	// unlike that warning (which runs in the dwell ISR with no phase context),
+	// this logs at SCHEDULE time where the angle/phase relationship that caused
+	// the double-schedule is still visible. Multispark is disabled on m74_9, so
+	// a counter - fall == 1 here is always the anomaly, never a restrike.
+	{
+		IgnitionOutputPin *outputForDiag = event->outputs[0];
+		if (outputForDiag) {
+			uint32_t fall = (uint32_t)outputForDiag->signalFallSparkId;
+			if (event->sparkCounter == fall + 1) {
+				efiPrintf("c9009diag coil=%s counter=%u fall=%u dwell=%.2f spark=%.2f cur=%.2f next=%.2f off=%.2f early=%d rpm=%d rev=%u gapCorr=%.2f",
+					outputForDiag->getName(),
+					(unsigned)event->sparkCounter,
+					(unsigned)fall,
+					dwellAngle, sparkAngle,
+					currentPhase, nextPhase, angleOffset,
+					earlyWindow ? 1 : 0,
+					(int)Sensor::getOrZero(SensorType::Rpm),
+					(unsigned)getRevolutionCounter(),
+					getTriggerCentral()->gapAnchorCorrectionDeg);
+			}
+		}
+	}
+#endif // !EFI_UNIT_TEST
+
 	// This cycle's dwell is now scheduled: the current-tooth window of the
 	// NEXT tooth must not schedule it a second time. Cleared in
 	// prepareCylinderIgnitionSchedule at spark fire.
