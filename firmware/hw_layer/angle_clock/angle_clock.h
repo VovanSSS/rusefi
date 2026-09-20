@@ -153,10 +153,11 @@ uint32_t angleClockInitPsc();
 
 void angleClockResetStats();
 
-// Runtime clock sanity for TMR2 (dwell). Reads the APB1 clock-enable and
-// sleep-enable bits, CR1 (CEN) and PSC, then measures TIM2->CNT vs NT over a
-// 100 ms sleep. Diagnostic for the 2026-09-20 failure where TMR2 counted
-// ~140000x too slow at runtime (tick-past on every dwell arm).
+// Runtime clock sanity for TMR2 (dwell). Reads the APB1 clock-enable, sleep-
+// enable and reset bits, CR1 (CEN), CR2, SMCR and PSC, then measures TIM2->CNT
+// vs NT over BOTH a 100 ms sleep (WFI) and a 100 ms busy-wait. The sleep-vs-
+// busy split tells whether the 2026-09-20 TMR2 crawl is a sleep gate (sleep
+// T2d << busy T2d) or an always-on slow clock (both low).
 void angleClockTimerDiag();
 
 #endif // EFI_ANGLE_CLOCK

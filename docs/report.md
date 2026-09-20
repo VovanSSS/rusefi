@@ -1,5 +1,66 @@
 # Work Report
 
+## 2026-09-20 (part 3) - m74_9: tim2clk proves TMR2 sleep-gated + counter reverses; busy-wait probe added
+
+The part-2 'tim2clk' probe ran on the car (efi_log_2026-09-20_18_41_04_668,
+lockstats snapshots 18:43..19:00). Every snapshot shows the RCC gate bits
+CORRECT even while the counter crawls:
+
+  time       T2d vs NTd (100 ms)             dwell lateArm
+  18:43:47   T2d=4379       NTd=397593      0
+  18:46:09   T2d=4294907693 NTd=399147      0   (counter reversed, see below)
+  18:47:08   T2d=3612       NTd=396827      0
+  18:51:32   T2d=3875       NTd=397089      8924
+  18:57:29   T2d=5512       NTd=398728      23846
+  19:00:31   T2d=5225       NTd=398440      2142
+
+EN=1 LPEN=1 CEN=1 PSC=71 in EVERY snapshot -> the "someone cleared TIM2EN/
+TIM2LPEN/CEN" mechanism is RULED OUT. TMR2 still crawls at ~40-55 kHz while
+TIM5/NT runs 4 MHz (NTd ~= 400000 = 100 ms), so TMR2 is sleep-gated on the
+hardware despite LPEN=1. The RCC layout is confirmed correct (APB1LPENR @
+0x60, TIM2LPEN = bit 0; the datasheet puts TMR2/3/4/5 all on APB1).
+
+Two more findings:
+
+1. 18:46:09 T2d = 4294907693 = 0xFFFF172D = -59603 signed -> the 32-bit
+   counter moved BACKWARDS ~60k ticks in 100 ms. A clean prescaler issue
+   cannot reverse a counter; this is a reset/discontinuity caught mid-glitch.
+
+2. The refusal snapshots' cnt is non-monotonic: 52967 (18:51) -> 12873
+   (18:57) -> 50532 (19:00). TMR2->CNT is being reset to small values, not
+   slowly accumulating. Combined with the 100 ms T2d ~= 4500, the picture is
+   a counter that runs ~40-55 kHz in short bursts and resets, i.e. its clock
+   is intermittent (gated in WFI, counter glitches on re-enable).
+
+Dwell failure mechanism (why it runs ~10 min then degrades): atTick (NT-domain
+absolute time) grows at 4 MHz; cnt stays small. Once atTick - cnt exceeds 2^31
+(~537 s = ~9 min), the int32 comparison in angleClockArmDwell wraps negative
+and every arm becomes tick-past. Matches the timeline exactly (lateArm=0 in
+the first three snapshots, then ~50% -> ~100% -> ~20%).
+
+Why dwell only: spark/injection use 16-bit "from now" arming (immune to the
+absolute-offset drift); dwell computes an absolute 32-bit tick from NT and
+compares it against TMR2->CNT - it alone exposes the slow counter.
+
+Change inventory:
+| File | Change |
+| --- | --- |
+| firmware/hw_layer/angle_clock/angle_clock.h/.cpp | angleClockTimerDiag(): also dump SMCR/CR2/APB1RSTR, and measure TIM2->CNT vs NT over BOTH a 100 ms sleep AND a 100 ms busy-wait (sleep T2d << busy T2d = sleep gate; both low = always-slow clock) |
+
+Validation:
+- compile_m74_9.sh -> BUILD SUCCESSFUL (below).
+- bundle (compile.sh -b) -> BUILD SUCCESSFUL (below).
+
+Open follow-ups:
+- Next car lockstats: the busy-wait T2d decides sleep-gate vs always-slow.
+  sleep T2d ~4500 + busy T2d ~400000 = pure WFI sleep gate -> fix = stop the
+  CPU sleeping while dwell is armed, or move dwell off TMR2. sleep T2d ~4500
+  + busy T2d ~4500 = TMR2 clock source broken (CRM/errata).
+- Fix candidates once confirmed: (a) relocate dwell to a free 32-bit NT-domain
+  comparator - TIM5 CC3 shares the NT counter and is NOT sleep-gated (the
+  injection-close CC2 mini-queue already lives on TIM5); (b) prevent WFI while
+  the engine runs.
+
 ## 2026-09-20 (part 2) - m74_9: binary HAS rccEnableTIM2(true); no runtime TIM2 gate in source
 
 Follow-up to the part-1 root cause (TMR2 counting ~140000x too slow). Verified

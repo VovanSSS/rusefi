@@ -689,22 +689,44 @@ void angleClockResetStats() {
 void angleClockTimerDiag() {
     const uint32_t apb1enr   = RCC->APB1ENR;
     const uint32_t apb1lpenr = RCC->APB1LPENR;
+    const uint32_t apb1rstr  = RCC->APB1RSTR;
     const uint32_t cr1       = DWELL_TIMER->CR1;
+    const uint32_t cr2       = DWELL_TIMER->CR2;
+    const uint32_t smcr      = DWELL_TIMER->SMCR;
     const uint32_t psc       = DWELL_TIMER->PSC;
 
-    const uint32_t nt0 = getTimeNowLowerNt();
-    const uint32_t t20 = DWELL_TIMER->CNT;
+    // Sleep-based measurement: the CPU is in WFI between ISRs, so a timer whose
+    // clock is gated in sleep (the 2026-09-20 TMR2 failure) crawls here.
+    const uint32_t nt0s = getTimeNowLowerNt();
+    const uint32_t t20s = DWELL_TIMER->CNT;
     chThdSleepMilliseconds(100);
-    const uint32_t nt1 = getTimeNowLowerNt();
-    const uint32_t t21 = DWELL_TIMER->CNT;
+    const uint32_t nt1s = getTimeNowLowerNt();
+    const uint32_t t21s = DWELL_TIMER->CNT;
 
-    efiPrintf("tim2clk EN=%u LPEN=%u CEN=%u PSC=%u T2d=%u NTd=%u/100ms (want EN=1 LPEN=1 CEN=1 PSC~71 T2d~NTd~400000)",
+    // Busy-wait measurement: the CPU never sleeps, so every APB1 timer clock
+    // is alive the whole window. Comparing the two tells whether the crawl is
+    // a sleep gate (sleep T2d << busy T2d) or an always-on slow clock (both
+    // low). A 100 ms spin in the lockstats thread is safe: the WDG window is
+    // seconds and ISRs (handoff/TMR2) still preempt.
+    const uint32_t nt0b = getTimeNowLowerNt();
+    const uint32_t t20b = DWELL_TIMER->CNT;
+    do { } while (getTimeNowLowerNt() - nt0b < US2NT(100000));
+    const uint32_t nt1b = getTimeNowLowerNt();
+    const uint32_t t21b = DWELL_TIMER->CNT;
+
+    efiPrintf("tim2clk EN=%u LPEN=%u RST=%u CEN=%u PSC=%u SMCR=%08x CR2=%08x",
         (unsigned)((apb1enr & RCC_APB1ENR_TIM2EN) ? 1 : 0),
         (unsigned)((apb1lpenr & RCC_APB1LPENR_TIM2LPEN) ? 1 : 0),
+        (unsigned)((apb1rstr & RCC_APB1RSTR_TIM2RST) ? 1 : 0),
         (unsigned)((cr1 & STM32_TIM_CR1_CEN) ? 1 : 0),
         (unsigned)psc,
-        (unsigned)(t21 - t20),
-        (unsigned)(nt1 - nt0));
+        (unsigned)smcr,
+        (unsigned)cr2);
+    efiPrintf("tim2clk sleep T2d=%u NTd=%u busy T2d=%u NTd=%u/100ms (want EN=1 LPEN=1 RST=0 CEN=1 PSC~71, both T2d~NTd~400000)",
+        (unsigned)(t21s - t20s),
+        (unsigned)(nt1s - nt0s),
+        (unsigned)(t21b - t20b),
+        (unsigned)(nt1b - nt0b));
 }
 
 #endif // EFI_ANGLE_CLOCK && EFI_PROD_CODE
