@@ -1,5 +1,33 @@
 # Work Report
 
+## 2026-09-20 (part 6) - m74_9: errata ES0003 v2.0.16 checked - NO TMR2 clock errata
+
+Checked the errata sheet (at32ferrata.txt, ES0003, version 2.0.16, 2026-04-14,
+silicon revs A and B). The full limitation list has no timer-clock item:
+
+- TMR section (3 items): 1.10.1 DMA request clear method (fixed), 1.10.2
+  encoder-mode overflow event (fixed), 1.10.3 brake input invalid when TMREN=0
+  (open). None concern the counter clock.
+- PWC section (8 items): all Deepsleep/standby/LDO/VBAT. The m74_9 only enters
+  SLEEP (WFI) - SLEEPDEEP is never set, so Deepsleep is never entered - none apply.
+- ERTC item: ERTC register WRITES hold APB1 for ~4 ERTC clocks (pausing APB1 DMA).
+  This is the only APB1-mentioning item, but it stalls DMA, not the timer counter
+  (clocked by TIMCLK directly, not via APB access), and ERTC writes are boot-time
+  only.
+
+So NEITHER the datasheet (feature list) NOR the errata (ES0003 v2.0.16) documents
+the 4 MHz -> ~68 kHz TMR2 degradation. Combined with the part-5 code audit (no
+software path writes TMR2's clock or the CRM at runtime), the behavior is
+unexplained by documentation AND source. Remaining candidates: an undocumented
+silicon behavior (an errata not yet in this ES0003, or a board-specific
+power/environment effect via the L9779 SBC - its VDD5_OV/V3V3_UV reset events are
+documented elsewhere in CLAUDE.md), or a code bug the static audit missed.
+
+Next decisive data point (already built): the tim2clk ARR dump. A small ARR proves
+register corruption (a concrete path); ARR=0xFFFFFFFF with T2d~6787 proves the
+timer clock itself is slow. Either way the robust fix is to relocate dwell off
+TMR2 onto TIM5 CC3/CC4.
+
 ## 2026-09-20 (part 5) - m74_9: exhaustive software audit - NO code path can slow TMR2 at runtime
 
 Challenged the "hardware mechanism" conclusion: if the datasheet shows TMR2 as
