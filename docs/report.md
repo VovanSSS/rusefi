@@ -1,5 +1,37 @@
 # Work Report
 
+## 2026-09-20 (part 2) - m74_9: binary HAS rccEnableTIM2(true); no runtime TIM2 gate in source
+
+Follow-up to the part-1 root cause (TMR2 counting ~140000x too slow). Verified
+the flashed image and searched the source for a runtime TIM2 clock gate.
+
+1. Binary check (firmware/build/rusefi.elf == the flashed rusefi.srec, same
+   18:03 build): initAngleClock is inlined into main (main+0xe04). Its
+   rccEnableTIM2/TIM4/TIM3 sequence SETS the sleep-enable bit:
+     805ceec  orr r2,#1  @ APB1ENR   TIM2EN
+     805cef4  orr r2,#1  @ APB1LPENR TIM2LPEN  <- lp=true (fix present)
+   (APB1ENR @ 0x40, APB1LPENR @ 0x60, TIM2=bit0/TIM3=bit1/TIM4=bit2). So the
+   "flashed build predates the fix" hypothesis is RULED OUT.
+
+2. Source search for a runtime clear/gate:
+   - Only rccEnableTIM2/3/4 call sites in firmware: angle_clock.cpp (all lp=true).
+   - TIM2 unused by any ChibiOS driver (mcuconf PWM/GPT/ICU USE_TIM2=FALSE).
+   - Nothing writes TIM2->CR1/PSC/SMCR (only initAngleClock at boot; arm/refresh
+     touch SR/DIER/CCR only; SMCR never written). l9779.cpp only READS TIM2 (pins).
+   - The rccEnableTIM2(FALSE) hits are in ChibiOS-Contrib (hal_qei/timcap/eicu)
+     which is NOT built (CHIBIOS = ChibiOS fork; its LLDs all pass lp=true).
+   - hal_lld_init: rccResetAPB1(~PWRRST) + stm32_clock_init (PLL + PPRE1/PPRE2)
+     run at boot, BEFORE main -> initAngleClock. No runtime PPRE1 reconfig.
+   - The only runtime RCC->CFGR write is m74_9AdcDivTest (bits [18:16] = ADC
+     divider, NOT PPRE1 [12:10]); manual console command.
+
+Conclusion: no source line explains the TMR2 slowdown. Remaining candidates are
+CRM/hardware-level clock gating (-> tim2clk EN=0/LPEN=0) or peripheral-state
+corruption outside this tree (-> tim2clk EN=1 LPEN=1 CEN=1 PSC=71 but T2d<<NTd).
+
+Open follow-ups:
+- Next car lockstats 'tim2clk' line decides between the two candidates.
+
 ## 2026-09-20 - m74_9: dwell lateArm ROOT CAUSE - TMR2 counts ~140000x too slow at runtime
 
 The 2026-09-19 failure-split telemetry pinned the root cause. New car log
