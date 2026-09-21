@@ -104,6 +104,8 @@ static uint32_t s_lateArmSpark = 0;
 static uint32_t s_lateArmInj   = 0;
 static uint32_t s_lateArmDwellGuard    = 0;  // armGuard refusal (no basis / stale phase)
 static uint32_t s_lateArmDwellTickPast = 0;  // target tick already in the past
+static uint32_t s_lateArmInjGuard      = 0;  // armGuard refusal (no basis / stale phase)
+static uint32_t s_lateArmInjTickPast   = 0;  // target tick already in the past
 static uint32_t s_maxLateTicks = 0;
 static uint32_t s_immediate    = 0;
 
@@ -475,6 +477,7 @@ TRIGGER_RAM_CODE bool angleClockArmInjection(int cyl, float targetAngle,
     float remaining; uint32_t delay;
     if (!armGuard(targetAngle, remaining, delay)) {
         s_lateArmInj++;
+        s_lateArmInjGuard++;
         return false;
     }
 
@@ -484,6 +487,7 @@ TRIGGER_RAM_CODE bool angleClockArmInjection(int cyl, float targetAngle,
     if (static_cast<int16_t>(atTick - cnt16) <
         static_cast<int16_t>(ARM_MARGIN_TICKS)) {
         s_lateArmInj++;
+        s_lateArmInjTickPast++;
         return false;
     }
 
@@ -682,6 +686,8 @@ uint32_t angleClockLateArmSpark()    { return s_lateArmSpark; }
 uint32_t angleClockLateArmInj()      { return s_lateArmInj; }
 uint32_t angleClockLateArmDwellGuard()    { return s_lateArmDwellGuard; }
 uint32_t angleClockLateArmDwellTickPast() { return s_lateArmDwellTickPast; }
+uint32_t angleClockLateArmInjGuard()      { return s_lateArmInjGuard; }
+uint32_t angleClockLateArmInjTickPast()   { return s_lateArmInjTickPast; }
 const DwellArmRefusal& angleClockDwellRefusal() { return s_dwellRefusal; }
 uint32_t angleClockMaxLateTicks()    { return s_maxLateTicks; }
 uint32_t angleClockImmediateFireCount() { return s_immediate; }
@@ -693,6 +699,7 @@ void angleClockResetStats() {
     s_firedDwell = s_firedSpark = s_firedInj = 0;
     s_lateArmDwell = s_lateArmSpark = s_lateArmInj = 0;
     s_lateArmDwellGuard = s_lateArmDwellTickPast = 0;
+    s_lateArmInjGuard = s_lateArmInjTickPast = 0;
     s_maxLateTicks = s_immediate = 0;
     s_dwellRefusal.branch = 0xFF;  // sentinel: no refusal since last reset
 }

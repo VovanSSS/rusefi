@@ -534,16 +534,20 @@ TRIGGER_RAM_CODE void scheduleSparkEvent(bool limitedSpark, IgnitionEvent *event
 		// each coil (counter 1..4) would otherwise read as counter - fall == 1
 		// at startup (observed: Coil 1 counter=1 fall=0 rev=0). Skip it.
 			if (fall != 0 && event->sparkCounter == fall + 1) {
-				efiPrintf("c9009diag coil=%s counter=%u fall=%u dwell=%.2f spark=%.2f cur=%.2f next=%.2f off=%.2f early=%d rpm=%d rev=%u gapCorr=%.2f",
+				// Print in tenths-of-a-degree integers: %f formatting (chprintf) is
+				// slow (~100 us per conversion) and this runs in the handoff ISR -
+				// 6x %f here would itself be a ~600 us stall (the exact 'затык'
+				// class that feeds inj lateArm). Integer scaling is ~1 cycle.
+				efiPrintf("c9009diag coil=%s counter=%u fall=%u dwell=%d spark=%d cur=%d next=%d off=%d early=%d rpm=%d rev=%u gapCorr=%d",
 					outputForDiag->getName(),
 					(unsigned)event->sparkCounter,
 					(unsigned)fall,
-					dwellAngle, sparkAngle,
-					currentPhase, nextPhase, angleOffset,
+					(int)(dwellAngle * 10.0f), (int)(sparkAngle * 10.0f),
+					(int)(currentPhase * 10.0f), (int)(nextPhase * 10.0f), (int)(angleOffset * 10.0f),
 					earlyWindow ? 1 : 0,
 					(int)Sensor::getOrZero(SensorType::Rpm),
 					(unsigned)getRevolutionCounter(),
-					getTriggerCentral()->gapAnchorCorrectionDeg);
+					(int)(getTriggerCentral()->gapAnchorCorrectionDeg * 10.0f));
 			}
 		}
 	}

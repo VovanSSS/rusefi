@@ -1153,6 +1153,11 @@ void setup_custom_board_overrides() {
 		efiPrintf("angclk dwell lateArm split: guard=%u tickPast=%u",
 			(unsigned)angleClockLateArmDwellGuard(),
 			(unsigned)angleClockLateArmDwellTickPast());
+		// Injection split (guard = phase/basis refusal, tickPast = handoff
+		// stall). The growing angclk inj lateArm is one of these two.
+		efiPrintf("angclk inj lateArm split: guard=%u tickPast=%u",
+			(unsigned)angleClockLateArmInjGuard(),
+			(unsigned)angleClockLateArmInjTickPast());
 		{
 			const DwellArmRefusal& r = angleClockDwellRefusal();
 			if (r.branch != 0xFF) {

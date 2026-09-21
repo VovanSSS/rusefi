@@ -141,6 +141,13 @@ uint32_t angleClockLateArmInj();
 uint32_t angleClockLateArmDwellGuard();     // armGuard: no basis OR stale phase
 uint32_t angleClockLateArmDwellTickPast();  // target tick already in the past
 
+// Same split for injection (TMR3): guard = armGuard refusal (no basis OR stale
+// phase = the resync/phase-jump class), tickPast = the target tick already
+// passed (the handoff-stall class). This discriminates the two hypotheses for
+// the growing angclk inj lateArm.
+uint32_t angleClockLateArmInjGuard();
+uint32_t angleClockLateArmInjTickPast();
+
 // Snapshot of the most recent failed dwell arm (see DwellArmRefusal).
 const DwellArmRefusal& angleClockDwellRefusal();
 uint32_t angleClockMaxLateTicks();
