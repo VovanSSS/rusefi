@@ -1,5 +1,36 @@
 # Work Report
 
+## 2026-09-21 - m74_9: c9009diag data - the `counter - fall == 1` double-schedule is a RESYNC/phase-re-anchor, at the CORRECT angle
+
+Car data from the `c9009diag` instrumentation (build 930d8e6bc59) settles the
+mechanism. Every running-case line shows `off` SMALL (0.3-2.2 deg) and
+`early=0`: the dwell is scheduled at the CORRECT dwellAngle, via
+`onTriggerEventSparkLogic`'s current window - NOT a wrong-angle arm. The
+`counter - fall == 1` burst affects ALL FOUR coils in firing order (phases
+148/328/508/688, 180 deg apart), each coil's next-cycle schedule landing one
+global slot after its own fire (fire at even counter, re-schedule at the odd
+counter immediately after).
+
+Interpretation: this is NOT a spark-logic bug and NOT a wrong-angle spark. At
+each fire `prepareCylinderIgnitionSchedule` clears `dwellStartArmed` and
+recomputes the (fixed) `dwellAngle`; a trigger re-sync re-anchors the phase so
+that dwellAngle "appears" in the very next tooth's window, re-scheduling the
+same coil one slot early. Sparks still fire at the correct crank position (`off`
+small), so ignition timing is unaffected - the symptom is the disturbed global
+counter relationship (C9009) and, plausibly, the same phase churn feeding
+`angclk inj lateArm` + the large `immediate=` counts (the user's hypothesis).
+
+The startup line (`Coil 1 counter=1 fall=0 rev=0`) is a FALSE POSITIVE: `fall=0`
+is the never-fired sentinel. FIXED (this session): the diagnostic now skips
+`fall == 0`.
+
+OPEN: pin the re-sync source. Run `synctrace` right after a C9009 (within ~2-3
+s, the ring holds ~32 sync events) and look for a `T` (toothloss) / `A`
+(earlygap) / `E` (error) sync event and its gap ratio at the C9009 moment;
+also confirm the cam input (PB9) is actually syncing (a periodic cam-sync
+loss + crank-only 360-deg ambiguity is the prime suspect). The fix then goes in
+the trigger decode, not in spark_logic.
+
 ## 2026-09-20 - m74_9: C9009 "skipped spark" - full analysis, suppression REVERTED, `counter - fall == 1` double-schedule to fix
 
 Follow-up to the dwell lateArm fix. The C9009 `looks like skipped spark event`

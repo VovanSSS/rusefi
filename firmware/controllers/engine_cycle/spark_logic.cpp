@@ -530,7 +530,10 @@ TRIGGER_RAM_CODE void scheduleSparkEvent(bool limitedSpark, IgnitionEvent *event
 		IgnitionOutputPin *outputForDiag = event->outputs[0];
 		if (outputForDiag) {
 			uint32_t fall = (uint32_t)outputForDiag->signalFallSparkId;
-			if (event->sparkCounter == fall + 1) {
+			// fall == 0 is the never-fired sentinel: the very first schedule of
+		// each coil (counter 1..4) would otherwise read as counter - fall == 1
+		// at startup (observed: Coil 1 counter=1 fall=0 rev=0). Skip it.
+			if (fall != 0 && event->sparkCounter == fall + 1) {
 				efiPrintf("c9009diag coil=%s counter=%u fall=%u dwell=%.2f spark=%.2f cur=%.2f next=%.2f off=%.2f early=%d rpm=%d rev=%u gapCorr=%.2f",
 					outputForDiag->getName(),
 					(unsigned)event->sparkCounter,
