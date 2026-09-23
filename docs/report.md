@@ -1,5 +1,40 @@
 # Work Report
 
+## 2026-09-23 - m74_9: runtime trigger-config re-read compiled out of the handoff (EFI_TRIGGER_CONFIG_RUNTIME_RELOAD=FALSE)
+
+Per the user's decision: the trigger configuration must not be re-read at
+runtime - the sync-tooth re-read in the handoff is a useless function. What
+it used to do (mainTriggerCallback, trgEventIndex==0):
+checkIfTriggerConfigChanged() - triggerVersion.isOld(globalConfigurationVersion)
+&& sticky triggerConfigChangedOnLastConfigurationChange - and on a hit force
+fuel/ignition schedule rebuilds + periodicFastCallback from the handoff ISR.
+
+Why it is useless on m74_9 (and the parity argument for compiling it out):
+- a configuration burn cannot happen while the engine runs -
+  custom_board_allowTsBurn gates on isStopped;
+- the trigger geometry is re-read synchronously at burn time:
+  onConfigurationChangeTriggerCallback -> updateTriggerConfiguration ->
+  applyShapesConfiguration + prepareOutputSignals, and prepareOutputSignals
+  already invalidates the fuel schedule;
+- the ignition schedule is invalidated by Engine::onEngineHasStopped and is
+  rebuilt lazily on the first running tooth (onTriggerEventSparkLogic ->
+  prepareIgnitionSchedule when !isReady);
+- periodicFastCallback runs at 200 Hz anyway - the manual call was a no-op
+  shortcut.
+
+Change inventory:
+| file | change |
+| --- | --- |
+| firmware/controllers/engine_cycle/main_trigger_callback.cpp | default EFI_TRIGGER_CONFIG_RUNTIME_RELOAD TRUE (shared - other boards unchanged); the trgEventIndex==0 re-read block wrapped in the flag; #else UNUSED(trgEventIndex) |
+| firmware/config/boards/m74_9/efifeatures.h | EFI_TRIGGER_CONFIG_RUNTIME_RELOAD FALSE with the rationale comment |
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL; arm-none-eabi-nm on
+firmware/build/rusefi.elf shows 0 checkIfTriggerConfigChanged symbols (LTO
+dropped both the function and the call site, so the re-read is gone from the
+binary, not just skipped). Follow-up: the saved cost is small (a few cycles
+once per revolution - this is cleanup, not the big per-tooth tax); the real
+cuts remain the apply_all/add sub-phase-histograms candidates.
+
 ## 2026-09-23 - m74_9: tooth-profile learner disabled at runtime (M74_9_TOOTH_PROFILE_LEARNER=0)
 
 First cut from the handoff decomposition of the same day: the per-tooth

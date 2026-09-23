@@ -24,6 +24,18 @@
  * copied from flash at boot (see AT32F435ZMxx.ld and board.c __early_init). */
 #define EFI_TRIGGER_IN_RAM TRUE
 
+/* Runtime trigger-config re-read in the handoff (checkIfTriggerConfigChanged
+ * on the sync tooth -> schedule rebuild + periodicFastCallback) is compiled
+ * out: on m74_9 a configuration burn can only happen while the engine is
+ * stopped (custom_board_allowTsBurn gates on isStopped), the trigger geometry
+ * is re-read synchronously at burn time via onConfigurationChangeTriggerCallback
+ * -> updateTriggerConfiguration (which also invalidates the fuel schedule),
+ * and the ignition schedule is rebuilt after engine stop / at the first
+ * running tooth. The trigger handoff therefore never touches the
+ * configuration at runtime. See main_trigger_callback.cpp (the shared default
+ * is TRUE - other boards keep the old behavior). */
+#define EFI_TRIGGER_CONFIG_RUNTIME_RELOAD FALSE
+
 /* TMR2 hardware angle clock (OC channels as software comparators, events
  * programmed one tooth ahead, fired by a priority-3 ISR): removes the
  * trigger-decode/handoff latency from the spark/injection timing chain.

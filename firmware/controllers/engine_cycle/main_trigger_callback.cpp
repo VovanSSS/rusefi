@@ -48,6 +48,22 @@
 
 #include "backup_ram.h"
 
+// Runtime trigger-config re-read in the handoff (see mainTriggerCallback
+// below): on the sync tooth the handoff used to check whether the trigger
+// configuration changed (checkIfTriggerConfigChanged) and, if so, force
+// schedule rebuilds + periodicFastCallback. That check is legacy - the
+// trigger geometry is already re-read synchronously at burn time
+// (onConfigurationChangeTriggerCallback -> updateTriggerConfiguration ->
+// prepareOutputSignals, which also invalidates the fuel schedule), the
+// ignition schedule is rebuilt after every engine stop
+// (Engine::onEngineHasStopped), and periodicFastCallback runs at 200 Hz.
+// Boards where a configuration burn cannot happen while the engine runs
+// (m74_9: custom_board_allowTsBurn gates on isStopped) compile the check out
+// so the per-tooth handoff path never touches the configuration at runtime.
+#ifndef EFI_TRIGGER_CONFIG_RUNTIME_RELOAD
+#define EFI_TRIGGER_CONFIG_RUNTIME_RELOAD TRUE
+#endif
+
 void endSimultaneousInjection(InjectionEvent* event) {
 	endSimultaneousInjectionOnlyTogglePins();
 	event->update();
@@ -408,6 +424,7 @@ TRIGGER_RAM_CODE void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edge
 	handleFuel(edgeTimestamp, currentPhase, nextPhase, nextNextPhase);
 	//  Dwell arm ran before the rpm==0 gate above (~5 µs elapsed, EFI_ANGLE_CLOCK).
 
+#if EFI_TRIGGER_CONFIG_RUNTIME_RELOAD
 	if (trgEventIndex == 0) {
 
 		if (getTriggerCentral()->checkIfTriggerConfigChanged()) {
@@ -420,6 +437,11 @@ TRIGGER_RAM_CODE void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edge
 			engine->periodicFastCallback();
 		}
 	}
+#else
+	// EFI_TRIGGER_CONFIG_RUNTIME_RELOAD=FALSE (m74_9): the trigger configuration
+	// is never re-read on a tooth - the handoff stays pure scheduling.
+	UNUSED(trgEventIndex);
+#endif
 
 	engine->engineModules.apply_all([=](auto & m) {
 		m.onEnginePhase(rpm, edgeTimestamp, currentPhase, nextPhase);
