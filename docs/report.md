@@ -13784,7 +13784,7 @@ all code-anchored
  # | item                                       | file:line            | every tooth | us (plain) | extra on scheduling tooth          | M/E
 ---|--------------------------------------------|----------------------|-------------|------------|-------------------------------------|----
  1 | queue pop under __disable_irq + tooSoonToHandleSignal + ISR entry (FUNCTIONAL delivery) | digital_input_exti.cpp / trigger_central.cpp:313 | yes | 2.5-3 | - | E
- 1b| boardRawTriggerEdge rawtrg ring (DIAGNOSTIC, optional) | m74_9_tooth_diag.cpp:273 | yes | ~0.5 | - | E
+ 1b| boardRawTriggerEdge rawtrg ring (DIAGNOSTIC, optional) | m74_9_tooth_diag.cpp:273 | yes | ~0.5 | - | E  (now compiled out: M74_9_RAWTRG_ENABLED=0, see the nr 4 entry)
  2 | polarity / isUsefulSignal / noiseFilter / isToothExpectedNow | trigger_central.cpp:594-980 | yes | 5.6 | -                    | M
  3 | decodeTriggerEvent (gap [1.6,3.75]+[0.85,1.15]) | decoder   | yes         | 10.1       | +longer on gap/sync teeth          | M
  4 | waveChart lookup (sniffer off ~0) + wrapAngle | trigger_central.cpp:1003-1009 | yes | ~0.8 | -                         | E
@@ -13802,6 +13802,11 @@ all code-anchored
  9h| angleClockRefresh (12 refreshChannel calls)  | angle_clock.cpp:602  | yes         | 7-10       | -                                  | E
  10| decodeMapCam                                 | :1095                | yes         | ~1         | -                                  | E
  11| boardTriggerCallback (learner compiled out)  | :1097                | yes         | ~0.5       | -                                  | E
+
+SUPERSEDED same day (nr 4 entry below): row 1b - boardRawTriggerEdge rawtrg
+capture is now behind M74_9_RAWTRG_ENABLED=0 and is compiled OUT of the
+ISR entry (zero cost); 'rawtrg' prints a stub. Flip to 1 + board rebuild
+for VRS-noise capture.
 
 Irreducible core ~27 us (items 1-3 + rpm + window checks + findNext).
 CANDIDATE nr 1: item 15 (apply_all) -> option B plan-from-onTdc, saves
@@ -13828,3 +13833,27 @@ degradation.
 - At 7000 rpm (tooth 147.8 us) the 56.6 us handoff occupies ~39% of the
 tooth and blocks pending TMR2/3/4 fires for its whole duration - all
 handoff savings convert directly into high-rpm angle precision.
+
+## 2026-09-23 (evening, nr 4) - rawtrg edge capture behind a compile-time switch (M74_9_RAWTRG_ENABLED=0)
+
+- What: the rawtrg digital oscilloscope (boardRawTriggerEdge ring write in
+  m74_9_tooth_diag.cpp) is now behind M74_9_RAWTRG_ENABLED, default 0.
+  When 0 the capture, the 2048-entry ring, its RAM AND the call site are
+  compiled out of the trigger handoff - zero per-tooth cost. This removes
+  the last purely-diagnostic work from the handoff entry: ~0.5-1 us per
+  edge of the ~3-4 us ISR-entry figure in the tables above.
+- The 'rawtrg' console action stays registered in board_configuration.cpp
+  and prints a one-line stub ('disabled in this build... rebuild with 1'),
+  so the knob stays discoverable.
+- Enable: set M74_9_RAWTRG_ENABLED 1 in m74_9_tooth_diag.cpp (next to
+  M74_9_TOOTH_PROFILE_LEARNER) and recompile the board (compile_m74_9.sh).
+  Do the snap-throttle-off / VRS-noise captures on a dedicated build, then
+  roll back to 0 for everyday driving.
+- Also fixed along the way: the writer now (void)-casts the unused args in
+  the disabled branch (no -Wunused-parameter noise at -Werror).
+- Validation: compile_m74_9.sh BUILD SUCCESSFUL. nm: rawEdgeRing /
+  rawEdgeHead / rawEdgeCount symbols gone from the ELF, only
+  m74_9RawTriggerDump (the stub) remains. objdump hwHandleShaftSignal:
+  the ISR entry is now prologue + tooSoonToHandleSignal + two gates +
+  direct handleShaftSignal - no bl to boardRawTriggerEdge anywhere in the
+  trigger path (LTO dropped the empty call). log lines: none.

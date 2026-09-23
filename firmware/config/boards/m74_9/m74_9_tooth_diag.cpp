@@ -49,6 +49,22 @@
 #define M74_9_TOOTH_PROFILE_LEARNER 0
 
 /**
+ * Raw trigger edge capture switch (the 'rawtrg' digital oscilloscope).
+ *
+ * 0 (default): the per-edge capture is compiled OUT of the top-priority
+ *   trigger handoff entirely - zero runtime cost, and the ring RAM is not
+ *   allocated. The 'rawtrg' console action stays registered and prints a
+ *   one-line explanation instead of a capture. The handoff budget at
+ *   7000 rpm is ~39% of a tooth, so every removed store keeps pending
+ *   TMR2/3/4 fires earlier.
+ *
+ * 1: re-enable the capture (full board rebuild required). Set this during
+ *   VRS-noise investigations - the snap-throttle-off rawtrg capture is
+ *   still an open diagnostic item.
+ */
+#define M74_9_RAWTRG_ENABLED 0
+
+/**
  * RPM-adaptive trigger input debounce - the software half of the stock ECU's
  * adaptive VR conditioning. The stock ECU moves the conditioner's THRESHOLD
  * with signal amplitude; we cannot move the board's fixed comparator
@@ -258,7 +274,12 @@ void printRawRevolutions() {
 // output. Every hardware edge on the primary crank input is recorded with its
 // NT timestamp BEFORE the debounce and the decoder see it - the true noise
 // picture (what the debounce drops included). Dumped with 'rawtrg'.
+// Gate: M74_9_RAWTRG_ENABLED (see the define above) - when 0, the capture,
+// the ring and its RAM are compiled out and 'rawtrg' prints a stub.
 
+#if M74_9_RAWTRG_ENABLED
+
+// 2048 NT-timestamped edges: ~2 min of cranking teeth, ~0.2 s at 7000 rpm.
 constexpr size_t RawEdgeRingSize = 2048;
 
 struct RawEdgeRecord {
@@ -270,7 +291,10 @@ static RawEdgeRecord rawEdgeRing[RawEdgeRingSize];
 static size_t rawEdgeHead = 0;
 static size_t rawEdgeCount = 0;
 
+#endif // M74_9_RAWTRG_ENABLED
+
 TRIGGER_RAM_CODE void boardRawTriggerEdge(int signalIndex, bool isRising, efitick_t timestamp) {
+#if M74_9_RAWTRG_ENABLED
 	if (signalIndex != 0) {
 		return; // primary crank input only
 	}
@@ -278,9 +302,16 @@ TRIGGER_RAM_CODE void boardRawTriggerEdge(int signalIndex, bool isRising, efitic
 	rawEdgeRing[rawEdgeHead] = {timestamp, isRising};
 	rawEdgeHead = (rawEdgeHead + 1) % RawEdgeRingSize;
 	rawEdgeCount++;
+#else
+	// Capture compiled out: zero per-tooth cost in the top-priority handoff.
+	(void)signalIndex;
+	(void)isRising;
+	(void)timestamp;
+#endif // M74_9_RAWTRG_ENABLED
 }
 
 void m74_9RawTriggerDump() {
+#if M74_9_RAWTRG_ENABLED
 	size_t valid = rawEdgeCount < RawEdgeRingSize ? rawEdgeCount : RawEdgeRingSize;
 	if (valid < 2) {
 		efiPrintf("rawtrg: no edges captured");
@@ -371,6 +402,9 @@ void m74_9RawTriggerDump() {
 	}
 	efiPrintf("rawtrg hist: <50us=%d 50-100=%d 100-200=%d 200-500=%d 500-1k=%d 1-2k=%d 2-4k=%d >4k=%d",
 		(int)h50, (int)h100, (int)h200, (int)h500, (int)h1m, (int)h2m, (int)h4m, (int)hUp);
+#else // M74_9_RAWTRG_ENABLED
+	efiPrintf("rawtrg disabled in this build: M74_9_RAWTRG_ENABLED=0 in m74_9_tooth_diag.cpp (capture compiled out, zero handoff cost); rebuild with 1 to capture VRS noise");
+#endif // M74_9_RAWTRG_ENABLED
 }
 
 // ---- decoder sync-event trace ----
