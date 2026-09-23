@@ -109,13 +109,6 @@ enum class SensorType : unsigned char {
 
 	Maf2,	// Second bank MAF sensor
 
-	// todo: finish implementation?
-	Map2,
-	MapSlow2,
-	MapFast2,
-	MapFast3,
-	MapFast4,
-
 	// Pressure sensor after compressor, before intercooler
 	CompressorDischargePressure,
 	CompressorDischargeTemperature,

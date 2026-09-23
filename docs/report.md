@@ -1,5 +1,34 @@
 # Work Report
 
+## 2026-09-24 - cleanup pass: orphaned EngineModule::onEnginePhase + Map2/MapSlow2/MapFast2..4 SensorType values removed
+
+Follow-up to the Variant A commit: the two deferred cleanups are done.
+
+- EngineModule::onEnginePhase virtual removed from engine_module.h (no
+  overrides remained after the apply_all removal; the one-tooth-ahead comment
+  was stale). EngineModule is now tooth-hook free.
+- SensorType enum values Map2, MapSlow2, MapFast2, MapFast3, MapFast4 removed
+  from sensor_type.h; sensor_checker no longer checks Map2. Regenerated via
+  gen_enum_to_string.sh and committed per repo convention (the b4cd508590b
+  precedent): firmware/controllers/sensors/auto_generated_sensor.cpp and
+  java_console/io/.../enums/SensorType.java.
+- MAP console surface UNCHANGED by design: SensorType::Map (the gauge value)
+  and its feeds MapFast/MapSlow stay; the console SensorType enum keeps them
+  after regen - the console MAP gauge keeps working.
+
+Change inventory:
+| file | change |
+| --- | --- |
+| firmware/controllers/core/engine_module.h | onEnginePhase virtual removed |
+| firmware/controllers/sensors/sensor_type.h | Map2/MapSlow2/MapFast2/MapFast3/MapFast4 removed |
+| firmware/controllers/sensors/sensor_checker.cpp | check(SensorType::Map2) removed |
+| firmware/controllers/sensors/auto_generated_sensor.cpp | regenerated (enum_to_string) |
+| java_console/io/src/main/java/com/rusefi/enums/SensorType.java | regenerated |
+
+Validation: unit tests GCC 1160 pass / 12 fail (the same 12 pre-existing),
+SensorInit.Map + MAP/misfire targets green; unit tests clang clean; m74_9
+board build BUILD SUCCESSFUL.
+
 ## 2026-09-24 - m74_9: Variant A mass pipeline (single MAP window) + MAP/misfire moved out of the handoff
 
 Implements the agreed plan (docs/plan_variant_a_mass_pipeline.md). Per user
@@ -78,13 +107,13 @@ BUILD SUCCESSFUL. NOT car-tested yet: watch lockstats postDecode (expect the
 window start (startAveraging) on-time behavior with the once-per-cycle
 planning, and the misfire live-data at idle.
 
-Open follow-ups recorded: (1) EngineModule::onEnginePhase virtual hook is now
-unused - candidate for removal in a later pass; (2) SensorType enum values
-MapFast2..4/Map2/MapSlow2 still exist for the registry/tooling - purge
-separately if wanted; (3) MAP window accel drift (option-B conversion a full
-cycle ahead) can be tightened later by moving the planner to an angle-queue
-consumer if a knob shows up on the car; (4) misfire segment precision vs the
-old edge-timestamp version to be judged on the car at idle.
+Open follow-ups recorded: (1) EngineModule::onEnginePhase virtual hook - DONE
+(same-day cleanup commit); (2) SensorType enum values MapFast2..4/Map2/MapSlow2
+- DONE (same-day cleanup commit, enum_to_string regen, console MAP surface
+kept); (3) MAP window accel drift (option-B conversion a full cycle ahead) can
+be tightened later by moving the planner to an angle-queue consumer if a knob
+shows up on the car; (4) misfire segment precision vs the old edge-timestamp
+version to be judged on the car at idle.
 
 ## 2026-09-23 - m74_9: MAP sampling windows scheduled one tooth ahead (variant A implemented)
 

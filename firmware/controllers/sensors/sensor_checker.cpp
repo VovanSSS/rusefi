@@ -195,7 +195,6 @@ void SensorChecker::onSlowCallback() {
 	check(SensorType::AcceleratorPedal);
 
 	check(SensorType::Map);
-	check(SensorType::Map2);
 
 	check(SensorType::Clt);
 	check(SensorType::Iat);
