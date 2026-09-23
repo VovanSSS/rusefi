@@ -1,5 +1,81 @@
 # Work Report
 
+## 2026-09-23 - m74_9: engineModules.apply_all in the handoff - detailed mechanics and relocation options
+
+Follow-up to the handoff decomposition: how exactly the per-tooth
+engineModules.apply_all call works, what really executes in the handoff, and
+the options for moving it out. All code-verified.
+
+Mechanics:
+- engineModules is a type_list<...> of ~24 modules (engine.h L158 + the
+  modules/generated/modules_list_generated.h entries: TachometerModule,
+  FuelPumpController, GearDetector, TripOdometer, FanControl1/2,
+  MapAveragingModule, ExampleModule, SdLogTrigger; stubs/board_modules_list.h
+  is empty for m74_9). apply_all (type_list.h L71) template-expands to a
+  DIRECT m.onEnginePhase(rpm, edgeTimestamp, currentPhase, nextPhase) call
+  per module on EVERY synchronized tooth.
+- EngineModule::onEnginePhase is virtual with an empty default (engine_module.h
+  L67). ONLY MapAveragingModule and MisfireController override it - the other
+  ~22 modules receive a virtual no-op call each per tooth (vtable load + call
+  + ret): a fixed per-tooth tax, part of the ~34 us postDecode.
+- Call site: main_trigger_callback.cpp L424, between handleFuel and
+  onTriggerEventSparkLogic - runs on every tooth including storm teeth.
+
+MapAveragingModule::onEnginePhase (map_averaging.cpp L215-243) - what is IN
+the handoff vs NOT:
+- NOT in the handoff: the window angles are precomputed at 200 Hz in
+  onFastCallback (mapAveragingStart[i] = samplingAngle(rpm) + cylinderOffset,
+  mapAveragingDuration); MAP samples arrive from the fast ADC callback
+  (mapAveragingAdcCallback, ~6 kHz); the averaging math runs in
+  MapAverager::stop() -> endAveraging on the TIM5 executor.
+- IN the handoff: 4x isPhaseInRange(mapAveragingStart[i], currentPhase,
+  nextPhase) every tooth; on a window hit (4x per cycle)
+  scheduleByAngle(&s.timer, edgeTimestamp, angleOffset, startAveraging) ->
+  engine->scheduler.schedule -> TIM5 executor insert under a
+  CriticalSectionLocker (the BASEPRI section blocks TMR2/3/4 fires while
+  held). startAveraging later re-plans endAveraging on TIM5. So the handoff
+  only CATCHES the window-in-current-tooth match and re-plans by time; it
+  performs no averaging work.
+
+MisfireController::onEnginePhase (misfire_detection.cpp L199-268):
+- gated on misfireDetectionEnabled && idle (IdleController::isIdling) &&
+  seeded && settled - when disabled in the tune it costs one branch per
+  tooth;
+- when active: per cylinder tdc + windowStart/End offsets, 2x wrapAngle,
+  isPhaseInRange on both segment edges, and on segment close
+  evaluateSegment(segUs) runs IN THE HANDOFF - EMA baseline + asymmetric
+  alphas + wobble EMA + N-of-M rate window + optional registerMisfire -
+  dozens of float ops, 4 segments per cycle. This is the one genuinely heavy
+  handoff consumer in apply_all when misfire is enabled at idle.
+
+Why handoff time is not needed here:
+- the window start needs no better than +-1 tooth of precision: MAP is a
+  shared plenum, the sampling window is 30-50 deg vs a 6 deg tooth, and the
+  averaged value does not change over one tooth;
+- scheduleByAngle already plans an ABSOLUTE time on TIM5 (edgeTimestamp +
+  angleOffset x oneDegreeUs) - the handoff is only used to detect the
+  current-tooth window coincidence, which can equally be detected one tooth
+  earlier;
+- the executor insert takes a CriticalSectionLocker inside the handoff -
+  synchronization that blocks the prio-4 fires while held - an argument to
+  move it out, not to keep it.
+
+Relocation options:
+- A (recommended, the dwell pattern): look for the window in [nextPhase,
+  nextNextPhase) - one tooth ahead - instead of [currentPhase, nextPhase),
+  mirroring scheduleDwellEarlyIfDue; the MAP window then shifts 0-6 deg,
+  irrelevant for averaging; keep the current-tooth window as the
+  first-cycle-after-sync fallback like dwell/injection do;
+- B: compute all 4 window starts once per engine revolution and schedule all
+  4 startAveraging events on TIM5 from the onTdc context - zero extra
+  per-tooth work in the handoff, same precision;
+- C (worse): call apply_all from the executor with phase data ferried from
+  the handoff - duplicates the phase transport into another ISR.
+
+Open: implement A (and decide whether misfire moves together or stays - its
+segment timing uses the same trigger-edge pairs, but the evaluateSegment
+timing requirement is looser than MAP's).
+
 ## 2026-09-23 - m74_9: runtime trigger-config re-read compiled out of the handoff (EFI_TRIGGER_CONFIG_RUNTIME_RELOAD=FALSE)
 
 Per the user's decision: the trigger configuration must not be re-read at
