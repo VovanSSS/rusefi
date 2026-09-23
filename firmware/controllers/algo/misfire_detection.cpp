@@ -15,6 +15,9 @@
 #include "idle_thread.h"
 #include "malfunction_central.h"
 #include "efilib.h"
+#include "engine_math.h"
+#include "rpm_calculator.h"
+#include "trigger_central.h"
 
 // Fallbacks when config fields are zero or out of range.
 static constexpr float MISFIRE_EMA_ALPHA_RISE_DEFAULT    = 0.05f;
@@ -26,6 +29,17 @@ static constexpr float MISFIRE_WOBBLE_ALPHA_FALL_DEFAULT = 0.01f;
 // (e.g. bench tests with perfectly uniform synthetic teeth). With K=3, 50µs gives a 150µs
 // minimum margin -- roughly 1° at 1500 RPM, comfortably below any real misfire signature.
 static constexpr float MISFIRE_WOBBLE_FLOOR_US           = 50.0f;
+
+namespace {
+// Executor actions for the per-cylinder segment boundary events.
+void misfireSegmentStartAction(uint8_t cylinderNumber) {
+	engine->module<MisfireController>()->captureSegmentStart(cylinderNumber, getTimeNowNt());
+}
+
+void misfireSegmentEndAction(uint8_t cylinderNumber) {
+	engine->module<MisfireController>()->finishSegment(cylinderNumber, getTimeNowNt());
+}
+} // namespace
 
 void MisfireController::resetDetectionState() {
 	for (size_t i = 0; i < MAX_CYLINDER_COUNT; i++) {
@@ -50,6 +64,27 @@ void MisfireController::onEngineStop() {
 	// Prepare for the next start: drop the baseline, rate-test window and segment timers.
 	// misfireTotalCount and the MIL latch persist until power cycle.
 	resetDetectionState();
+}
+
+void MisfireController::captureSegmentStart(uint8_t cylinderNumber, efitick_t nowNt) {
+	// The start of cylinder N's expansion-stroke segment (fired on the executor
+	// at the segment's scheduled start angle).
+	m_segStart[cylinderNumber] = nowNt;
+	m_segActive[cylinderNumber] = true;
+}
+
+void MisfireController::finishSegment(uint8_t cylinderNumber, efitick_t nowNt) {
+	// Evaluate the segment of the cylinder that ALREADY fired: its expansion
+	// window just closed. Segment time is executor-based (both boundaries fire
+	// on the TIM5 executor) - the documented precision tradeoff of moving the
+	// detector out of the handoff.
+	if (!m_segActive[cylinderNumber]) {
+		return;
+	}
+
+	m_segActive[cylinderNumber] = false;
+	float segUs = NT2US((float)(nowNt - m_segStart[cylinderNumber]));
+	evaluateSegment(segUs);
 }
 
 void MisfireController::recordFiring(bool flagged) {
@@ -196,9 +231,7 @@ void MisfireController::evaluateSegment(float segDurationUs) {
 	}
 }
 
-void MisfireController::onEnginePhase(float /*rpm*/, efitick_t edgeTimestamp,
-									  angle_t currentPhase, angle_t nextPhase,
-									  angle_t /*nextNextPhase*/) {
+void MisfireController::scheduleNextCycleSegments() {
 	bool enabled = engineConfiguration->misfireDetectionEnabled;
 #if EFI_IDLE_CONTROL
 	bool idle = engine->module<IdleController>()->isIdling;
@@ -210,6 +243,13 @@ void MisfireController::onEnginePhase(float /*rpm*/, efitick_t edgeTimestamp,
 	misfireDetectionActive = monitoring && m_emaSeeded && isSettled();
 
 	if (!monitoring) {
+		// Drop the boundary events still pending from the last plan: a segment
+		// must not fire (and evaluate) after leaving idle.
+		for (size_t i = 0; i < MAX_CYLINDER_COUNT; i++) {
+			engine->scheduler.cancel(&m_segStartEvent[i]);
+			engine->scheduler.cancel(&m_segEndEvent[i]);
+		}
+
 		// Reset transient detection state once when leaving idle so a later re-idle
 		// re-seeds baselines instead of judging against stale norms.
 		if (m_wasMonitoring) {
@@ -244,7 +284,20 @@ void MisfireController::onEnginePhase(float /*rpm*/, efitick_t edgeTimestamp,
 	}
 	m_windowTooNarrow = false;
 
+	float rpm = Sensor::getOrZero(SensorType::Rpm);
+	if (rpm == 0) {
+		return;
+	}
+
+	// Schedule the segment events relative to the TDC mark (engine phase =
+	// tdcPosition()) once per engine cycle, like the MAP windows. Both boundary
+	// events fire on the TIM5 executor - the segment is timed between executor
+	// fire times, and each end event evaluates the segment of the cylinder that
+	// already fired.
+	efitick_t nowNt = getTimeNowNt();
+	angle_t tdcPhase = tdcPosition();
 	size_t cylCount = engineConfiguration->cylindersCount;
+
 	for (size_t i = 0; i < cylCount; i++) {
 		// getAngleOffset() gives each cylinder's TDC reference within the engine cycle
 		// (handles firing order + odd-fire). The window sits in the expansion stroke.
@@ -255,22 +308,29 @@ void MisfireController::onEnginePhase(float /*rpm*/, efitick_t edgeTimestamp,
 		angle_t windowEnd = tdc + windowEndOffset;
 		wrapAngle(windowEnd, "misfireEnd", ObdCode::CUSTOM_ERR_6562);
 
-		if (isPhaseInRange(windowStart, currentPhase, nextPhase)) {
-			m_segStart[i] = edgeTimestamp;
-			m_segActive[i] = true;
+		angle_t startOffset = windowStart - tdcPhase;
+		wrapAngle(startOffset, "misfireStartOffset", ObdCode::CUSTOM_ERR_6562);
+		angle_t segmentWidth = windowEnd - windowStart;
+		if (segmentWidth < 0) {
+			segmentWidth += getEngineState()->engineCycle;
 		}
+		angle_t endOffset = startOffset + segmentWidth;
 
-		if (m_segActive[i] && isPhaseInRange(windowEnd, currentPhase, nextPhase)) {
-			m_segActive[i] = false;
-			float segUs = NT2US((float)(edgeTimestamp - m_segStart[i]));
-			evaluateSegment(segUs);
-		}
+		// Re-planning (a new cycle) can overtake events still pending from the
+		// previous plan under hard acceleration: cancel before re-arming the slot.
+		engine->scheduler.cancel(&m_segStartEvent[i]);
+		engine->scheduler.cancel(&m_segEndEvent[i]);
+
+		scheduleByAngle(&m_segStartEvent[i], nowNt, startOffset, action_s::make<misfireSegmentStartAction>(static_cast<uint8_t>(i)));
+		scheduleByAngle(&m_segEndEvent[i], nowNt, endOffset, action_s::make<misfireSegmentEndAction>(static_cast<uint8_t>(i)));
 	}
 }
 
 #else // !EFI_MISFIRE_DETECTION
 
-void MisfireController::onEnginePhase(float, efitick_t, angle_t, angle_t, angle_t) {}
+void MisfireController::scheduleNextCycleSegments() {}
+void MisfireController::captureSegmentStart(uint8_t, efitick_t) {}
+void MisfireController::finishSegment(uint8_t, efitick_t) {}
 void MisfireController::onEngineStop() {}
 void MisfireController::evaluateSegment(float) {}
 void MisfireController::registerMisfire() {}

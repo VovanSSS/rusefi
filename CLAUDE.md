@@ -527,7 +527,32 @@ Key differences vs FALSE build:
 - lockstats: sched dwell=0, spark=0 (on TMR2/TMR4); sched fuel=~0 (closes on CC2);
   injCC2 scheduled==fired in stable running (gap=0)
 
-### MAP averaging architecture and sniffer n/a (analysed 2026-09-01)
+### MAP/misfire out of the handoff + Variant A single-window mass pipeline (IMPLEMENTED 2026-09-24) - SUPERSEDES the 2026-09-01 "MAP averaging architecture" section below
+
+Agreed plan: docs/plan_variant_a_mass_pipeline.md. User semantics: ONE MAP window that passes through the cylinder phase regions in firing order and is "filled by the previous cylinder" - 4 closes per cycle (~180 deg apart), 4 mapPerCylinder[] records, and the next cycle's first cylinder picks up the last window of the previous cycle (continuous chain). Single averager = SensorType::MapFast; fastMapSensor2..4 + mapCombiner2 removed from init_map.cpp (SensorType enum values intentionally untouched).
+
+Mass pipeline (Variant A):
+- engineState: `referenceMap` (kPa, TS channel - the MAP the 200 Hz pipeline computed the reference mass against) + `injectionMassMapBasis[MAX]` - which MAP each stored injectionMass[c] was last scaled against (INVARIANT: injectionMass[c] is consistent with basis[c]).
+- periodicFastCallback: injectionMass[c] stored in REFERENCE units for all cylinders (per-cyl MapFast2/3/4 ratio block REMOVED), basis[c] = referenceMap.
+- endAveraging (TIM5 executor, prio 5): `float fresh = arg->stop()` -> rescale the FIRING-ORDER SUCCESSOR: injectionMass[S] *= fresh / basis[S]; basis[S] = fresh. successor = minimal positive angle offset over cylinders[i].getAngleOffset(): 1-3-4-2 maps 0->2, 2->3, 3->1, 1->0.
+- InjectionEvent::onTriggerTooth (handoff): ONE multiply `mass *= MapFast / basis[c]` via refreshInjectionMassForCylinder() - LOCAL only (never write stored state from the handoff - the 200 Hz loop and the executor own the pair). The basis makes the two updates composable: without it the single shared window would enter the mass TWICE whenever a window close and a scheduling tooth straddle a 200 Hz tick (systematic above ~4000 rpm). Non-SD modes pass through unchanged.
+
+Out of the handoff:
+- MapAveragingModule::onEnginePhase and MisfireController::onEnginePhase are GONE (they were the only real apply_all users); the per-tooth `engineModules.apply_all` call is deleted from mainTriggerCallback. EngineModule::onEnginePhase virtual hook unused now - removal candidate.
+- tdcMarkCallback (handoff) schedules the once-per-engine-cycle TDC executor event when `isEngineSnifferEnabled || isMapAveragingEnabled || misfireDetectionEnabled` (both off = identical prior behavior, no extra handoff insert). onTdcCallback (executor) calls MapAveragingModule::scheduleNextCycleWindows() + MisfireController::scheduleNextCycleSegments().
+- Both planners convert angle->time a full cycle ahead via scheduleByAngle (offset = wrap(angle - tdcPosition())) - the documented option-B accel drift; they CANCEL a slot's pending event before re-arming (a re-plan under hard accel must never double-insert the scheduling_s node - the tdcScheduler revIndex2 comment in tdcMarkCallback documents exactly this hazard class).
+- Misfire: ~2N executor events per cycle (segment start/end per cylinder); each end evaluates the segment of the cylinder that ALREADY fired (semantics preserved from the old window-close crossing). Segment time is executor fire time, not trigger edge - accepted tradeoff (symmetric bias absorbed by the EMA, +/-10-100 us jitter vs 1-3 ms misfire signal at idle). Leaving idle cancels the pending segment events. Window-width configError check now runs once per cycle in the planner.
+- MAP window start precision: executor-dispatched pre-planned events (us-class); the old "~100% late at the window boundary" (08-23) was an INSERT-time problem, not a dispatch problem - pre-planning fixes it without the one-tooth-ahead handoff arm (that 09-23 variant-A machinery is now deleted with onEnginePhase).
+
+TEST GOTCHAS (durable):
+- The mock executor (TestExecutor::executeAll) fires ALL due events at ONE frozen `nowNt` - a segment timed by pairing two executor events (misfire boundaries) collapses to 0 unless the test steps the clock (1 ms moveTimeForwardMs + executeActions per step) so the events fire at distinct instants.
+- LinearFunc::convert REJECTS outputs outside [minOutput, maxOutput]: a test converter configured with 0/0 bounds returns unexpected for every sample - pass wide error bounds.
+- EngineTestHelper::assertEventExistsAtEnginePhase matches by callback only and returns the FIRST match - useless for several events sharing one callback (the 4 MAP window starts); walk the queue with scheduler.getForUnitTest(i) and compare offsets instead.
+- misfireDetectionActive is computed ONCE per cycle AT PLAN TIME - after seeding segments it turns true only on the NEXT planner pass; a test must re-plan before asserting.
+
+Expected handoff win: ~22 virtual calls + 4x isPhaseInRange + evaluateSegment (35-70 us on scheduling teeth) -> ~2 executor inserts per cycle. Car validation pending (lockstats postDecode 50-100 us share should drop below the prior ~1.9-2.3% band; misfire live-data at idle).
+
+### MAP averaging architecture and sniffer n/a (analysed 2026-09-01, SUPERSEDED 2026-09-24)
 
 **How MAP windows are scheduled.** `MapAveragingModule::onEnginePhase` is called on EVERY valid trigger tooth via `engineModules.apply_all`. Since 2026-09-23 (variant A) it schedules `startAveraging` for any slot whose angle falls in the EARLY window `[nextPhase, nextNextPhase)` - one tooth ahead, the dwell pattern; the `[currentPhase, nextPhase)` window stays as the first-cycle-after-sync fallback, and `mapSampler.startArmedNt` suppresses the duplicate while the early arm is still in the future. Before that it scheduled in `[currentPhase, nextPhase)` only and startAveraging fired ~100% late at the window boundary (2026-08-23 lockstats: maxLateUs 22.7 ms); the window now starts up to ~6 deg early but ON TIME. The slot angles are precomputed in `onFastCallback` (200 Hz):
 

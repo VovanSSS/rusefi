@@ -32,6 +32,7 @@
 
 #include "map_averaging.h"
 #include "trigger_central.h"
+#include "engine_math.h"
 
 
 /**
@@ -57,7 +58,6 @@ static bool hasEverDecodedMap = false;
 
 static void endAveraging(MapAverager* arg);
 
-static size_t currentMapAverager = 0;
 
 void startAveraging(mapSampler* s) {
     if (!engine->engineState.mapAveragingDuration) {
@@ -66,8 +66,11 @@ void startAveraging(mapSampler* s) {
     }
 	efiAssertVoid(ObdCode::CUSTOM_ERR_6649, hasLotsOfRemainingStack(), "lowstck#9");
 
-	currentMapAverager = s->cylinderNumber % SAMPLER_DIMENSION;
-	auto& averager = getMapAvg(currentMapAverager);
+	// Variant A single window: every cylinder phase region feeds ONE averager.
+	// The window is attributed to the cylinder whose region it samples - the
+	// PREVIOUS cylinder, relative to the next injection - and its close feeds
+	// the firing-order successor's mass (see endAveraging).
+	auto& averager = getMapAvg(0);
 	averager.start(s->cylinderNumber);
 
 	mapAveragingPin.setHigh();
@@ -107,7 +110,7 @@ float filterMapValue(float value) {
   return expAverage.initOrAverage(value);
 }
 
-void MapAverager::stop() {
+float MapAverager::stop() {
 	chibios_rt::CriticalSectionLocker csl;
 
 	m_isAveraging = false;
@@ -127,13 +130,17 @@ void MapAverager::stop() {
 				minPressure = averagedMapRunningBuffer[i];
 		}
 
-    engine->outputChannels.mapPerCylinder[m_cylinderNumber] = minPressure;
+		engine->outputChannels.mapPerCylinder[m_cylinderNumber] = minPressure;
 		setValidValue(filterMapValue(minPressure), getTimeNowNt());
+
+		return minPressure;
 	} else {
 #if EFI_PROD_CODE
 		warning(ObdCode::CUSTOM_UNEXPECTED_MAP_VALUE, "No MAP values to average");
 #endif
 	}
+
+	return 0;
 }
 
 #if HAL_USE_ADC
@@ -146,7 +153,7 @@ void MapAverager::stop() {
 void mapAveragingAdcCallback(float instantVoltage) {
 	efiAssertVoid(ObdCode::CUSTOM_ERR_6650, hasLotsOfRemainingStack(), "lowstck#9a");
 
-	SensorResult mapResult = getMapAvg(currentMapAverager).submit(instantVoltage);
+	SensorResult mapResult = getMapAvg(0).submit(instantVoltage);
 
 	if (!mapResult) {
 		// The very first fast-ADC samples can arrive before the MAP sensor
@@ -173,11 +180,94 @@ void mapAveragingAdcCallback(float instantVoltage) {
 }
 #endif
 
+// Scale the stored injectionMass of one cylinder against a fresh MAP window
+// value, relative to the basis the stored mass was last based on. The basis
+// bookkeeping keeps this composable with the 200 Hz pipeline (which rewrites
+// injectionMass[c] in reference units every tick): any interleaving of
+// ticks and window closes applies each window value exactly once - MAP can
+// never enter the mass twice (the otherwise-systematic double-application of
+// the single shared window).
+static void rescaleInjectionMass(uint8_t cylinderNumber, float freshMap) {
+	if (engineConfiguration->fuelAlgorithm != engine_load_mode_e::LM_SPEED_DENSITY) {
+		return;
+	}
+
+	if (freshMap <= 0) {
+		return;
+	}
+
+	float basis = engine->engineState.injectionMassMapBasis[cylinderNumber];
+	if (basis <= 0) {
+		return;
+	}
+
+	engine->engineState.injectionMass[cylinderNumber] *= freshMap / basis;
+	engine->engineState.injectionMassMapBasis[cylinderNumber] = freshMap;
+}
+
 static void endAveraging(MapAverager* arg) {
-	arg->stop();
+	float freshWindowMap = arg->stop();
+
+	// Variant A: the just-closed window fixed the freshest pressure. The window
+	// belongs to the previous cylinder (arg->getCylinderNumber()); recompute the
+	// mass of the FIRING-ORDER SUCCESSOR - the next cylinder whose injection is
+	// armed - from it. Runs on the TIM5 executor (prio 5): zero handoff cost.
+	// The chain is continuous across the cycle boundary: the last window of a
+	// cycle feeds the first cylinder of the next one.
+	rescaleInjectionMass(MapAveragingModule::firingOrderSuccessor(arg->getCylinderNumber()), freshWindowMap);
 
 	engine->outputChannels.isMapAveraging = false;
 	mapAveragingPin.setLow();
+}
+
+float refreshInjectionMassForCylinder(uint8_t cylinderNumber, float mass) {
+	if (engineConfiguration->fuelAlgorithm != engine_load_mode_e::LM_SPEED_DENSITY) {
+		return mass;
+	}
+
+	// The ONE window: MapFast holds the freshest closed window value (the
+	// previous cylinder's average per the 180-degree update chain) and
+	// injectionMassMapBasis[cyl] is the MAP value the stored mass was last
+	// based on - referenceMap after the 200 Hz refresh, the just-closed window
+	// value after endAveraging rescaled this cylinder.
+	const float freshMap = Sensor::getOrZero(SensorType::MapFast);
+	const float basis = engine->engineState.injectionMassMapBasis[cylinderNumber];
+
+	if (freshMap > 0 && basis > 0) {
+		mass *= freshMap / basis;
+	}
+
+	return mass;
+}
+
+uint8_t MapAveragingModule::firingOrderSuccessor(uint8_t cylinderNumber) {
+	size_t count = engineConfiguration->cylindersCount;
+	if (count <= 1) {
+		return cylinderNumber;
+	}
+
+	angle_t tdc = engine->cylinders[cylinderNumber].getAngleOffset();
+
+	uint8_t best = cylinderNumber;
+	float bestDelta = 720.0f + 1.0f;
+
+	for (size_t i = 0; i < count; i++) {
+		if (i == cylinderNumber) {
+			continue;
+		}
+
+		float delta = engine->cylinders[i].getAngleOffset() - tdc;
+		if (delta <= 0) {
+			delta += 720.0f;
+		}
+
+		if (delta < bestDelta) {
+			bestDelta = delta;
+			best = i;
+		}
+	}
+
+	return best;
 }
 
 static void applyMapMinBufferLength() {
@@ -211,61 +301,36 @@ void MapAveragingModule::onFastCallback() {
     engine->engineState.mapAveragingDuration = clampF(10, duration, cylinderPeriod - 10);
 }
 
-// Callback to schedule the start of map averaging for each cylinder.
-// ONE TOOTH AHEAD (the dwell pattern): the window is searched in
-// [nextPhase, nextNextPhase) - a full tooth of slack to the TIM5 executor -
-// instead of [currentPhase, nextPhase), where startAveraging fired at the
-// window boundary and was ~100% late (lockstats 2026-08-23, maxLateUs
-// 22.7 ms). The sampling window itself then starts up to ~6 deg earlier than
-// its nominal angle but ON TIME - irrelevant for a 30-50 deg average on a
-// shared plenum. The current-tooth window stays as the fallback for the
-// first cycle after a (re)sync, when the start angle can already be inside
-// the current tooth; startArmedNt prevents double scheduling while the
-// one-tooth-ahead arm of the previous tooth is still in the future.
-TRIGGER_RAM_CODE void MapAveragingModule::onEnginePhase(float /*rpm*/,
-														efitick_t edgeTimestamp,
-														float currentPhase,
-														float nextPhase,
-														float nextNextPhase) {
+void MapAveragingModule::scheduleNextCycleWindows() {
 	if (!engineConfiguration->isMapAveragingEnabled) {
 		return;
 	}
 
-	ScopePerf perf(PE::MapAveragingTriggerCallback);
+	float rpm = Sensor::getOrZero(SensorType::Rpm);
+	if (rpm == 0) {
+		return;
+	}
+
+	// Runs from the TDC executor hook once per engine cycle (the hook fires at
+	// engine phase tdcPosition()): plan every window start of the coming cycle
+	// in time. The angle->time conversion happens up to a full cycle ahead with
+	// the current oneDegreeUs - the documented option-B accel-drift tradeoff -
+	// and the events execute on the TIM5 executor. Zero per-tooth handoff work
+	// (this is what replaced the per-tooth onEnginePhase window scan).
+	efitick_t nowNt = getTimeNowNt();
+	angle_t tdcPhase = tdcPosition();
 
 	int samplingCount = engineConfiguration->measureMapOnlyInOneCylinder ? 1 : engineConfiguration->cylindersCount;
 
 	for (int i = 0; i < samplingCount; i++) {
-		angle_t samplingStart = engine->engineState.mapAveragingStart[i];
+		angle_t windowOffset = engine->engineState.mapAveragingStart[i] - tdcPhase;
+		wrapAngle(windowOffset, "mapWindowOffset", ObdCode::CUSTOM_ERR_6562);
 
-		auto& s = samplers[i];
+		// Re-planning (a new cycle) can overtake events still pending from the
+		// previous plan under hard acceleration: cancel before re-arming the slot.
+		engine->scheduler.cancel(&samplers[i].timer);
 
-		// A previous arm whose start time is still in the future covers this
-		// window (the one-tooth-ahead arm of the previous tooth): do not
-		// schedule twice. Once the armed time has passed, the arm has fired
-		// (or was lost) and a window match is the NEXT cycle's scheduling.
-		if (s.startArmedNt != 0 && static_cast<int32_t>(s.startArmedNt - edgeTimestamp) > 0) {
-			continue;
-		}
-
-		// The early window is only meaningful with a distinct next-next tooth:
-		// useOnlyRisingEdges wheels store the falling edge at the preceding
-		// rise's angle, so nextNextPhase == nextPhase and isPhaseInRange would
-		// match every angle. Fall back to the current-tooth window (the same
-		// guard as the dwell/fire arms).
-		bool scheduleEarly = nextNextPhase != nextPhase && isPhaseInRange(samplingStart, nextPhase, nextNextPhase);
-		bool scheduleNow = isPhaseInRange(samplingStart, currentPhase, nextPhase);
-
-		if (!scheduleEarly && !scheduleNow) {
-			continue;
-		}
-
-		float angleOffset = samplingStart - currentPhase;
-		if (angleOffset < 0) {
-			angleOffset += engine->engineState.engineCycle;
-		}
-
-		s.startArmedNt = scheduleByAngle(&s.timer, edgeTimestamp, angleOffset, action_s::make<startAveraging>(&s));
+		scheduleByAngle(&samplers[i].timer, nowNt, windowOffset, action_s::make<startAveraging>(&samplers[i]));
 	}
 }
 
@@ -292,5 +357,6 @@ void MapAveragingModule::init() {
 void MapAveragingModule::onFastCallback(){}
 void MapAveragingModule::onConfigurationChange(engine_configuration_s const *){}
 void MapAveragingModule::init() {}
-void MapAveragingModule::onEnginePhase(float, efitick_t, float, float, float){}
+void MapAveragingModule::scheduleNextCycleWindows() {}
+uint8_t MapAveragingModule::firingOrderSuccessor(uint8_t cylinderNumber) { return cylinderNumber; }
 #endif /* EFI_MAP_AVERAGING */

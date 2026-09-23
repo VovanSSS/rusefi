@@ -8,34 +8,16 @@
 #include "pch.h"
 #include "map_averaging.h"
 #include "harley.h"
+#include "linear_func.h"
+
+#include <vector>
+#include <algorithm>
 
 namespace {
 	auto const startAveragingAction{ action_s::make<startAveraging>((mapSampler*){}) };
 }
 
-TEST(EngineModules, MapAveragingModule_onEnginePhase) {
-    EngineTestHelper eth(engine_type_e::TEST_CRANK_ENGINE);
-    engineConfiguration->isMapAveragingEnabled = true;
-    engineConfiguration->measureMapOnlyInOneCylinder = true;
-	engine->engineState.mapAveragingDuration = 100;
-	engine->rpmCalculator.setRpmValue(200);
-
-	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 50.f, 180.f, 360.f);
-
-	// check for startMapAveraging schedule at 50° on the future (since onEnginePhase was called 50° late [start angle is 100°])
-    bool averageDone = eth.assertEventExistsAtEnginePhase("startMapAveraging callback", startAveragingAction, static_cast<angle_t>(50));
-    EXPECT_TRUE(averageDone);
-
-    // move forward, we expect that the startAveraging is called and we are currently running the averaging code
-	eth.moveTimeForwardMs(50);
-	eth.executeActions();
-	EXPECT_TRUE(engine->outputChannels.isMapAveraging);
-
-    // move forward, here we expect the averaging is done and endAveraging was called
-   	eth.moveTimeForwardMs(50);
-	eth.executeActions();
-    EXPECT_FALSE(engine->outputChannels.isMapAveraging);
-}
+// ---- window angle math (200 Hz) - unchanged behavior ----
 
 TEST(EngineModules, MapAveragingModule_onFastCallback) {
     EngineTestHelper eth(engine_type_e::TEST_CRANK_ENGINE);
@@ -114,75 +96,176 @@ TEST(EngineModules, MapAveragingModule_onFastCallbackOddFire) {
     EXPECT_EQ(engine->engineState.mapAveragingDuration, 50);
 }
 
-TEST(EngineModules, MapAveragingModule_onEnginePhase60_2_one_cylinder) {
+// ---- once-per-cycle planner (replaces the per-tooth onEnginePhase scan) ----
+
+TEST(EngineModules, MapAveragingModule_scheduleNextCycleWindows) {
     EngineTestHelper eth(engine_type_e::TEST_CRANK_ENGINE);
     engineConfiguration->isMapAveragingEnabled = true;
     engineConfiguration->measureMapOnlyInOneCylinder = true;
-	eth.setTriggerType(trigger_type_e::TT_TOOTHED_WHEEL_60_2);
-	MapAveragingModule mapModule;
 	engine->rpmCalculator.setRpmValue(200);
 
-	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 0.f, 180.f, 360.f);
+	// Reference the planner to engine phase 0 so scheduled offsets equal the
+	// absolute window angles (the TDC executor hook fires at tdcPosition()).
+	getTriggerCentral()->triggerShape.tdcPosition = 0;
+	engineConfiguration->globalTriggerAngleOffset = 0;
 
-	// we expect offset of enginePhase (0 since we call onEnginePhase directy) + 100° of samplingAngle (default setting)
-	bool averageDone = eth.assertEventExistsAtEnginePhase("startMapAveraging callback", startAveragingAction, static_cast<angle_t>(100));
+	engine->module<MapAveragingModule>()->onFastCallback();
+	engine->module<MapAveragingModule>()->scheduleNextCycleWindows();
+
+	// samplingAngle default is 100 deg, cylinder 0 offset 0 -> start at 100 deg
+    bool averageDone = eth.assertEventExistsAtEnginePhase("startMapAveraging callback", startAveragingAction, static_cast<angle_t>(100));
     EXPECT_TRUE(averageDone);
+
+    // move forward, we expect that the startAveraging is called and we are currently running the averaging code
+	eth.moveTimeForwardMs(100);
+	eth.executeActions();
+	EXPECT_TRUE(engine->outputChannels.isMapAveraging);
+
+    // move forward, here we expect the averaging is done and endAveraging was called
+   	eth.moveTimeForwardMs(100);
+	eth.executeActions();
+    EXPECT_FALSE(engine->outputChannels.isMapAveraging);
 }
 
-TEST(EngineModules, MapAveragingModule_onEnginePhase60_2_one_cylinderCustomSampleWindow) {
+// One window at a time, but all four starts are planned for the coming cycle:
+// 4 starts per cycle, one per cylinder phase region.
+TEST(EngineModules, MapAveragingModule_scheduleAllFourWindows) {
     EngineTestHelper eth(engine_type_e::TEST_CRANK_ENGINE);
     engineConfiguration->isMapAveragingEnabled = true;
-    engineConfiguration->measureMapOnlyInOneCylinder = true;
-	eth.setTriggerType(trigger_type_e::TT_TOOTHED_WHEEL_60_2);
-	MapAveragingModule mapModule;
+    engineConfiguration->measureMapOnlyInOneCylinder = false;
 	engine->rpmCalculator.setRpmValue(200);
+	getTriggerCentral()->triggerShape.tdcPosition = 0;
+	engineConfiguration->globalTriggerAngleOffset = 0;
 	setArrayValues(engineConfiguration->map.samplingAngle, 75);
 
 	engine->module<MapAveragingModule>()->onFastCallback();
-	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 0.f, 180.f, 360.f);
+	engine->module<MapAveragingModule>()->scheduleNextCycleWindows();
 
-	// we expect offset of enginePhase (0 since we call onEnginePhase directy) + 75° of samplingAngle
-	bool averageDone = eth.assertEventExistsAtEnginePhase("startMapAveraging callback", startAveragingAction, static_cast<angle_t>(75));
-    EXPECT_TRUE(averageDone);
+	EXPECT_EQ(4, engine->scheduler.size());
+
+	// All four starts share one callback, so match by offset: walk the queue
+	// and check the scheduled engine phases against the expected set.
+	float usPerDeg = engine->rpmCalculator.oneDegreeUs;
+	std::vector<float> scheduledOffsets;
+	for (int i = 0; i < engine->scheduler.size(); i++) {
+		auto event = engine->scheduler.getForUnitTest(i);
+		if (event->action.getCallback() == startAveragingAction.getCallback()) {
+			scheduledOffsets.push_back((event->getMomentUs() - getTimeNowUs()) / usPerDeg);
+		}
+	}
+	ASSERT_EQ(4, scheduledOffsets.size());
+
+	auto offsetExpected = [&](angle_t expected) {
+		return std::any_of(scheduledOffsets.begin(), scheduledOffsets.end(), [&](angle_t actual) {
+			return std::abs(actual - expected) < 1.0f;
+		});
+	};
+	EXPECT_TRUE(offsetExpected(75));
+	EXPECT_TRUE(offsetExpected(255));
+	EXPECT_TRUE(offsetExpected(435));
+	EXPECT_TRUE(offsetExpected(615));
 }
 
-// One-tooth-ahead scheduling: with the sampling start (200 deg) inside the
-// EARLY window [nextPhase, nextNextPhase) = [180, 360) the start is armed a
-// full tooth early, at 150 deg from the current phase.
-TEST(EngineModules, MapAveragingModule_onEnginePhase_oneToothAhead) {
+TEST(EngineModules, MapAveragingModule_scheduleSkipsWhenDisabledOrStopped) {
     EngineTestHelper eth(engine_type_e::TEST_CRANK_ENGINE);
-    engineConfiguration->isMapAveragingEnabled = true;
-    engineConfiguration->measureMapOnlyInOneCylinder = true;
-	engine->engineState.mapAveragingDuration = 100;
+    engineConfiguration->isMapAveragingEnabled = false;
     engine->rpmCalculator.setRpmValue(200);
-	setArrayValues(engineConfiguration->map.samplingAngle, 200);
-	engine->module<MapAveragingModule>()->onFastCallback();
+    engine->module<MapAveragingModule>()->scheduleNextCycleWindows();
+    EXPECT_EQ(0, engine->scheduler.size());
 
-	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 50.f, 180.f, 360.f);
-
-	// one-tooth-ahead arm: 200 deg target at 50 deg current phase = 150 deg offset
-	bool averageDone = eth.assertEventExistsAtEnginePhase("startMapAveraging early window", startAveragingAction, static_cast<angle_t>(150));
-    EXPECT_TRUE(averageDone);
+    engineConfiguration->isMapAveragingEnabled = true;
+    engine->rpmCalculator.setRpmValue(0);
+    engine->module<MapAveragingModule>()->scheduleNextCycleWindows();
+    EXPECT_EQ(0, engine->scheduler.size());
 }
 
-// The early-window arm from the previous tooth is still in the future on the
-// NEXT tooth: the current window [180, 360) also contains the 200 deg start,
-// but must NOT schedule a duplicate.
-TEST(EngineModules, MapAveragingModule_onEnginePhase_armedGuard) {
+// ---- firing order successor: each window feeds the successor's injection mass ----
+
+TEST(EngineModules, MapAveraging_firingOrderSuccessor) {
     EngineTestHelper eth(engine_type_e::TEST_CRANK_ENGINE);
+
+	// firing order 1-3-4-2: angle offsets 0 / 180 / 360 / 540 for cylinders 0..3
+	EXPECT_EQ(2, engine->module<MapAveragingModule>()->firingOrderSuccessor(0));
+	EXPECT_EQ(3, engine->module<MapAveragingModule>()->firingOrderSuccessor(2));
+	EXPECT_EQ(1, engine->module<MapAveragingModule>()->firingOrderSuccessor(3));
+	// wraps across the cycle boundary: the last window feeds the first cylinder
+	// of the NEXT cycle
+	EXPECT_EQ(0, engine->module<MapAveragingModule>()->firingOrderSuccessor(1));
+}
+
+// ---- Variant A: endAveraging rescales the successor's mass with the fresh window ----
+
+TEST(EngineModules, MapAveraging_endAveragingRescalesSuccessorMass) {
+    EngineTestHelper eth(engine_type_e::TEST_CRANK_ENGINE);
+    engineConfiguration->fuelAlgorithm = engine_load_mode_e::LM_SPEED_DENSITY;
     engineConfiguration->isMapAveragingEnabled = true;
     engineConfiguration->measureMapOnlyInOneCylinder = true;
-	engine->engineState.mapAveragingDuration = 100;
-    engine->rpmCalculator.setRpmValue(200);
-	setArrayValues(engineConfiguration->map.samplingAngle, 200);
+	engine->rpmCalculator.setRpmValue(200);
+	getTriggerCentral()->triggerShape.tdcPosition = 0;
+	engineConfiguration->globalTriggerAngleOffset = 0;
+
+	// state as the 200 Hz pipeline leaves it
+	engine->engineState.referenceMap = 80;
+	for (size_t i = 0; i < 4; i++) {
+		engine->engineState.injectionMass[i] = 10;
+		engine->engineState.injectionMassMapBasis[i] = 80;
+	}
+
+	// linear converter: volts -> kPa (0..5V => 0..100 kPa, out-of-range bounds wide open)
+	static LinearFunc testConverter;
+	testConverter.configure(0, 0, 5, 100, -100, 1000);
+	getMapAvg(0).setFunction(testConverter);
+
 	engine->module<MapAveragingModule>()->onFastCallback();
+	engine->module<MapAveragingModule>()->scheduleNextCycleWindows();
 
-	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 50.f, 180.f, 360.f);
-	size_t sizeAfterEarly = engine->scheduler.size();
-    ASSERT_EQ(1, sizeAfterEarly);
+	// window opens (offset 100 deg at 200 rpm ~= 83 ms)
+	eth.moveTimeForwardMs(100);
+	eth.executeActions();
+	ASSERT_TRUE(engine->outputChannels.isMapAveraging);
 
-	// Next tooth: both windows could match, but the armed start is still in the
-	// future - startArmedNt must suppress the duplicate.
-	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 180.f, 360.f, 540.f);
-    EXPECT_EQ(sizeAfterEarly, engine->scheduler.size());
+	// one sample inside the window: 2.5V -> 50 kPa
+	getMapAvg(0).submit(2.5f);
+
+	// window closes (start + duration)
+	eth.moveTimeForwardMs(100);
+	eth.executeActions();
+	ASSERT_FALSE(engine->outputChannels.isMapAveraging);
+
+	// cylinder 0's window closed with 50 kPa -> successor (cylinder 2) rescaled:
+	// 10 * 50 / 80 = 6.25, with the basis advanced to 50
+	EXPECT_NEAR(engine->engineState.injectionMass[2], 10.0f * 50.0f / 80.0f, 1e-3);
+	EXPECT_NEAR(engine->engineState.injectionMassMapBasis[2], 50.0f, 1e-3);
+
+	// the other cylinders' masses stayed reference-based
+	EXPECT_NEAR(engine->engineState.injectionMass[0], 10.0f, 1e-3);
+}
+
+// ---- Variant A: the injection-scheduling-time single multiply refresh ----
+
+TEST(EngineModules, MapAveraging_refreshInjectionMass) {
+    EngineTestHelper eth(engine_type_e::TEST_CRANK_ENGINE);
+    engineConfiguration->fuelAlgorithm = engine_load_mode_e::LM_SPEED_DENSITY;
+    engine->engineState.referenceMap = 80;
+	engine->engineState.injectionMassMapBasis[2] = 80; // the 200 Hz tick wrote the reference basis
+	Sensor::setMockValue(SensorType::MapFast, 96);
+
+	// refresh against the single window: mass *= MapFast / basis
+    EXPECT_NEAR(refreshInjectionMassForCylinder(2, 10.0f), 12.0f, 1e-3);
+
+	// endAveraging already applied the same window value: the refresh must no-op
+	// (no double application of the single shared window)
+	engine->engineState.injectionMassMapBasis[2] = 96;
+    EXPECT_NEAR(refreshInjectionMassForCylinder(2, 12.0f), 12.0f, 1e-3);
+
+	// invalid window value: pass through
+	Sensor::resetMockValue(SensorType::MapFast);
+	engine->engineState.injectionMassMapBasis[2] = 80;
+    EXPECT_NEAR(refreshInjectionMassForCylinder(2, 10.0f), 10.0f, 1e-3);
+
+	// alpha-N / MAF: pass through (mass is not MAP-proportional there)
+	engineConfiguration->fuelAlgorithm = engine_load_mode_e::LM_ALPHA_N;
+	Sensor::setMockValue(SensorType::MapFast, 96);
+	engine->engineState.injectionMassMapBasis[2] = 80;
+    EXPECT_NEAR(refreshInjectionMassForCylinder(2, 10.0f), 10.0f, 1e-3);
 }

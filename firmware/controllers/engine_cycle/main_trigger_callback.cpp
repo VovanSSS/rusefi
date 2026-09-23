@@ -41,6 +41,7 @@
 #include "injector_model.h"
 #include "injection_gpio.h"
 #include "angle_clock.h"
+#include "map_averaging.h"
 
 #if EFI_LAUNCH_CONTROL
 #include "launch_control.h"
@@ -138,6 +139,17 @@ TRIGGER_RAM_CODE void InjectionEvent::onTriggerTooth(efitick_t nowNt, float curr
 
 	// Select fuel mass from the correct cylinder
 	auto injectionMassGrams = getEngineState()->injectionMass[this->cylinderNumber];
+
+#if EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
+	// Variant A (2026-09-23): refresh the mass with the freshest closed window -
+	// ONE multiply. injectionMass[cyl] is stored in reference units by the 200 Hz
+	// pipeline; injectionMassMapBasis[cyl] is the MAP it was last based on
+	// (referenceMap after the 200 Hz refresh, the just-closed window value after
+	// endAveraging rescaled the firing-order successor). Single-window semantics:
+	// MapFast holds the previous cylinder's average per the 180-degree chain, and
+	// the next cycle's first cylinder picks up the last window of the previous cycle.
+	injectionMassGrams = refreshInjectionMassForCylinder(this->cylinderNumber, injectionMassGrams);
+#endif // EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
 
 	// Perform wall wetting adjustment on fuel mass, not duration, so that
 	// it's correct during fuel pressure (injector flow) or battery voltage (deadtime) transients
@@ -443,9 +455,11 @@ TRIGGER_RAM_CODE void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edge
 	UNUSED(trgEventIndex);
 #endif
 
-	engine->engineModules.apply_all([=](auto & m) {
-		m.onEnginePhase(rpm, edgeTimestamp, currentPhase, nextPhase, nextNextPhase);
-	});
+	// engineModules.apply_all call REMOVED (2026-09-23): the MAP averaging window
+	// scan and the misfire segment tracking - the only real onEnginePhase users -
+	// now run from the once-per-engine-cycle TDC executor hook (onTdcCallback ->
+	// MapAveragingModule::scheduleNextCycleWindows / MisfireController::
+	// scheduleNextCycleSegments). No engine module does per-tooth work here anymore.
 
 	/**
 	 * For spark we schedule both start of coil charge and actual spark based on trigger angle.

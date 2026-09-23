@@ -21,24 +21,18 @@ static FunctionalSensor throttleInletPress(SensorType::ThrottleInletPressure, MS
 // one sample per cycle (1 cylinder, or "sample one cyl" mode) gives a period of 100ms
 // add some margin -> 200ms timeout for fast MAP sampling
 // 'fast' means averaged? why is that fast again?!
+// Single-window Variant A (2026-09-23): the ONE MAP averaging window passes
+// through the cylinder phase regions in firing order and always feeds this one
+// averager; per-cylinder values live in outputChannels.mapPerCylinder[].
 static MapAverager fastMapSensor(SensorType::MapFast, MS2NT(200));
-static MapAverager fastMapSensor2(SensorType::MapFast2, MS2NT(200));
-static MapAverager fastMapSensor3(SensorType::MapFast3, MS2NT(200));
-static MapAverager fastMapSensor4(SensorType::MapFast4, MS2NT(200));
 
 // instant map values are injected here
-MapAverager& getMapAvg(size_t cylinderBankIndex) {
-	switch (cylinderBankIndex) {
-		case 0:  return fastMapSensor;
-		case 1:  return fastMapSensor2;
-		case 2:  return fastMapSensor3;
-		default: return fastMapSensor4;
-	}
+MapAverager& getMapAvg(size_t) {
+	return fastMapSensor;
 }
 
 // Combine MAP sensors: prefer fast sensor, but use slow if fast is unavailable.
 static FallbackSensor mapCombiner(SensorType::Map, SensorType::MapFast, SensorType::MapSlow);
-static FallbackSensor mapCombiner2(SensorType::Map2, SensorType::MapFast2, SensorType::MapSlow2);
 
 // helper struct for the local getMapCfg function
 struct MapCfg {
@@ -116,9 +110,6 @@ void initMap() {
 	slowMapSensor.setFunction(mapConverter);
 	// unfinished/dead?	slowMapSensor2.setFunction(mapConverter);
 	fastMapSensor.setFunction(mapConverter);
-	fastMapSensor2.setFunction(mapConverter);
-	fastMapSensor3.setFunction(mapConverter);
-	fastMapSensor4.setFunction(mapConverter);
 	compressorDischargePress.setFunction(mapConverter);
 	throttleInletPress.setFunction(mapConverter);
 
@@ -127,11 +118,7 @@ void initMap() {
 		slowMapSensor.Register();
 		// unfinished/dead?		slowMapSensor2.Register();
 		fastMapSensor.Register();
-		fastMapSensor2.Register();
-		fastMapSensor3.Register();
-		fastMapSensor4.Register();
 		mapCombiner.Register();
-		mapCombiner2.Register();
 
 		// Configure slow MAP as a normal analog sensor
 		// it's possible/probably that slow and fast both read from same physical pin, apparently that's fine?!

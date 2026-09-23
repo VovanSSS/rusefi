@@ -18,6 +18,8 @@
 #include "trigger_central.h"
 
 #include "engine_sniffer.h"
+#include "map_averaging.h"
+#include "misfire_detection.h"
 
 // See RpmCalculator::checkIfSpinning()
 #ifndef NO_RPM_EVENTS_TIMEOUT_SECS
@@ -441,10 +443,23 @@ static void onTdcCallback() {
 #endif /* EFI_UNIT_TEST */
 
 	float rpm = Sensor::getOrZero(SensorType::Rpm);
-	addEngineSnifferTdcEvent(rpm);
+	if (getTriggerCentral()->isEngineSnifferEnabled) {
+		addEngineSnifferTdcEvent(rpm);
+	}
 #if EFI_TOOTH_LOGGER
 	LogTriggerTopDeadCenter(getTimeNowNt());
 #endif /* EFI_TOOTH_LOGGER */
+
+	// Once-per-engine-cycle executor hook: the MAP averaging window planner and
+	// the misfire segment planner were moved OUT of the handoff (the
+	// engineModules.apply_all removal, 2026-09-23) and run from here, at
+	// TIM5-executor priority, once per engine cycle.
+#if EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
+	engine->module<MapAveragingModule>()->scheduleNextCycleWindows();
+#endif // EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
+#if EFI_MISFIRE_DETECTION
+	engine->module<MisfireController>()->scheduleNextCycleSegments();
+#endif // EFI_MISFIRE_DETECTION
 }
 #endif // EFI_ENGINE_CONTROL
 
@@ -455,7 +470,21 @@ TRIGGER_RAM_CODE void tdcMarkCallback(
 		uint32_t trgEventIndex, efitick_t nowNt) {
 #if EFI_ENGINE_CONTROL
 	bool isTriggerSynchronizationPoint = trgEventIndex == 0;
-	if (isTriggerSynchronizationPoint && getTriggerCentral()->isEngineSnifferEnabled) {
+
+	// The MAP-averaging window planner and the misfire segment planner were
+	// moved OUT of the handoff: they run from the once-per-cycle TDC executor
+	// event (onTdcCallback). Schedule that event without the sniffer too when
+	// either planner is enabled - with both disabled the previous behavior is
+	// preserved exactly (no extra executor insert in the handoff).
+	bool needEngineCyclePlanning = false;
+#if EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
+	needEngineCyclePlanning = needEngineCyclePlanning || engineConfiguration->isMapAveragingEnabled;
+#endif
+#if EFI_MISFIRE_DETECTION
+	needEngineCyclePlanning = needEngineCyclePlanning || engineConfiguration->misfireDetectionEnabled;
+#endif
+
+	if (isTriggerSynchronizationPoint && (getTriggerCentral()->isEngineSnifferEnabled || needEngineCyclePlanning)) {
 
 #if EFI_UNIT_TEST
 		if (!engine->tdcMarkEnabled) {

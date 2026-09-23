@@ -31,6 +31,17 @@ struct_no_prefix engine_state_s
 	! Per-injection fuel mass, including TPS accel enrich
 	float[MAX_CYLINDER_COUNT iterate] injectionMass
 
+	! MAP value the last injectionMass[] refresh was computed against (the
+	! reference basis for the Variant-A per-cylinder refresh at injection
+	! scheduling time). Written by the 200 Hz fuel pipeline.
+	float referenceMap;MAP: Injection mass reference MAP;"kPa", 0.1, 0, 0, 500, 1
+
+	! MAP value each injectionMass[] entry was last scaled against - the basis
+	! that makes the onTriggerTooth single-multiply refresh composable (equals
+	! referenceMap after the 200 Hz refresh, the just-closed window value after
+	! endAveraging rescales the firing-order successor)
+	float[MAX_CYLINDER_COUNT iterate] injectionMassMapBasis
+
 	LuaAdjustments lua
 	speed_density_s sd;
 	cranking_fuel_s crankingFuel

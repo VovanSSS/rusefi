@@ -239,19 +239,13 @@ void EngineState::periodicFastCallback() {
 		engine->engineState.stftCorrection[bankIndex] = clResult.banks[bankIndex];
 	}
 
-	// Per-cylinder MAP sensor types: one window per cylinder (SAMPLER_DIMENSION=4).
-	// Each MapFastN is updated from that cylinder's own MAP averaging window,
-	// so cylMap reflects the actual manifold pressure during that cylinder's intake stroke.
-	// For shared plenum: differences are small (< 3 kPa), correction is near 1.0.
-	// For ITB: each cylinder has its own independent MAP reading.
-	static constexpr SensorType kCylMapSensor[] = {
-		SensorType::MapFast,   // cyl 0
-		SensorType::MapFast2,  // cyl 1
-		SensorType::MapFast3,  // cyl 2
-		SensorType::MapFast4,  // cyl 3
-	};
-	// Reference MAP used by getInjectionMass() above (cyl 0 window via SensorType::Map -> MapFast)
-	const float referenceMap = Sensor::getOrZero(SensorType::Map);
+	// Reference MAP used by getInjectionMass() above (the single window via SensorType::Map -> MapFast)
+	const float mapReference = Sensor::getOrZero(SensorType::Map);
+
+	// Variant A (2026-09-23): remember the MAP the mass pipeline was computed
+	// against - the denominator basis of the per-cylinder refresh at injection
+	// scheduling time (see refreshInjectionMassForCylinder).
+	engine->engineState.referenceMap = mapReference;
 
 	// Now apply that to per-cylinder fueling and timing
 	for (size_t cylinderIndex = 0; cylinderIndex < engineConfiguration->cylindersCount; cylinderIndex++) {
@@ -266,18 +260,14 @@ void EngineState::periodicFastCallback() {
 		auto cylinderTrim = getCylinderFuelTrim(cylinderIndex, rpm, fuelLoad);
 		auto knockTrim = engine->module<KnockController>()->getFuelTrimMultiplier();
 
-		// Per-cylinder MAP correction for speed-density mode.
-		// untrimmedInjectionMass was computed with referenceMap (cyl 0 window).
-		// Scale each cylinder by its own MAP ratio so VE is effectively per-cylinder.
-		// For MAF / alpha-N: no correction (mass is not MAP-proportional there).
+		// Variant A (2026-09-23): the stored mass is REFERENCE-based - uniform for
+		// all cylinders. Per-cylinder MAP correction moved to the single-window
+		// pipeline: endAveraging rescales the firing-order successor by the
+		// just-closed window (the previous cylinder's average), and
+		// InjectionEvent::onTriggerTooth applies the final single multiply
+		// (MapFast / injectionMassMapBasis) at scheduling time.
 		float massForCyl = untrimmedInjectionMass;
-		if (engineConfiguration->fuelAlgorithm == engine_load_mode_e::LM_SPEED_DENSITY && referenceMap > 0) {
-			const size_t sensorIndex = cylinderIndex % efi::size(kCylMapSensor);
-			float cylMap = Sensor::get(kCylMapSensor[sensorIndex]).value_or(referenceMap);
-			if (cylMap > 0) {
-				massForCyl *= cylMap / referenceMap;
-			}
-		}
+		engine->engineState.injectionMassMapBasis[cylinderIndex] = mapReference;
 
 		// Apply both per-bank and per-cylinder trims
 		engine->engineState.injectionMass[cylinderIndex] = massForCyl * bankTrim * cylinderTrim * knockTrim;

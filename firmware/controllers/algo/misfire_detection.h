@@ -15,22 +15,34 @@
  * Setting misfireCountThreshold to 0 disables latching entirely — misfireTotalCount still
  * accumulates so the gauge reflects real activity, but no MIL or DTC is ever set.
  *
+ * Scheduling (2026-09-23): fully OUT of the handoff. The once-per-engine-cycle planner
+ * scheduleNextCycleSegments() (TDC executor hook) schedules the per-cylinder segment
+ * start/end events on the TIM5 executor; each end event evaluates the segment of the
+ * cylinder that ALREADY fired (its expansion window just closed). Segment times are
+ * executor fire times, not trigger edges - the documented precision tradeoff.
+ *
  * Gated by EFI_MISFIRE_DETECTION. Uses IdleController::isIdling to gate detection.
  */
 
 #pragma once
 
 #include "engine_module.h"
+#include "scheduler.h"
 #include "misfire_detection_state_generated.h"
 
 class MisfireController : public misfire_detection_state_s, public EngineModule {
 public:
 	using interface_t = MisfireController;
 
-	// Per-tooth: bin teeth into per-cylinder expansion windows and time the segments.
-	void onEnginePhase(float rpm, efitick_t edgeTimestamp,
-					   angle_t currentPhase, angle_t nextPhase,
-					   angle_t nextNextPhase) override;
+	// Once-per-engine-cycle planner (TDC executor hook): applies the monitoring
+	// gate + window-width validation once per cycle, then schedules the
+	// per-cylinder expansion-stroke segment events for the coming cycle.
+	void scheduleNextCycleSegments();
+
+	// Segment boundary events, executed on the TIM5 executor. Each segment is
+	// evaluated for the cylinder that already fired when its end event fires.
+	void captureSegmentStart(uint8_t cylinderNumber, efitick_t nowNt);
+	void finishSegment(uint8_t cylinderNumber, efitick_t nowNt);
 
 	// Engine stopped: discard transient detection state (baselines/streaks/timers).
 	// Cumulative counters and the MIL latch persist until power cycle ("since key-on").
@@ -55,6 +67,11 @@ private:
 	// segment is judged against the single shared baseline below — detection is engine-wide.
 	efitick_t m_segStart[MAX_CYLINDER_COUNT];
 	bool      m_segActive[MAX_CYLINDER_COUNT];
+
+	// Scheduled events: one start + one end per cylinder, planned by
+	// scheduleNextCycleSegments() for the coming cycle, fired on the executor.
+	scheduling_s m_segStartEvent[MAX_CYLINDER_COUNT];
+	scheduling_s m_segEndEvent[MAX_CYLINDER_COUNT];
 
 	// Single shared self-referenced baseline: slow EMA of healthy segment duration (us),
 	// updated by every clean firing regardless of cylinder.
@@ -82,7 +99,7 @@ private:
 	bool m_wasMonitoring = false;
 
 	// Latches the "window narrower than one trigger tooth" configError so it is reported
-	// once on entry into the bad-config state instead of re-formatted every tooth. Cleared
+	// once on entry into the bad-config state instead of re-formatted every cycle. Cleared
 	// when the window widens to a valid size or detection state is reset.
 	bool m_windowTooNarrow = false;
 };

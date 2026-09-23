@@ -1,5 +1,91 @@
 # Work Report
 
+## 2026-09-24 - m74_9: Variant A mass pipeline (single MAP window) + MAP/misfire moved out of the handoff
+
+Implements the agreed plan (docs/plan_variant_a_mass_pipeline.md). Per user
+specification: ONE MAP window entity that passes through the cylinder phase
+regions in firing order and is "filled by the previous cylinder"; its fresh
+value (each ~180 deg, 4 records per cycle into mapPerCylinder[]) feeds the
+FIRING-ORDER SUCCESSOR's injection mass, continuously across the cycle
+boundary. And the whole engineModules.apply_all call is gone from the handoff:
+the MAP window planner and the misfire segment planner now run once per engine
+cycle from the TDC executor hook.
+
+Mass pipeline (Variant A):
+- engineState gains referenceMap (TS channel, kPa - the MAP the 200 Hz pipeline
+  computed the reference mass against) and injectionMassMapBasis[MAX] (which
+  MAP each stored injectionMass[] was last scaled against).
+- periodicFastCallback stores injectionMass[c] in REFERENCE units for all
+  cylinders (the old per-cylinder MapFast2/3/4 ratio block removed) and plants
+  basis[c] = referenceMap.
+- endAveraging (TIM5 executor): fresh window value from MapAverager::stop()
+  (now returns float) rescales the successor: injectionMass[S] *= fresh /
+  basis[S], basis[S] = fresh.
+- InjectionEvent::onTriggerTooth (handoff): ONE multiply
+  mass *= MapFast / basis[c] via refreshInjectionMassForCylinder() - local
+  only, no stored-state write from the handoff. The basis makes the two
+  mechanisms composable: the single shared window can never enter the mass
+  twice (which would otherwise be systematic on every 200 Hz-tick boundary).
+- The successor mapping is generic over cylinders[i].getAngleOffset() (minimal
+  positive angular delta): on 1-3-4-2 it is 0->2, 2->3, 3->1, 1->0 - exactly
+  the user's W1->mass3, W3->mass4, W4->mass2, W2->mass1 chain.
+
+Removed as agreed: fastMapSensor2/3/4 + mapCombiner2 registrations in
+init_map.cpp (SensorType enum values untouched - registry/tooling surface),
+currentMapAverager + SAMPLER_DIMENSION rotation in map_averaging.
+
+Out of the handoff:
+- MapAveragingModule::onEnginePhase and MisfireController::onEnginePhase
+  deleted (they were the only real users of the per-tooth apply_all).
+- tdcMarkCallback now schedules the once-per-cycle TDC executor event without
+  the sniffer when isMapAveragingEnabled || misfireDetectionEnabled (both off
+  = prior behavior exactly, no extra handoff insert); onTdcCallback calls
+  MapAveragingModule::scheduleNextCycleWindows() + MisfireController::
+  scheduleNextCycleSegments().
+- MAP windows and misfire segments are planned per cycle in TIME via
+  scheduleByAngle (offset = wrap(angle - tdcPosition())) - the documented
+  option-B accel-drift tradeoff; both planners cancel a slot's pending event
+  before re-arming (re-plan under hard accel must not double-insert the node).
+- Misfire: boundary events fire on the executor, each end event evaluates the
+  segment of the cylinder that ALREADY fired (semantics preserved). Segment
+  time is executor-based, not edge-based - documented precision tradeoff
+  (symmetric bias absorbed by the EMA baseline, +/-10-100 us jitter vs
+  1-3 ms misfire signal at idle). Leaving idle cancels pending segment events.
+
+Expected handoff win: minus ~22 virtual calls/tooth + 4x isPhaseInRange +
+  evaluateSegment (~35-70 us on scheduling teeth), replaced by ~2 executor
+  inserts per engine cycle.
+
+Change inventory:
+| file | change |
+| --- | --- |
+| firmware/controllers/algo/engine_state.txt | referenceMap (TS kPa) + injectionMassMapBasis[MAX] |
+| firmware/controllers/algo/engine2.cpp | stores referenceMap; per-cyl MAP ratio block + kCylMapSensor removed; basis[c] = referenceMap |
+| firmware/controllers/modules/map_averaging/map_averaging.h/.cpp | single-window: MapAverager::stop() -> float, getCylinderNumber(); mapSampler.startArmedNt removed; scheduleNextCycleWindows() + firingOrderSuccessor(); endAveraging rescale; refreshInjectionMassForCylinder(); onEnginePhase removed; cancel-before-rearm in the planner |
+| firmware/controllers/algo/misfire_detection.h/.cpp | onEnginePhase -> scheduleNextCycleSegments() + captureSegmentStart/finishSegment + 2 scheduling_s per cylinder; leaving-idle cancels pending events |
+| firmware/controllers/engine_cycle/main_trigger_callback.cpp | apply_all call removed; onTriggerTooth refresh multiply |
+| firmware/controllers/engine_cycle/rpm_calculator.cpp | tdcMarkCallback schedule gate + planner calls in onTdcCallback |
+| firmware/init/sensor/init_map.cpp | fastMapSensor2/3/4 + mapCombiner2 + registration removed; getMapAvg() single averager |
+| unit_tests/.../test_map_averaging.cpp | planner/firing-order/rescale/refresh tests (onEnginePhase tests replaced) |
+| unit_tests/tests/test_misfire_detection.cpp | rewritten for planner + boundary events (stepwise clock so executor pairs land at distinct instants) |
+| docs/plan_variant_a_mass_pipeline.md | the agreed plan |
+
+Validation: unit tests GCC 1160 pass / 12 fail (exactly the 12 pre-existing
+failures - none new, +3 tests from the rewrite); unit tests clang (make clean +
+make CC=clang) 1160/12 same set, targeted MAP+misfire 17/17; m74_9 board build
+BUILD SUCCESSFUL. NOT car-tested yet: watch lockstats postDecode (expect the
+50-100 us scheduling-tooth share to drop below the ~1.9-2.3% band), the MAP
+window start (startAveraging) on-time behavior with the once-per-cycle
+planning, and the misfire live-data at idle.
+
+Open follow-ups recorded: (1) EngineModule::onEnginePhase virtual hook is now
+unused - candidate for removal in a later pass; (2) SensorType enum values
+MapFast2..4/Map2/MapSlow2 still exist for the registry/tooling - purge
+separately if wanted; (3) MAP window accel drift (option-B conversion a full
+cycle ahead) can be tightened later by moving the planner to an angle-queue
+consumer if a knob shows up on the car; (4) misfire segment precision vs the
+old edge-timestamp version to be judged on the car at idle.
+
 ## 2026-09-23 - m74_9: MAP sampling windows scheduled one tooth ahead (variant A implemented)
 
 The apply_all relocation option A from the same day is implemented: the MAP
