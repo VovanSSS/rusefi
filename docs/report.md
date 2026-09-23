@@ -1,5 +1,31 @@
 # Work Report
 
+## 2026-09-22 - m74_9: fast-EXTI-IRQ boundary analysis - nothing from the decode moves UP, the shrink direction is DOWN
+
+Follow-up to the handoff priority raise. Question: what from the decode can
+move into the EXTI fast IRQ to shrink the handoff? Answer recorded: nothing.
+
+`handleExtiIsr` (prio 0) is capture-only by design and stays that way:
+palReadLine + queue.push({getTimeNowNt(), index, level}) + STIR, ~2-3 us.
+Two reasons: (1) everything past the timestamp step needs the decoder state
+machine (queue, m_lastToothTimer, gap/sync, currentPhase) - the decode IS the
+edge-stream->phase interpretation, moving it would split that state across two
+priority levels; (2) growing the prio-0 ISR delays the NEXT edge capture
+(missed-tooth risk; the 2-3 us budget exists for that) AND preempts the
+TMR2/3/4 fires (prio 0 > 3) - a worse place for the fire-lateness trade than
+the handoff. The only ever-moved IN was the polarity read (option A, 08-25) -
+the one datum only the fast context can guarantee describes THIS edge.
+
+The productive direction is DOWN: out of trgPostDecode, engineModules.apply_all
+(MapAveraging::onEnginePhase + MisfireController::onEnginePhase, ~35-70 us on
+scheduling teeth) is candidate #1 to move to the prio-4 executor or lower,
+checkIfTriggerConfigChanged (every sync tooth) to a periodic context; the
+arm-critical parts (angleClockOnTooth, scheduleDwellEarlyIfDue, handleFuel,
+onTriggerEventSparkLogic) must stay in the handoff in the first ~33 us. MAP
+windows schedule by angle inside the current tooth, so the MAP move needs
+rework (one tooth ahead like dwell, or from onTdc). Doing that move would
+shrink the handoff's TMR-fire-blocking window from ~44-250 us to ~15-30 us.
+
 ## 2026-09-22 - m74_9: handoff raised to the top kernel priority (3), TIM5 executor dropped to 4
 
 The stall class from the morning entry (tickPast arms + C9009 bursts) is

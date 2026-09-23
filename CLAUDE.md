@@ -381,6 +381,8 @@ CURRENT (since 2026-09-22, supersedes the 08-23 "executor above decode" invarian
 
 HISTORY (keep the gotcha): on the AT32 build the mcuconf defines **no `STM32_PWM_TIM5_IRQ_PRIORITY`**, and the shared STM32 TIMv1 LLD (`hal_pwm_lld.h`) defaults it to **7** - so `STM32_PWM_TIM5_IRQ_PRIORITY` MUST be defined from `EFI_IRQ_SCHEDULING_TIMER_PRIORITY` (interrupt_priority.h, included by the mcuconf) or the executor silently drops below the handoff and the ADC. `EFI_IRQ_SCHEDULING_TIMER_PRIORITY` alone is NOT consumed by the LLD, and `assertInterruptPriority` is a **no-op stub** on the AT32 port, so nothing catches a wrong priority - the 08-23 session measured 11-30% of all commands >=10 us late (up to 389 us) with the executor at the default 7. Also `SingleTimerExecutor::schedule()` must NOT run due events inline from ISR context (the handoff would batch callbacks + busy-wait spins into the decode - the variable tail that delays the arming). Priorities now: exti=0 (fast-IRQ timestamp capture), handoff=3, TMR2/3/4=3, TIM5=4, WDA(TMR7)=5, ADC=5/6, UART=6, SysTick=8, SPI=10, CAN=11, USB=14. The `nvic:` line in lockstats (want 0/3/4/11/11/6) is the on-car ground truth. The stock `ports/stm32/interrupt_priority.h` ALREADY ran handoff(3) > executor(4) - this change aligns AT32 with it.
 
+**Fast EXTI IRQ boundary (2026-09-22 analysis): nothing from the decode moves UP into the fast IRQ.** `handleExtiIsr` (prio 0) is capture-only by design: `palReadLine` + `queue.push({getTimeNowNt(), index, level})` + STIR, ~2-3 us. Two reasons nothing else belongs there: (1) everything after the timestamp needs the decoder state machine (queue, m_lastToothTimer, gap/sync, currentPhase) - the decode IS the edge-stream->phase interpretation, so moving it would split that state across two priority levels; (2) growing the prio-0 ISR attacks both ends - it delays the NEXT edge capture (missed-tooth risk at high rpm, the 2-3 us budget exists for that) AND preempts the TMR2/3/4 fires (prio 0 > 3), which is a worse place for the fire-lateness trade than the handoff itself. The only thing ever moved INTO the fast IRQ was the edge POLARITY read (option A, 2026-08-25) - the one piece of data that only the fast context can guarantee describes THIS edge. The productive direction to shrink the handoff's fire-blocking window is DOWN: out of trgPostDecode, `engineModules.apply_all` (MapAveraging::onEnginePhase + MisfireController::onEnginePhase, ~35-70 us on scheduling teeth) is candidate #1 to move to the prio-4 executor or lower, and `checkIfTriggerConfigChanged` (runs on every sync tooth) to a periodic context; the arm-critical parts (angleClockOnTooth, scheduleDwellEarlyIfDue, handleFuel, onTriggerEventSparkLogic) must stay in the handoff and keep running in the first ~33 us. MAP windows currently schedule by angle inside the current tooth, so the move needs a rework (schedule one tooth ahead like dwell, or from the onTdc context).
+
 Build pitfalls from the same session: (1) commas outside parentheses split `addConsoleAction` macro arguments (C standard protects only parens, GCC too) - no brace-initializer arrays inside those lambdas; (2) a bare `gmake` at the firmware root builds the DEFAULT board (m74_9) into the SAME `build/` dir and silently poisons the next incremental board build - `gmake clean` and rebuild via the board compile script after such an accident; (3) compile-time verification of preprocessor priorities: probe with `arm-none-eabi-gcc -E -I./hw_layer/ports/at32/at32f4/cfg` including `mcuconf.h`, don't try to grep LTO'd binaries for NVIC constants.
 
 ### m74_9 lockstats lateness reading: 'late' is batch order, NOT preemption (2026-08-31 car analysis)
@@ -412,7 +414,7 @@ Full chain from crank edge to GPIO for the EFI_ANGLE_CLOCK=FALSE (time-based) bu
 ```
 PF8 falling edge (crank zero-crossing via L9779 VRS + 74HC14)
   -> EXTI fast IRQ prio 0 (~2-3 us): getTimeNowNt() + palReadLine(PF8) + queue.push()
-  -> Handoff ISR prio 4 (~44 us avg / up to ~1 ms tails):
+  -> Handoff ISR prio 3 (top kernel, ~44 us avg / up to ~1 ms tails):
        trgPreDecode: debounce, noiseFilter, isToothExpectedNow
        trgDecode:    decodeTriggerEvent (gap ratio [1.6,3.75]+[0.85,1.15], sync)
        trgPostDecode:
@@ -445,7 +447,7 @@ Full chain from crank edge to GPIO for the three-timer (EFI_ANGLE_CLOCK=TRUE) bu
 ```
 PF8 falling edge (crank zero-crossing via L9779 VRS + 74HC14)
   -> EXTI fast IRQ prio 0 (~2-3 us): getTimeNowNt() + palReadLine(PF8) + queue.push()
-  -> Handoff ISR prio 4 (~44 us avg on non-scheduling teeth, ~87 us on scheduling teeth):
+  -> Handoff ISR prio 3 (top kernel, ~44 us avg on non-scheduling teeth, ~87 us on scheduling teeth):
        trgPreDecode (~5 us): debounce, noiseFilter
        trgDecode   (~10 us): decodeTriggerEvent (gap ratio, sync)
        trgPostDecode:
