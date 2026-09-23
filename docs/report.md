@@ -1,5 +1,95 @@
 # Work Report
 
+## 2026-09-23 - m74_9: handoff timing decomposition - what runs per tooth and where the ~50 us goes
+
+User question (lockstats snapshots 15:39:49 and 15:54:10 of 2026-09-23): why
+do the trigger-processing events take so long, what actually runs in the
+handoff and slows it down - at 7000 rpm the teeth fly fast, so the handler
+must cost as little as possible. Answer: a full code walk of the handoff
+chain + histogram arithmetic.
+
+Measurement points (firmware/controllers/trigger/trigger_central.cpp):
+triggerIsrHistogram wraps the whole TriggerCentral::handleShaftSignal
+(triggerHandlerEntryTime -> end, L628-638); triggerPhase[3] splits the same
+span at t0/t1/t2/t3 (L906/968/975/1091): trgPreDecode = t1-t0, trgDecode =
+t2-t1, trgPostDecode = t3-t2. NOT in the histograms: the outer ISR pieces
+(digital_input_exti.cpp L194-226: queue pop under __disable_irq, the
+boardRawTriggerEdge rawtrg ring write in m74_9_tooth_diag.cpp L243,
+tooSoonToHandleSignal) - ~2-4 us extra, so the TRUE handoff is ~55 us.
+lockstats prints then resets (board_configuration.cpp lockstats action), so
+each snapshot is the delta since the previous call.
+
+Snapshot arithmetic:
+| snapshot | triggerIsr avg | <50us | 50-100us | 100-250us | pre | decode | post |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 15:39 | 51.2 us | 49.6% | 49.9% | 0.55% | 6.6 | 9.0 | 34.1 us |
+| 15:54 | 49.8 us | 56.5% | 43.1% | 0.45% | 6.4 | 8.7 | 33.2 us |
+
+Three readings:
+1. NO phase is slow individually - the 50-100 us bucket holding ~half the
+teeth is BIN-CROSSING: 6.6 + 9.0 + 34.1 + ~1.5 us outer overhead ~= 50 us.
+The handoff is a pipeline of ~30 small mandatory steps, not one hot function
+each histogram stage is <50 us on 97-98% of teeth.
+2. trgPostDecode (~34 us on EVERY tooth = 67% of the total) is the dominant
+cost and is an rpm-INDEPENDENT fixed tax.
+3. Between the snapshots: ~955k teeth / ~861 s / 58 teeth-per-rev = ~1150 rpm
+average - the ~50 us was measured at LOW rpm; it does not shrink with rpm.
+
+Per-tooth postDecode inventory (all code-verified):
+- wrapAngleMethod + CriticalSectionLocker + m_lastToothTimer.reset - the
+  BASEPRI section blocks prio-4 TMR2/3/4 fires for its duration;
+- rpmShaftPositionCallback -> updateInstantRpm -> calculateInstantRpm
+  (instant_rpm_calculator.cpp L62): binary search findAngleIndex over 116
+  eventAngles + 2x wrapAngle + float division + min/max range + ratio;
+- findNextTriggerToothAngle(+2) with consecutive-duplicate skip;
+- mainTriggerCallback (main_trigger_callback.cpp L327) chain:
+  angleClockOnTooth, scheduleDwellEarlyIfDue (4x dwellStartArmed + isnan +
+  isPhaseInRange), angle-queue flush CriticalSectionLocker (queue empty under
+  EFI_ANGLE_CLOCK), handleFuel (4x InjectionEvent::onTriggerTooth early-outs),
+  checkIfTriggerConfigChanged (every sync tooth), engineModules.apply_all
+  (MapAveraging::onEnginePhase 4x isPhaseInRange + MisfireController windows
+  when enabled+idle + dozens of virtual no-ops), onTriggerEventSparkLogic
+  (4x two-window checks), angleClockRefresh (12 channels x SR reads; armed
+  channels add float re-anchor + CCR rewrite + race re-read);
+- decodeMapCam (Sensor::getOrZero + vvtMode compare);
+- boardTriggerCallback = the m74_9 tooth-profile EMA learner + ring write
+  (m74_9_tooth_diag.cpp L422) - runs EVERY tooth although the profile
+  consumer is disabled (triggerGetToothProfileFactor returns 1.0).
+
+Scheduling teeth (postDecode 50-100 us = 1.9-2.3% of teeth) add the arm work:
+wallFuel.adjust + InjectorModel::getInjectionDuration x2 (float corrections),
+action_s creation, TMR3/TMR4 arm, scheduleSparkEvent, prepareIgnitionSchedule
+when !isReady. Rare 100-250 us tails: warning() with formatted output from
+ISR context (NaN dwell/advance in onTriggerEventSparkLogic, and the scheduler
+counterpart maxPrecisionCallbackDuration=924 ticks=231 us in the 15:54
+snapshot) is the prime candidate class.
+
+Why it matters at 7000 rpm: 60-2 tooth = 147.8 us (129 us at 8000). The
+handoff (~50 us avg, max triggerMaxDuration=633 ticks=158 us in the 15:39
+window = a full tooth) blocks pending TMR2/3/4 fires for its whole duration -
+a fire pending at handoff entry waits ~90 us on a 100-us handoff = 3.8 deg at
+7000 rpm (1 deg = 24.6 us). The arm-critical work already runs in the first
+8-33 us; the remaining ~34 us of postDecode is the tail that delays pending
+fires and pushes angleClockRefresh late (the known immediate=N / dwell
+lateArm tickPast mechanism).
+
+Proposed cuts (not yet implemented):
+- candidate #1: move engineModules.apply_all (MapAveraging::onEnginePhase +
+  MisfireController::onEnginePhase) out of the handoff - they only schedule
+  TIM5 events; MAP windows need the one-tooth-ahead rework (like dwell) or
+  onTdc scheduling;
+- move checkIfTriggerConfigChanged to a periodic context (it runs every sync
+  tooth);
+- move or gate the m74_9 tooth-profile learner in boardTriggerCallback (pure
+  diagnostics with the consumer disabled);
+- remove formatted warning() prints from the hot ISR paths;
+- add sub-phase histograms inside trgPostDecode (rpm callback /
+  mainTriggerCallback / board hook) so the next lockstats names the top
+  consumer with numbers instead of code-walk estimates.
+
+Follow-ups: run lockstats at a steady 7000 rpm to confirm the fixed tax on
+short teeth; pick one cut and re-measure.
+
 ## 2026-09-22 - m74_9: fan PWM analysis - fans are SPI-only relays, hard-PWM impossible through the L9779; the [noname] 1 Hz channel is the USER'S LUA
 
 Question: can the fan soft-PWM move to hard PWM like the ETB did? Answer
