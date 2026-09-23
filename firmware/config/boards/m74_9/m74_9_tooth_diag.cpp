@@ -14,6 +14,11 @@
  * Capture happens in boardTriggerCallback(), which the weak default in
  * trigger_central.cpp lets the board override; it fires once per decoded
  * (synchronized) primary tooth, 58 times per crank revolution.
+ *
+ * DISABLED 2026-09-23: the per-tooth learner is switched off at runtime
+ * (M74_9_TOOTH_PROFILE_LEARNER, see below) - nothing consumes the profile
+ * anymore and the capture cost ran in the top-priority trigger handoff on
+ * every tooth.
  */
 
 #include "pch.h"
@@ -23,6 +28,25 @@
 #include "trigger_decoder.h"
 #include "storage.h"
 #include "m74_9_tooth_diag.h"
+
+/**
+ * Per-tooth profile learner runtime switch.
+ *
+ * 0 (default since 2026-09-23): boardTriggerCallback does nothing at runtime.
+ * The learner ran in the trigger handoff ISR (top kernel priority, blocks
+ * TMR2/3/4 fires) on EVERY decoded tooth - index math + period plausibility +
+ * EMA update + ring write, ~2-4 us - although the profile has no consumer
+ * (triggerGetToothProfileFactor is pinned to 1.0 below) and the MFS
+ * load/save housekeeping is unwired (custom_board_periodicSlowCallback =
+ * m74_9ToothPeriodic is commented out in board_configuration.cpp). Pure
+ * overhead on a path where teeth fly every ~148 us at 7000 rpm.
+ *
+ * 1: re-enable learning (then also re-wire the periodic hook if the profile
+ * should persist and be consumed). The 'toothdump'/'toothsave' console
+ * commands keep working in either mode - with the learner off they show the
+ * stored/empty profile.
+ */
+#define M74_9_TOOTH_PROFILE_LEARNER 0
 
 /**
  * RPM-adaptive trigger input debounce - the software half of the stock ECU's
@@ -65,8 +89,12 @@ ToothEvent ring[RingSize];
 size_t ringHead = 0;
 size_t ringTotalWritten = 0;
 
+#if M74_9_TOOTH_PROFILE_LEARNER
+// Learner-only state: the last accepted tooth drives the period measurement
+// and the sequential-index guard inside boardTriggerCallback.
 efitick_t lastToothTimestamp = 0;
 int lastToothIndex = -1;
+#endif // M74_9_TOOTH_PROFILE_LEARNER
 
 // Learned per-tooth period profile: EMA over synchronized revolutions
 float profileUs[ToothCount] = {};
@@ -109,10 +137,12 @@ uint32_t minLearnedRevs() {
 	return minRevs == UINT32_MAX ? 0 : minRevs;
 }
 
+#if M74_9_TOOTH_PROFILE_LEARNER
 bool isPlausibleToothPeriod(efitick_t period) {
 	// One tooth is 6 degrees of crank. Accept roughly 6 rpm .. 6000 rpm.
 	return period > NT_PER_SECOND / 6000 && period < NT_PER_SECOND / 6;
 }
+#endif // M74_9_TOOTH_PROFILE_LEARNER
 
 // Print an array of period values in chunks: efiPrintf lines are capped at
 // 256 characters, 58 values do not fit one line. Buffers are static - the
@@ -420,6 +450,7 @@ void m74_9TimeCheck() {
 
 // Called from the trigger decoder for every synchronized primary tooth.
 TRIGGER_RAM_CODE void boardTriggerCallback(efitick_t timestamp, float) {
+#if M74_9_TOOTH_PROFILE_LEARNER
 	// Authoritative tooth position comes from the decoder index (0 = the sync
 	// tooth, 2 index units per tooth for RiseOnly wheels), NOT from the engine
 	// phase float: the phase wraps around tdcPosition() and mapped the sync
@@ -462,6 +493,13 @@ TRIGGER_RAM_CODE void boardTriggerCallback(efitick_t timestamp, float) {
 	ring[ringHead].index = index;
 	ringHead = (ringHead + 1) % RingSize;
 	ringTotalWritten++;
+#else
+	// Learner off (M74_9_TOOTH_PROFILE_LEARNER=0): the per-tooth capture moved
+	// out of the top-priority trigger handoff. The handoff must stay as short
+	// as possible - at 7000 rpm a tooth is ~148 us and the handoff blocks
+	// TMR2/3/4 fires for its whole duration.
+	(void)timestamp;
+#endif
 }
 
 void m74_9ToothDump() {

@@ -1,5 +1,34 @@
 # Work Report
 
+## 2026-09-23 - m74_9: tooth-profile learner disabled at runtime (M74_9_TOOTH_PROFILE_LEARNER=0)
+
+First cut from the handoff decomposition of the same day: the per-tooth
+m74_9 boardTriggerCallback capture (index math + plausible-period check +
+EMA into profileUs[] + ring write, ~2-4 us per tooth) ran in the top-priority
+trigger handoff although nothing consumed the profile (triggerGetToothProfileFactor
+pinned to 1.0) and the MFS load/save housekeeping was unwired
+(custom_board_periodicSlowCallback = m74_9ToothPeriodic commented out in
+board_configuration.cpp). Pure overhead on the path that blocks TMR2/3/4 fires.
+
+Change (firmware/config/boards/m74_9/m74_9_tooth_diag.cpp):
+- new switch M74_9_TOOTH_PROFILE_LEARNER (0) with a rationale comment -
+  boardTriggerCallback now compiles to an empty body at runtime (the call
+  itself remains: one call+ret per tooth);
+- the learner-only file statics (lastToothTimestamp, lastToothIndex,
+  isPlausibleToothPeriod) are guarded by the same define so the
+  warnings-as-errors build stays clean in both modes;
+- the 'toothdump'/'toothsave' console commands keep working - with the
+  learner off they print the stored/empty profile;
+- boardRawTriggerEdge (the rawtrg oscilloscope ring) is intentionally NOT
+  disabled - it stays the primary VRS noise diagnostic (the snap-throttle-off
+  rawtrg capture is still on the open list) and is already outside the
+  triggerIsr histograms.
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL (first attempt failed with
+-Werror=unused-function/-variable on the now-dead learner statics, guarded by
+the define). Car check: lockstats trgPostDecode should drop by the saved
+~2-4 us and 'toothdump' now shows an empty capture - expected, not a bug.
+
 ## 2026-09-23 - m74_9: handoff timing decomposition - what runs per tooth and where the ~50 us goes
 
 User question (lockstats snapshots 15:39:49 and 15:54:10 of 2026-09-23): why
