@@ -13267,3 +13267,50 @@ at 7000 rpm is 17.14 ms (zero reserve at high duty) and would refactor the most
 flight-proven path; a separate TMR close queue (TIM1/TMR8) hits the same 16-bit
 cap and spends the last free 4-channel timer for a <25 us edge-jitter gain that
 does not change fuel mass. Verdict: keep close on TIM5 CC2.
+
+## 2026-09-23 (3rd) - m74_9: car session 15:39-15:54 - C9009/dwell-lateArm cluster with RPM DECELERATION events
+
+Car data (user pasted, the +1 ladder build): C9009 `==1` bursts (charged=0
+bail=no, early=0, off=0-22 tenths = 0-2.2 deg, gapCorr=38 constant) + the
+user's observation: the bursts and the inj/dwell lateArm spikes start WHEN
+RPM DROPS - abrupt throttle snap-off at high rpm, clutch press-in, idle
+load steps (fan/generator). lockstats (two windows): nvic 0/3/5/12/12/7
+(exact), angclk T2/T4/T3=4, injCC2 TIM5=5, tim2clk healthy (ARR=FFFFFFFF,
+T2d~NTd~400k both sleep and busy). dwell lateArm split guard=0 tickPast=5/12;
+inj guard=0 tickPast=62/280. dwell refusal: branch=2 win=1 target=508.6
+rem=0.5 deg, cnt-atTick=283 ticks (71 us) -> the arm ran 71 us after the
+edge for an event only 61 us ahead @1370 rpm. spark fired == dwell fired +
+lateArm (engine healthy), overdwell=0, sched spark=0, injCC2
+scheduled==fired exact, maxTriggerReentrant=0, no C9002/C9007 in the window,
+sync rate healthy.
+
+Analysis recorded in CLAUDE.md (C9009 section, 2026-09-23 CAR DATA block):
+- guard=0 everywhere -> phase-jump/resync hypothesis REFUTED again (the
+  armGuard branch never fires); 100% tick-past.
+- With the executor below the handoff, tick-past now means the event sits
+  too close to the current phase for the CURRENT-window arm (the handoff's
+  own ~100-250 us elapsed before onTriggerEventSparkLogic), not executor
+  preemption.
+- early=0 in every diag line: the second schedule always travels the
+  current window -> the early arm at T-1 was skipped every time. The early
+  window [next(T-1), nextNext(T-1)) = [cur(T), next(T)) CONTAINS the dwell
+  angle, so the skip is a real open question (candidates: isReady=false,
+  NaN dwell, the 09-03 storm-flap path).
+- Operating-point fragility: at ~1400 rpm (advance 709.7, dwell 21.4 deg)
+  the dwell target sits 0.2-2.2 deg past the tooth boundary, so whenever
+  the early arm is skipped the only remaining path has a 0-2 deg margin.
+- Deceleration compresses that margin further (the 90-deg-averaged
+  oneDegreeUs basis lags while the teeth stretch) -> fail rate jumps at
+  rpm drops - matches the user's observation mechanically, no hardware
+  theory needed. The L9779-signal theory has NO support in this capture; a
+  VR-only decel anomaly would show in rawtrg/synctrace, not in these
+  counters - next data point: rawtrg+synctrace around a snap-throttle-off.
+- Open: inj opens exceed dwell starts by ~0.7-2.7% (injCC2 exact) - the
+  double-window armedAt-passed next-cycle candidate, unquantified.
+- Fix candidates (not implemented): (a) early-window LOOKAHEAD past
+  nextPhase; (b) tick-past Start-kind arms -> arm for IMMEDIATE TMR fire
+  instead of TIM5 fallback; (c) shrink the handoff's pre-arm work; (d)
+  instrument why the early arm is skipped (dwellStartArmed/isReady/dwellMs
+  into c9009diag).
+
+No code change this entry (analysis + docs only).
