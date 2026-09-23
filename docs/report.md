@@ -1,5 +1,37 @@
 # Work Report
 
+## 2026-09-22 - m74_9: handoff raised to the top kernel priority (3), TIM5 executor dropped to 4
+
+The stall class from the morning entry (tickPast arms + C9009 bursts) is
+addressed at the priority level per the user's directive. `interrupt_priority.h`:
+
+- handoff `EFI_IRQ_EXTI_HANDOFF_PRIORITY` 4 -> 3 (CORTEX_MAX_KERNEL_PRIORITY
+  ceiling - the handoff uses CriticalSectionLocker so it cannot enter the fast
+  0-2 levels).
+- TIM5 executor `EFI_IRQ_SCHEDULING_TIMER_PRIORITY` 3 -> 4 (still consumed by the
+  LLD via STM32_PWM_TIM5_IRQ_PRIORITY - the no-default-7 gotcha stands).
+- TMR2/3/4 stay at 3, co-equal with the handoff.
+
+The executor's prio-3 batches (MAP/knock/soft-PWM/watchdog/CC2) can no longer
+preempt the handoff mid-decode -> the angle-clock arms complete at their early
+elapsed times -> the tick-past fallbacks should collapse. Concurrency is still
+safe: both the executor's `onTimerCallback` (executeAllPendingActions +
+scheduleTimerCallback) and `SingleTimerExecutor::schedule` (insertTask) hold
+`CriticalSectionLocker`; BASEPRI masks priorities 3..15 on this port
+(CORTEX_FAST_PRIORITIES=2, MAX_KERNEL=3, SIMPLIFIED=FALSE), so neither can
+preempt the other mid-queue-operation.
+
+THE TRADE (validate on the car): a TMR fire pending during a running handoff
+now waits for the decode - `angclk maxLateUs` may grow to ~44-250 us; the
+overdwell rescue and the charge-anchored spark re-arm bound the consequence.
+Also `SingleTimerExecutor::schedule()` still never runs due events inline from
+ISR context (the executor is now BELOW the handoff, so inline execution would
+stall the decode instead of being preempted). lockstats `nvic:` want string
+updated to 0/3/4/11/11/6 (exti/handoff/tim5/can/can/adc). Docs updated:
+angle_clock.cpp concurrency comment (same-priority ISRs no longer nest into the
+handoff), digital_input_exti.cpp priority comment. Build: compile_m74_9.sh
+BUILD SUCCESSFUL.
+
 ## 2026-09-22 - m74_9: inj lateArm split PROVES the stall - 100% tickPast, 0% guard; executor (MAP/knock/PWM/watchdog) preempts the handoff
 
 Car data with the inj lateArm split settles the stall-vs-resync question in

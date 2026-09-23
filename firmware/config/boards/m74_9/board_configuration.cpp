@@ -1105,9 +1105,10 @@ void setup_custom_board_overrides() {
 		// Ground truth for the interrupt-priority swap: read the NVIC
 		// priority registers directly. IRQ numbers per the Artery CMSIS:
 		// EXTI9_5=23 (raw trigger capture, want 0), I2C1_EV=31 (trigger
-		// handoff, want 4), TIM5=50 (executor, want 3), CAN1_TX=19/
+		// handoff, want 3 - raised above the executor 2026-09-22),
+		// TIM5=50 (executor, want 4), CAN1_TX=19/
 		// CAN1_RX0=20 (want 11), ADC1_2=18 (want 6).
-		efiPrintf("nvic: exti=%u handoff=%u tim5=%u canTx=%u canRx0=%u adc=%u (want 0/4/3/11/11/6)",
+		efiPrintf("nvic: exti=%u handoff=%u tim5=%u canTx=%u canRx0=%u adc=%u (want 0/3/4/11/11/6)",
 			(unsigned)((NVIC->IP[23] >> 4) & 0xF), (unsigned)((NVIC->IP[31] >> 4) & 0xF),
 			(unsigned)((NVIC->IP[50] >> 4) & 0xF), (unsigned)((NVIC->IP[19] >> 4) & 0xF),
 			(unsigned)((NVIC->IP[20] >> 4) & 0xF), (unsigned)((NVIC->IP[18] >> 4) & 0xF));

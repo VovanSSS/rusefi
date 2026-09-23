@@ -6,39 +6,48 @@
 #define EFI_IRQ_EXTI_PRIORITY             CORTEX_MAXIMUM_PRIORITY
 #endif
 
-// The scheduling timer (TIM5 CC1) is the event executor: spark/dwell/injection
-// commands fire from its ISR and must have a fixed dispatch latency. It must
-// therefore be the HIGHEST-PRIORITY kernel IRQ (CORTEX_MAX_KERNEL_PRIORITY is 3
-// on ARMv7-M) - above the trigger handoff and the ADC. This is load-bearing:
-// the AT32 mcuconf defines no STM32_PWM_TIM5_IRQ_PRIORITY, so the shared TIMv1
-// LLD defaults it to 7 - BELOW the trigger handoff decode (3) and the ADC ISR
-// (6). With the default, every trigger decode (44 us average, tails to ~1 ms,
-// ~2200/s at 1900 rpm) and every ADC completion delayed the executor: 11-30%
-// of all scheduled commands went out >=10 us late (up to 389 us) - the
-// measured "floating command execution" behind the stable-rpm misfires and
-// coil overcharges (m74_9, 2026-08-23).
-// STM32_PWM_TIM5_IRQ_PRIORITY is consumed by the TIMv1 LLD pwm_lld_init ->
-// nvicEnableVector(STM32_TIM5_NUMBER, ...); the OSAL validity check requires
-// >= CORTEX_MAX_KERNEL_PRIORITY, which 3 satisfies.
-#define EFI_IRQ_SCHEDULING_TIMER_PRIORITY 3
+// Trigger decode + angle-clock arming (handoff) at the HIGHEST kernel IRQ
+// priority (CORTEX_MAX_KERNEL_PRIORITY = 3 on ARMv7-M), co-equal with the
+// angle-clock fire ISRs. WHY (2026-09-22, supersedes the 08-23 "executor
+// above decode" inverse invariant): the handoff arms the TMR2/3/4 compare
+// channels from `s_edgeTimestamp + angle delay`; if a prio-3 executor batch
+// (MAP windows, knock, soft PWM, watchdog, TIM5 CC2) delays the handoff past
+// the armed tick, the arm fails 'tick-past' and the event falls back to TIM5
+// time-based scheduling (the angclk inj/dwell lateArm stall class, proven by
+// the guard=0/tickPast=100% split - up to 640 fallbacks per driving window).
+// At prio 3 the handoff can only be delayed by a RUNNING prio-3 ISR body
+// (angle-clock fires, ~10-25 us), never by the executor.
+// CORTEX_MAX_KERNEL_PRIORITY is the ceiling: the handoff uses kernel
+// primitives (CriticalSectionLocker) so it cannot move into the fast 0-2
+// levels.
+#define EFI_IRQ_EXTI_HANDOFF_PRIORITY     3
+
+// The scheduling timer (TIM5 CC1/CC2) - event executor for everything that is
+// NOT on the angle clock: injection close (CC2), overdwell rescue, MAP widows,
+// knock windows, soft PWM, watchdog buddy. It was the highest-priority kernel
+// IRQ (3) since 2026-08-23, when dwell/spark/injection themselves fired from
+// TIM5 and a decode-delayed dispatch floated every command (11-30% >=10 us
+// late). With the angle clock those commands moved to TMR2/3/4, so what
+// remains on TIM5 tolerates a decode-duration delay: close PW error is bound
+// by one handoff (~44-250 us on 2-20 ms PWs), the 2.5x-dwell rescue and MAP/
+// knock windows carry millisecond margins. Dropped to BELOW the handoff
+// (2026-09-22) so its run-to-completion batches no longer stall the decode.
+// Historical: the AT32 mcuconf defines no STM32_PWM_TIM5_IRQ_PRIORITY, so the
+// TIMv1 LLD defaults it to 7 - the define here is what keeps it a kernel
+// priority at all.
+#define EFI_IRQ_SCHEDULING_TIMER_PRIORITY 4
 #define STM32_PWM_TIM5_IRQ_PRIORITY       EFI_IRQ_SCHEDULING_TIMER_PRIORITY
 
-// Three hardware angle-clock timers, all at the SAME priority as the TIM5
-// executor (prio 3): their ISRs execute dwell/spark/injection actions directly
-// so they need the same fixed entry latency and must preempt the trigger
-// handoff. Same-priority ISRs never nest into each other.
+// Three hardware angle-clock timers, at the top kernel priority co-equal with
+// the handoff (prio 3): their ISRs execute dwell/spark/injection actions
+// directly. Same priority with the handoff means a fire pending during the
+// decode waits for it (lateness up to the decode duration) - the documented
+// trade of the handoff-up change; the overdwell rescue and the
+// charge-anchored spark re-arm bound the consequence.
 //   TMR2 (32-bit, VectorB0, IRQ 28) -> dwell starts
 //   TMR4 (16-bit, VectorB8, IRQ 30) -> spark fires
 //   TMR3 (16-bit, VectorB4, IRQ 29) -> injection starts
 #define EFI_IRQ_ANGLE_CLOCK_PRIORITY      3
-
-// Trigger decode runs BELOW the executor on purpose: tooth timestamps are
-// captured in the raw EXTI ISR (fast IRQ 0) into a queue before the decode
-// starts, so the decode being preempted by due events does not affect tooth
-// timing measurements - while the decode's variable duration no longer delays
-// command dispatch. With the executor at 3, the handoff at 4 still preempts
-// ADC/UART/SysTick/CAN as before.
-#define EFI_IRQ_EXTI_HANDOFF_PRIORITY     4
 
 // The L9779 WDA feed (one-shot TMR10, direct registers): BELOW the trigger
 // handoff on purpose - its ~100 us polled-SPI burst used to run inside the
