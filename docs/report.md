@@ -13599,3 +13599,226 @@ Analysis recorded in CLAUDE.md (C9009 section, 2026-09-23 CAR DATA block):
   into c9009diag).
 
 No code change this entry (analysis + docs only).
+
+## 2026-09-23 (evening) - lockstats session 21:43-21:52: trigger budget stable ~57 us, angle clock clean, two ECU restarts explain all outliers
+
+7 lockstats snapshots (print-then-reset, each = delta), ~900-1050 rpm,
++1-ladder build (nvic 0/3/5/12/12/7 exact everywhere). Callback addresses
+resolved from firmware/build/rusefi.elf (built 21:15, flashed for this
+session).
+
+- Trigger handoff (prio 3): 56.1-57.6 us/edge avg across all windows -
+  pre 5.3-6.0 + decode ~10.0-10.4 + post 39.3-40.4 (69-70%). Post is the
+  only optimization target. max triggerMaxDuration 478-491 ticks
+  (120-123 us) in clean windows; the only >250 us tails are 3183/3206
+  ticks (796/802 us) in the two post-boot windows (500-1000us bucket=1
+  each) - init work, not steady-state. The triggerIsr 50-100us bin at
+  ~80% is the known bin-crossing artifact (avg 56.6, each phase <50).
+- Angle clock: dwell fired == spark fired in every window, lateArm=0
+  (guard=0 tickPast=0) in all clean windows. Session total inj lateArm =
+  8 (1 + 7), ALL tickPast, ALL in post-boot windows; the 7 coincide with
+  the 802 us handoff tail after the second restart. fuel fallback on
+  TIM5 == inj lateArm exactly 1:1 (n=1, n=7; maxLate 126 us).
+- TMR2 clock: ARR=FFFFFFFF, PSC=71, sleep/busy T2d ~= NTd ~= 400000/100ms
+  in EVERY window - the PMEN fix holds for the whole session incl. past
+  the wrap-onset operating point.
+- injCC2 scheduled==fired in every window (0 pending closes = the
+  09-01 slot-overwrite bug stays fixed). Counters reset in the 21:50
+  window (14930 -> 1805) -> ONE ECU restart between 21:48:26 and
+  21:50:33, confirmed by boot-only callbacks (timerValidationCallback,
+  PrimeController::onPrimeStart/EndAdapter) in that window and in the
+  first (post-boot) window.
+- Executor: ~98-99% 'late >= 10us' is batch-order normal (hist mode
+  4-16 us = 91-97%, clean-window maxLate 63-100 us). The only >=1k-bucket
+  events (53066 us and 47403 us) are BOTH watchDogBuddyCallback in the
+  TWO post-boot windows -> startup initialization, not running. Callback
+  identities: startKnockSampling 4/cycle (95-98% late, maxLate 89,
+  dur ~25), startAveraging 4/cycle (maxLate 126, dur ~36),
+  endAveraging 4/cycle (maxLate 133, dur ~34), onTdcCallback 1/cycle
+  (maxLate 97, dur ~28), watchDogBuddyCallback ~1/s (dur 4-7).
+- Soft PWM: 0 channels, softPwmEvents=0 (the 1 Hz Lua channel is gone).
+  maxLockedDuration=0, maxEventCallbackDuration=0,
+  maxSchedulingPrecisionLoss=0 in all windows.
+- angclk maxLate 66-113 us = pending prio-4 fires behind a running
+  handoff - 0.4-0.7 deg at session rpm, the documented trade.
+  immediate (due-at-refresh, armed immediate) 0 in clean windows.
+
+Open: handoff ~57 us at ~1000 rpm = ~39% of the 147.8 us tooth at 7000
+rpm (blocks pending TMR fires; engineModules.apply_all is the next
+candidate); startKnockSampling still on TIM5 current-window (up to 89 us
+late = ~3.7 deg at 7000); the ~800 us handoff tails are post-boot only so
+far - catch the source if one ever appears mid-run.
+
+## 2026-09-23 (evening, nr 2) - handoff remaining-work inventory with code anchors (all time figures M=measured histogram / E=analytical apportionment)
+
+Anchors (21:44:58 snapshot, ~1011 rpm): triggerIsr avg 56.6 us = pre 5.6
+(10%) + decode 10.1 (18%) + post 39.4 (70%) + ISR entry ~3. Morning
+baseline was 49.8-51.2 us at ~1150 rpm - the +5-7 us sits in postDecode
+and is the MAP variant-A per-tooth tax (4x window checks + startArmedNt),
+not degradation. Non-scheduling post ~37 us, scheduling post ~50-100
+(7.2-9.4% of teeth). Full per-tooth chain in execution order:
+
+- ISR entry: queue pop + boardRawTriggerEdge rawtrg ring + tooSoon -
+  ~3-4 us (E). Not movable (edge capture foundation).
+- preDecode (polarity/useful-signal/noiseFilter/isToothExpectedNow,
+  trigger_central.cpp:594-980): 5.6 us (M).
+- decodeTriggerEvent: 10.1 us (M), heavier on gap/sync teeth. Core.
+- waveChart lookup (sniffer-off -> ~0) + wrapAngle: ~0.8 (E).
+- m_lastToothTimer under CriticalSectionLocker: ~0.5 (E).
+- rpmShaftPositionCallback -> updateInstantRpm ALWAYS (binary search
+  over 116 eventAngles + float, rpm_calculator.cpp:307/407): ~4 (E);
+  trgEventIndex==0 branch (oneDegreeUs + revolution counter) +2-3.
+- findNextTriggerToothAngle x2 with duplicate skip: ~2 (E).
+- tdcMarkCallback <0.5 (E).
+- mainTriggerCallback (main_trigger_callback.cpp:343), in order:
+    angleClockOnTooth ~1.5-2 (E);
+    scheduleDwellEarlyIfDue - isReady + nextNext==next guard + 4x
+    isPhaseInRange, runs on ALL teeth before the rpm==0 gate - ~4-6 (E);
+    on a hit tooth: angleClockArmDwell ~5 + scheduleSparkEvent incl.
+    scheduleOrQueue lock/sort ~8;
+    scheduleEventsUntilNextTriggerTooth - under EFI_ANGLE_CLOCK the angle
+    queue carries only VVT/AuxActor, ~empty - ~3-5 (E);
+    handleFuel - 4x InjectionEvent::onTriggerTooth early-outs ~4-6 (E),
+    hit tooth adds fuel/cylinder model ~3-5 per cylinder (~20 total,
+    anchored to the 2026-09-01 night-5 decomposition);
+    EFI_TRIGGER_CONFIG_RUNTIME_RELOAD compiled out on m74_9 = 0;
+    engineModules.apply_all - ~22 virtual onEnginePhase calls per tooth,
+    only MapAveragingModule (4x windows + startArmedNt) and
+    MisfireController (misfireDetectionEnabled && idle -> evaluateSegment)
+    do real work: ~5-8 (E), +4-8 on the 4 hit teeth/cycle (executor
+    insert). CANDIDATE nr 1: move out of the handoff (option B: plan the 4
+    MAP windows once per cycle from onTdc) - saves ~5-8 us/tooth (~10%).
+    onTriggerEventSparkLogic - 4x two-window checks + TIM5 fallback checks
+    ~5-10 (E); keep the arm part, the checks can be narrowed;
+    angleClockRefresh - 12 refreshChannel calls (4 dwell re-anchored, 8
+    skip on the 780 sentinel) ~7-10 (E); candidate: early-out when no
+    channels armed.
+- decodeMapCam ~1 (E); boardTriggerCallback ~0.5 (E - the M74_9_TOOTH_PROFILE
+  LEARNER=0 build already removed the learner).
+
+Irreducible core ~27 us (entry 3 + pre 5.6 + decode 10.1 + rpm 4 + window
+checks ~14 + findNext 2). postDecode remains the only optimization
+surface; the rare 100-250 us / ~800 us tails are warning() prints from ISR
+context (C9009 class), not steady-state - removing ISR prints removes the
+tails entirely.
+
+## 2026-09-23 (evening, nr 3) - consolidated lockstats tables for the 21:43-21:52 session
+
+All snapshots are print-then-reset deltas. triggerMaxDuration ticks are NT
+ticks (4 MHz, 1 tick = 0.25 us). rpm = teeth/58/seconds (60-2, both
+edges). M = measured histogram, E = analytical apportionment anchored to
+the measured phase sums.
+
+Table 1 - trigger processing per snapshot
+
+ win    | delta | teeth   | rpm  | avg us | pre/decode/post us | post share | post 50-100% | max ticks/us | tails >250us
+--------|-------|---------|------|--------|--------------------|------------|--------------|--------------|-------------
+ 21:43  | boot  | 138682  |  -   | 56.6   | 5.6/10.1/39.4       | 69.6%      | 7.4%         | 3183 / 796   | 1x 500-1000
+ 21:44  | 85 s  | 83162   | 1011 | 56.6   | 5.6/10.1/39.4       | 69.6%      | 7.2%         | 486 / 122    | none
+ 21:46  | 62 s  | 62533   | 1044 | 57.0   | 5.9/10.1/39.5       | 69.3%      | 7.5%         | 491 / 123    | none
+ 21:48  | 146 s | 148585  | 1052 | 57.0   | 6.0/10.1/39.5       | 69.2%      | 7.4%         | 486 / 122    | none
+ 21:50  | 127 s | 52133   | ~425 | 56.1   | 5.3/10.0/39.3       | 70.1%      | 7.2%         | 3206 / 802   | 1x 500-1000 + ECU restart
+ 21:52a | 96 s  | 82884   | 893  | 57.5   | 5.3/10.4/40.4       | 70.3%      | 9.2%         | 489 / 122    | none
+ 21:52b | 22 s  | 18686   | 879  | 57.6   | 5.3/10.4/40.4       | 70.2%      | 9.4%         | 478 / 120    | none
+
+- The triggerIsr 50-100 us bin (~80% of teeth) is the known bin-crossing:
+each phase is <50 us, the SUM crosses 50 us. Not a slow phase.
+- The 21:50 window average rpm is low because the ECU restarted mid-window
+(reset counters, boot-only executor callbacks); the 796/802 us handoff
+tails sit exactly in the two post-boot windows.
+- Typical tooth max = 120-123 us; nothing above 250 us in steady-state
+windows.
+
+Table 2 - angle clock, injection close queue, TMR2 clock per snapshot
+
+ win    | dwell f/lA | spark f/lA | inj f/lA | maxLate us | immediate | injCC2 sch/fir | TMR2 sleep/busy per 100 ms
+--------|------------|------------|----------|------------|-----------|----------------|--------------------------
+ 21:43  | 4780/0     | 4780/0     | 4781/1   | 113        | 28        | 4782/4782      | 396906 / 400001
+ 21:44  | 2861/0     | 2861/0     | 2861/0   | 68         | 0         | 7650/7650      | 398455 / 400109
+ 21:46  | 2149/0     | 2149/0     | 2149/0   | 69         | 0         | 9806/9806      | ARR=FFFFFFFF throughout
+ 21:48  | 5117/0     | 5117/0     | 5117/0   | 69         | 0         | 14930/14930    | (PMEN fix holds, no
+ 21:50  | 1797/0     | 1797/0     | 1798/7   | 113        | 17        | 1805/1805 (rst)|  degradation all session)
+ 21:52a | 2852/0     | 2852/0     | 2852/0   | 83         | 54        | 4663/4663      | ~400000 / ~400000
+ 21:52b | 638/0      | 638/0      | 638/0    | 66         | 0         | 5307/5307      | == NT domain
+
+- inj lateArm split: guard=0 everywhere (phase joints never diverged), all
+8 refusals are tickPast, all in the two post-boot windows; TIM5 fuel
+fallback == inj lateArm exactly 1:1 (n=1 and n=7, maxLate 126 us).
+- injCC2 scheduled==fired in every window (0 pending closes); nvic
+exti=0/handoff=3/tim5=5 and T2/T4/T3=4 exact all session.
+- angclk maxLate 66-113 us = pending prio-4 fires waiting behind a running
+handoff: 0.4-0.7 deg at session rpm (the documented +1-ladder trade).
+
+Table 3 - executor (TIM5, prio 5) callbacks, identities resolved from
+firmware/build/rusefi.elf (built 21:15, the flashed build) via addr2line
+
+ addr     | function                          | rate      | late>=10us | maxLate us | maxDur us
+----------|-----------------------------------|-----------|------------|------------|----------
+ 0804853D | startKnockSampling(Engine*)        | 4/cycle   | 95-98%     | 89         | ~25
+ 0805A501 | startAveraging(mapSampler*)        | 4/cycle   | ~99.9%     | 126        | ~36
+ 0805A40D | endAveraging(MapAverager*)         | 4/cycle   | ~99.9%     | 133        | ~34
+ 08048471 | onTdcCallback()                    | 1/cycle   | ~99%       | 97         | ~28
+ 08072187 | watchDogBuddyCallback()            | ~1 Hz     | 90-100%    | 53066 / 47403* | ~7
+ 0804C509 | PrimeController::onPrimeStartAdapter| boot only | -          | 14         | 117
+ 08072D89 | PrimeController::onPrimeEndAdapter | boot only | -          | 14         | 53
+ 0803CAB1 | timerValidationCallback()          | boot only | -          | 5          | 1
+
+* the two >=1k-bucket outliers (53 ms / 47 ms) are BOTH in the two
+post-boot windows - startup initialization, never in steady state.
+
+- ~98-99% 'late >= 10us' is batch-order normal (hist mode 4-16 us = 91-97%,
+steady-state ceiling 63-100 us), NOT preemption; dwell/spark/overdwell
+counters = 0 on TIM5 (all on TMR2/3/4).
+- startKnockSampling is still current-window on TIM5: up to 89 us late =
+~3.7 deg at 7000 rpm - a candidate for early arm.
+- Soft PWM: 0 channels all session (the 1 Hz Lua channel is gone).
+
+Table 4 - per-tooth handoff inventory in execution order (prio 3 ISR),
+all code-anchored
+
+ # | item                                       | file:line            | every tooth | us (plain) | extra on scheduling tooth          | M/E
+---|--------------------------------------------|----------------------|-------------|------------|-------------------------------------|----
+ 1 | queue pop + boardRawTriggerEdge ring + tooSoon | digital_input_exti.cpp / trigger_central.cpp:546 | yes | 3-4    | -                                   | E
+ 2 | polarity / isUsefulSignal / noiseFilter / isToothExpectedNow | trigger_central.cpp:594-980 | yes | 5.6 | -                    | M
+ 3 | decodeTriggerEvent (gap [1.6,3.75]+[0.85,1.15]) | decoder   | yes         | 10.1       | +longer on gap/sync teeth          | M
+ 4 | waveChart lookup (sniffer off ~0) + wrapAngle | trigger_central.cpp:1003-1009 | yes | ~0.8 | -                         | E
+ 5 | m_lastToothTimer under CriticalSectionLocker  | :1013-1019           | yes         | ~0.5       | -                                  | E
+ 6 | rpmShaftPositionCallback -> updateInstantRpm | rpm_calculator.cpp:307/407 | yes | ~4     | +2-3 at trgEventIndex==0 (cycle rpm) | E
+ 7 | findNextTriggerToothAngle x2 (dup skip)      | :1035,1083           | yes         | ~2         | -                                  | E
+ 8 | tdcMarkCallback                              | :1029                | yes         | <0.5       | -                                  | E
+ 9a| angleClockOnTooth (basis feed, pre rpm-gate) | angle_clock.cpp:344  | yes         | 1.5-2      | -                                  | E
+ 9b| scheduleDwellEarlyIfDue (4x windows, all teeth)| spark_logic.cpp:892 / main_trigger_callback.cpp:390 | yes | 4-6 | +armDwell ~5 + scheduleSparkEvent (scheduleOrQueue lock/sort ~8) | E
+ 9c| scheduleEventsUntilNextTriggerTooth (flush)  | trigger_scheduler.cpp | yes        | 3-5        | +when VVT/AuxActor events present  | E
+ 9d| handleFuel (4x onTriggerTooth early-outs)    | main_trigger_callback.cpp:309 | yes | 4-6 | +model 3-5/cyl, ~20 total        | E
+ 9e| EFI_TRIGGER_CONFIG_RUNTIME_RELOAD            | main_trigger_callback.cpp:427 | compiled out m74_9 | 0 | -              | -
+ 9f| engineModules.apply_all (~22 virtual calls)  | :446 + map_averaging.cpp:225 + misfire_detection.cpp:199 | yes | 5-8 | +4-8 on 4 hit teeth/cycle (executor insert) | E
+ 9g| onTriggerEventSparkLogic (4x two-window)     | spark_logic.cpp:729  | yes         | 5-10       | +current-window arm + TIM5 flbk   | E
+ 9h| angleClockRefresh (12 refreshChannel calls)  | angle_clock.cpp:602  | yes         | 7-10       | -                                  | E
+ 10| decodeMapCam                                 | :1095                | yes         | ~1         | -                                  | E
+ 11| boardTriggerCallback (learner compiled out)  | :1097                | yes         | ~0.5       | -                                  | E
+
+Irreducible core ~27 us (items 1-3 + rpm + window checks + findNext).
+CANDIDATE nr 1: item 15 (apply_all) -> option B plan-from-onTdc, saves
+~5-8 us/tooth (~10%); item 9h gets an early-out when nothing is armed.
+
+Table 5 - budget: morning vs evening session
+
+ phase                | 2026-09-23 morning (~1150 rpm) | evening 21:44 (~1011 rpm) | share
+----------------------|--------------------------------|---------------------------|-------
+ ISR entry            | ~2                             | ~3                        | 5%
+ trgPreDecode         | 6.4-6.6                        | 5.6                       | 10%
+ trgDecode            | 8.7-9.0                        | 10.1                      | 18%
+ trgPostDecode        | 33.2-34.1                      | 39.4                      | 67-70%
+  - plain tooth (93%) | ~33                            | ~37                       |
+  - scheduling (7%)   | 50-87                          | 50-100                    |
+ TOTAL avg            | 49.8-51.2                      | 56.6                      | 100%
+
+- The +5-7 us evening-vs-morning delta sits in postDecode = the MAP
+variant-A per-tooth tax (4x window checks + startArmedNt guard), not
+degradation.
+- Inside postDecode (E): rpm ~10%, four window/lock packets
+(dwell/fuel/spark/MAP) ~45%, apply_all ~15%, refresh ~20%, framework
+(findNext/mapCam/boardCb/tdc) ~10%.
+- At 7000 rpm (tooth 147.8 us) the 56.6 us handoff occupies ~39% of the
+tooth and blocks pending TMR2/3/4 fires for its whole duration - all
+handoff savings convert directly into high-rpm angle precision.
