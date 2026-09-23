@@ -13658,8 +13658,13 @@ and is the MAP variant-A per-tooth tax (4x window checks + startArmedNt),
 not degradation. Non-scheduling post ~37 us, scheduling post ~50-100
 (7.2-9.4% of teeth). Full per-tooth chain in execution order:
 
-- ISR entry: queue pop + boardRawTriggerEdge rawtrg ring + tooSoon -
-  ~3-4 us (E). Not movable (edge capture foundation).
+- ISR entry: queue pop under __disable_irq + tooSoonToHandleSignal +
+  ISR prologue - ~2.5-3 us (E) - the FUNCTIONAL edge-delivery path (fast
+  EXTI prio 0 -> handoff prio 3 IPC), not movable. boardRawTriggerEdge
+  (rawtrg ring, m74_9_tooth_diag.cpp:273) is DIAGNOSTIC-only (~0.5 us),
+  already outside the triggerIsr histograms, optionally removable - kept
+  on purpose as the primary VRS-noise tool (the snap-throttle-off rawtrg
+  capture is still open).
 - preDecode (polarity/useful-signal/noiseFilter/isToothExpectedNow,
   trigger_central.cpp:594-980): 5.6 us (M).
 - decodeTriggerEvent: 10.1 us (M), heavier on gap/sync teeth. Core.
@@ -13778,7 +13783,8 @@ all code-anchored
 
  # | item                                       | file:line            | every tooth | us (plain) | extra on scheduling tooth          | M/E
 ---|--------------------------------------------|----------------------|-------------|------------|-------------------------------------|----
- 1 | queue pop + boardRawTriggerEdge ring + tooSoon | digital_input_exti.cpp / trigger_central.cpp:546 | yes | 3-4    | -                                   | E
+ 1 | queue pop under __disable_irq + tooSoonToHandleSignal + ISR entry (FUNCTIONAL delivery) | digital_input_exti.cpp / trigger_central.cpp:313 | yes | 2.5-3 | - | E
+ 1b| boardRawTriggerEdge rawtrg ring (DIAGNOSTIC, optional) | m74_9_tooth_diag.cpp:273 | yes | ~0.5 | - | E
  2 | polarity / isUsefulSignal / noiseFilter / isToothExpectedNow | trigger_central.cpp:594-980 | yes | 5.6 | -                    | M
  3 | decodeTriggerEvent (gap [1.6,3.75]+[0.85,1.15]) | decoder   | yes         | 10.1       | +longer on gap/sync teeth          | M
  4 | waveChart lookup (sniffer off ~0) + wrapAngle | trigger_central.cpp:1003-1009 | yes | ~0.8 | -                         | E
