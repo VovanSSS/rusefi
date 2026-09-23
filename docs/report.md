@@ -1,5 +1,46 @@
 # Work Report
 
+## 2026-09-22 - m74_9: inj lateArm split PROVES the stall - 100% tickPast, 0% guard; executor (MAP/knock/PWM/watchdog) preempts the handoff
+
+Car data with the inj lateArm split settles the stall-vs-resync question in
+favor of the USER'S hypothesis. Every lockstats window shows
+`angclk inj lateArm split: guard=0 tickPast=N` (N = 81/89/570/640) and
+`dwell lateArm split: guard=0 tickPast=0..13`:
+
+- guard (armGuard refusal: no basis OR stale-phase `remaining > MAX_LEAD_DEG`) = 0
+  ALWAYS. The earlier "trigger re-sync / phase jump" theory is REFUTED - a real
+  resync would show up here as guard refusals.
+- tickPast (target tick already passed when armed) = 100% of the failures. This
+  is the handoff-ran-late class: `atTick = s_edgeTimestamp + delay`, and the arm
+  fails when the handoff elapsed (tooth edge -> arm) exceeds the angle delay.
+  The TIM5 fallback then schedules by time - which is why "TIM5 чувствует себя
+  отлично и все стреляет" (time-based, immune to the angle-clock handoff).
+
+The stall source (addr2line against build/rusefi.elf, 2026-09-22 lockstats):
+the microsecond executor (TIM5, prio 3 - ABOVE the prio-4 handoff) runs
+startAveraging/endAveraging (MAP windows, ~35 us each), startKnockSampling
+(~25 us), watchDogBuddyCallback, onTdcCallback and a `[noname]` 1 Hz soft-PWM
+`timerCallback` (~50 us/call). These preempt the handoff mid-decode: on
+scheduling teeth the trigger ISR stretches to 100-250 us (~1.6% of teeth), one
+`500-1000us` stall per window, `sched exec late>=10us` up to 70% with
+maxLateUs ~211, and `immediate=` (events past-due at refresh) 522..3275.
+User observation recorded: the error bursts correlate with FAN activation /
+ISR execution on the car; the trigger-disc processing is delayed by that ISR
+load.
+
+Why dwell is ~50x more immune than injection (11-13 vs 570-640 tickPast): OPEN.
+Candidates: the dwell arms from the pre-rpm-gate early window on every tooth
+(2-tooth lead), while injection arms inside the rpm gate; the injection's
+16-bit TMR3 delay at low rpm; or more current-window (0-1 tooth lead) arms for
+injection after a missed early arm. Next data point: lockstats immediately
+after a C9009 + a rolling rpm histogram of the tickPast refusals.
+
+The persistent C9009 `counter - fall == 1` bursts (all four coils re-scheduled
+one slot after their own fire in one revolution, `off` still small 0-2.6 deg,
+early=0) keep firing with charged=0 bail=no - the same stall delays the handoff
+so the recomputed next-cycle dwell collides with the current tooth. Harmless
+(wasted spark, correct angle), still not suppressed.
+
 ## 2026-09-21 - m74_9: c9009diag data - the `counter - fall == 1` double-schedule is a RESYNC/phase-re-anchor, at the CORRECT angle
 
 Car data from the `c9009diag` instrumentation (build 930d8e6bc59) settles the
