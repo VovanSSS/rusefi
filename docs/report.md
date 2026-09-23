@@ -1,5 +1,43 @@
 # Work Report
 
+## 2026-09-22 - m74_9: fan PWM analysis - fans are SPI-only relays, hard-PWM impossible through the L9779; the [noname] 1 Hz channel is the USER'S LUA
+
+Question: can the fan soft-PWM move to hard PWM like the ETB did? Answer
+recorded. Fan control today (21129.msq): fanPin="FAN 1 relay" (L9779_OUT_15),
+fan2Pin="FAN 2 relay" (L9779_OUT_16), fan1/2PwmEnabled="no" -> the relay
+path: FanController::onSlowCallback (20 Hz, SysTick virtual-timer ISR prio 8)
+-> pin.setValue -> L9779::writePad (flag + driver-thread wake; the CONTR SPI
+push lands in the l9779 thread). The relay itself does NOT load the executor
+and creates no PwmConfig - the observed fan<->C9009 correlation is either
+indirect (fan -> idle adder -> ETB -> MAP-window churn) or a fan PWM enabled
+in the FLASHED tune (must check fan1PwmEnabled there).
+
+The `[noname] freq=1.000000Hz softPwmEvents=N` channel in lockstats is NOT the
+fans: the relay path never registers in g_pwmList, and fan-PWM mode would run
+at fan1PwmFrequency=250 Hz, not exactly 1 Hz. USER FACT (recorded): the 1 Hz
+channel is the user's own LUA script (lua startPwm; lua_hooks.cpp clamps
+freq<1 to exactly 1 Hz, so an on/off 0-Hz call becomes 1 Hz). Diagnostic gap:
+PwmConfig::m_name is NEVER set from the msg passed to startSimplePwm (the
+constructor leaves "[noname]" and the msg is only used in warnings), so
+printPwmStats cannot name any soft-PWM channel - worth a small fix.
+
+Hard-PWM for the fans is IMPOSSIBLE on the stock board:
+- OUT15/OUT16 are SBC outputs driven ONLY via the CONTR SPI registers; they
+  have no parallel MCU input (IN5/6/7 = PG7/PG5/PG6 reach only OUT5/6/7 - the
+  heaters/EVAP, buzzed 2026-09-08).
+- GpioChip::setPadPWM is not implemented in l9779.cpp (default -1), so
+  gpiochip_tryInitPwm returns null and every PWM attempt falls back to soft
+  PWM on the executor - i.e. a per-phase-toggle SPI write at PWM rate, which
+  is why fan PWM must stay OFF until rewiring.
+- Bypassing the SBC needs a rewire (like the ETB): free MCU pin with a timer
+  channel + external MOSFET driver. TIM12_CH2 = PB15 is TAKEN
+  (etbIo[0].directionPin1 = Gpio::B15), so a candidate pin/timer must be
+  picked from the board map (TIM1/TIM8/TIM13/TIM14 channels on free pins).
+- Second code gotcha for the future rewire: FanController::initPwm uses
+  startSimplePwm, which does NOT try MCU hard PWM for on-chip pins (only
+  startSimplePwmHard does, as the ETB uses) - the FanController call must be
+  switched + the timer enabled in the at32 mcuconf and stm32_pwm.cpp.
+
 ## 2026-09-22 - m74_9: fast-EXTI-IRQ boundary analysis - nothing from the decode moves UP, the shrink direction is DOWN
 
 Follow-up to the handoff priority raise. Question: what from the decode can
