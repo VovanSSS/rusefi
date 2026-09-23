@@ -13230,3 +13230,40 @@ affected file set is firmware-only (no unit-test impact). Car check:
 maxLateUs on scheduling teeth (the documented trade). Open: the full bundle
 (which also rebuilds the bootloader with the new mcuconf values) must be
 flashed via rusefi.bin once before the next bootloader-CAN session.
+
+## 2026-09-23 (2nd) - m74_9: CC2 injection-close race introduced by the +1 ladder shift, fixed
+
+The +1 shift made TMR3 (open ISR) prio 4 and TIM5 CC2 (close ISR) prio 5,
+breaking the pre-shift invariant documented in injection_close_hw.h: "all
+injection-related ISRs are prio 3, single priority level - no critical
+section needed". The open ISR could now preempt the CC2 dispatcher right in
+the middle of dispatchAndRearm/rearmCC2 (both mutate s_injClose[] and
+CCR2/DIER/EGR): torn slot state = lost or double injector close. The
+executor path was safe (its CriticalSectionLocker masks 3..15); the TMR3
+path was not.
+
+Fix (mutual exclusion via the CC2 side): hwInjectionCloseCallback takes
+CriticalSectionLocker (BASEPRI 3 -> masks the prio-4 open ISR) before any
+queue/CCR update; scheduleInjectionCloseHW stays lock-free (its callers are
+the prio-4 open ISR - the prio-5 CC2 ISR cannot preempt it - and the TIM5
+executor dispatch, already inside its own section); cancelInjectionCloseHW
+takes its own section (no callers yet, any-context-proof). DIER RMW overlap
+analysis: executor touches DIER under its section, CC2 touches under its
+new section, TMR3 touches are mutually excluded by the two sections - all
+three writers are serialized.
+
+| Change | File(s) |
+|---|---|
+| CriticalSectionLocker in hwInjectionCloseCallback + cancelInjectionCloseHW; stale prio-3 invariant comments rewritten | `firmware/hw_layer/injection_close_hw.cpp/.h` |
+| CC2 queue bullet + DOUBLE-FIRE bullet priority claim updated for the new ladder | `CLAUDE.md` |
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL; lockstats `injCC2 scheduled==fired`
+unchanged, `injCC2 nvic TIM5` still 5. Why time-based close stays on TIM5 CC2
+(analysis, same session): TMR3 is 16-bit (16.384 ms period, signed arm check caps
+at ~8 ms - injection PW is 2-15 ms), its 4 channels are all taken by opens, and the
+32-bit free comparator only exists on TIM5 (CC2, NT domain, CCR=NT direct). Moving
+open+close onto one TMR3 channel would cap PW at ~16.38 ms while the engine cycle
+at 7000 rpm is 17.14 ms (zero reserve at high duty) and would refactor the most
+flight-proven path; a separate TMR close queue (TIM1/TMR8) hits the same 16-bit
+cap and spends the last free 4-channel timer for a <25 us edge-jitter gain that
+does not change fuel mass. Verdict: keep close on TIM5 CC2.

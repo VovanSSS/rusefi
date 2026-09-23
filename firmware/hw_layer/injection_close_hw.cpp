@@ -35,7 +35,11 @@ uint32_t getInjectionCC2FiredCount()     { return s_cc2FiredCount; }
 uint32_t getInjectionCC2ScheduledCount() { return s_cc2ScheduledCount; }
 
 // Re-arm CC2 to the earliest pending slot.
-// Must be called from prio-3 ISR context (no lock needed: all callers are prio 3).
+// Caller must hold the kernel critical section: since the 2026-09-23 +1
+// ladder shift the TMR3 injection-OPEN ISR (prio 4) stands ABOVE this
+// prio-5 TIM5 ISR, so without the section it could preempt the slot/CCR
+// update mid-way (the pre-shift 'all callers prio 3, no lock' invariant
+// is gone - see injection_close_hw.h).
 static void rearmCC2() {
     bool found = false;
     uint32_t earliest = 0;
@@ -101,6 +105,15 @@ static void dispatchAndRearm() {
 }
 
 void hwInjectionCloseCallback(PWMDriver* /*pwmp*/) {
+    // Kernel critical section FIRST: since the 2026-09-23 +1 ladder shift
+    // the TMR3 injection-OPEN ISR runs at prio 4, ABOVE this prio-5 TIM5
+    // CC2 ISR, and its scheduleInjectionCloseHW() mutates the same
+    // s_injClose[] slots + CCR2/DIER/EGR (rearmCC2). BASEPRI masks 3..15,
+    // so the open ISR cannot preempt the queue update. (Under the pre-shift
+    // co-equal priority 3 this was impossible - the old 'no lock needed'
+    // invariant documented in injection_close_hw.h.)
+    chibios_rt::CriticalSectionLocker csl;
+
     // CC2IE was NOT auto-disabled by the LLD (unlike CC1 which the executor
     // manages manually).  Disable it first to prevent re-fires on the same CCR.
     pwmDisableChannelNotificationI(&SCHEDULER_PWM_DEVICE, 1);
@@ -120,6 +133,12 @@ void scheduleInjectionCloseHW(int cyl, efitick_t nowNt,
 
     const efitick_t fireAt = sumTickAndFloat(nowNt, static_cast<float>(delayNt));
     s_cc2ScheduledCount++;
+
+    // No lock here: the callers are the TMR3 open ISR (prio 4 - the CC2 ISR
+    // at prio 5 cannot preempt it) and the TIM5 executor dispatch (prio 5,
+    // already inside its CriticalSectionLocker). The CC2 ISR holds its own
+    // critical section, so this writer and the CC2 dispatcher are mutually
+    // exclusive.
 
     if (s_injClose[cyl].pendingCount == 0) {
         // Normal path: slot free.
@@ -147,6 +166,10 @@ void cancelInjectionCloseHW(int cyl) {
     if (cyl < 0 || cyl >= 4) {
         return;
     }
+    // Critical section: unlike scheduleInjectionCloseHW this entry point has
+    // no caller yet, so protect it for ANY future context (thread or ISR)
+    // against both the prio-4 open ISR and this prio-5 CC2 ISR.
+    chibios_rt::CriticalSectionLocker csl;
     s_injClose[cyl].pendingCount = 0;
     s_injClose[cyl].action  = {};
     rearmCC2();
