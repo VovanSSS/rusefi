@@ -36,6 +36,16 @@
  * is TRUE - other boards keep the old behavior). */
 #define EFI_TRIGGER_CONFIG_RUNTIME_RELOAD FALSE
 
+/* Per-tooth trigger input debounce gate (custom_board_triggerDebounceUs) is
+ * compiled out: on m74_9 no board override is installed (the assignment is
+ * commented out in board_configuration.cpp) yet the gate still executed a
+ * get_board_override_result dispatch on EVERY decoded tooth. The gate is also
+ * not wanted at high rpm (the 100 us per-polarity floor collides with the
+ * 68 us half-tooth at 7000 rpm - documented in CLAUDE.md). Shared default is
+ * TRUE in trigger_central.cpp; unit tests install the override at runtime and
+ * keep the gate. */
+#define EFI_TRIGGER_DEBOUNCE FALSE
+
 /* TMR2 hardware angle clock (OC channels as software comparators, events
  * programmed one tooth ahead, fired by a priority-3 ISR): removes the
  * trigger-decode/handoff latency from the spark/injection timing chain.

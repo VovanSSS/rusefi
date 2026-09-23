@@ -36,6 +36,18 @@ WaveChart waveChart;
 
 #define TRIGGER_WAVEFORM(x) getTriggerCentral()->triggerShape.x
 
+// Per-tooth input debounce gate (custom_board_triggerDebounceUs, see
+// handleShaftSignal below). The gate works through a runtime board-override
+// dispatch (get_board_override_result) executed on EVERY decoded tooth - even
+// when no board installs an override (the default is 0). Boards that do not
+// use the hook compile the gate out so the trigger handoff never does the
+// dispatch; boards that do install the hook keep the default TRUE.
+// Unit tests set the override at runtime (test_60_2_cranking_transition.cpp),
+// so the default must stay TRUE for the host build.
+#ifndef EFI_TRIGGER_DEBOUNCE
+#define EFI_TRIGGER_DEBOUNCE TRUE
+#endif
+
 #if EFI_SHAFT_POSITION_INPUT
 
 TriggerCentral::TriggerCentral() :
@@ -914,6 +926,7 @@ TRIGGER_RAM_CODE void TriggerCentral::handleShaftSignal(trigger_event_e signal, 
 	// is ~1.16 ms against the ~1.17 ms threshold), so any-edge debounce eats
 	// real useful edges there and shifts the decoder's phase basis. A real
 	// same-polarity edge is a full tooth away, far above toothUs/3.
+#if EFI_TRIGGER_DEBOUNCE
 	float debounceUs = get_board_override_result(custom_board_triggerDebounceUs, 0.0f);
 	if (debounceUs > 0) {
 		int polarity = isTriggerUpEvent(signal) ? 0 : 1;
@@ -923,6 +936,7 @@ TRIGGER_RAM_CODE void TriggerCentral::handleShaftSignal(trigger_event_e signal, 
 		}
 		lastDebouncedTriggerEdgeNt[polarity] = timestamp;
 	}
+#endif // EFI_TRIGGER_DEBOUNCE
 
 	if (triggerShape.shapeDefinitionError) {
 		// trigger is broken, we cannot do anything here

@@ -1,5 +1,26 @@
 # Work Report
 
+## 2026-09-23 - m74_9: per-tooth debounce gate compiled out of the handoff (EFI_TRIGGER_DEBOUNCE=FALSE)
+
+The input debounce gate (custom_board_triggerDebounceUs, TriggerCentral::
+handleShaftSignal) ran on m74_9 without doing anything: the board override
+assignment is commented out in board_configuration.cpp (since 2026-08-22,
+stock-rollback test), but the gate still executed a get_board_override_result
+dispatch on EVERY decoded tooth. The gate is also undesirable for high rpm
+(the 100 us per-polarity floor collides with the 68 us half-tooth at
+7000 rpm - documented in CLAUDE.md).
+
+Change inventory:
+| file | change |
+| --- | --- |
+| firmware/controllers/trigger/trigger_central.cpp | new EFI_TRIGGER_DEBOUNCE flag, shared default TRUE (unit tests install the override at runtime and keep the gate); the per-tooth dispatch block wrapped in the flag |
+| firmware/config/boards/m74_9/efifeatures.h | EFI_TRIGGER_DEBOUNCE FALSE with rationale |
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL; arm-none-eabi-nm on the ELF
+shows no custom_board_triggerDebounceUs symbols - LTO dropped both the gate
+and the override variable. The synctrace 'debounce=N' counter stays at 0
+(print kept, counter still a TriggerCentral member).
+
 ## 2026-09-23 - m74_9: engineModules.apply_all in the handoff - detailed mechanics and relocation options
 
 Follow-up to the handoff decomposition: how exactly the per-tooth
