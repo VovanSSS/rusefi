@@ -72,7 +72,9 @@ struct ToothDriver {
 				dtUs *= factor;
 			}
 			now += US2NT((efitick_t)dtUs);
-			getMc().onEnginePhase(1500.0f, now, phase, nextPhase);
+			// Misfire ignores nextNextPhase (it times segments between the
+			// current pair of teeth) - pass the next boundary as a placeholder.
+			getMc().onEnginePhase(1500.0f, now, phase, nextPhase, nextPhase + kToothDeg);
 		}
 	}
 

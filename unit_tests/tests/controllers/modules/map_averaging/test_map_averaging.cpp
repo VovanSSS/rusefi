@@ -20,7 +20,7 @@ TEST(EngineModules, MapAveragingModule_onEnginePhase) {
 	engine->engineState.mapAveragingDuration = 100;
 	engine->rpmCalculator.setRpmValue(200);
 
-	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 50.f, 180.f);
+	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 50.f, 180.f, 360.f);
 
 	// check for startMapAveraging schedule at 50° on the future (since onEnginePhase was called 50° late [start angle is 100°])
     bool averageDone = eth.assertEventExistsAtEnginePhase("startMapAveraging callback", startAveragingAction, static_cast<angle_t>(50));
@@ -122,7 +122,7 @@ TEST(EngineModules, MapAveragingModule_onEnginePhase60_2_one_cylinder) {
 	MapAveragingModule mapModule;
 	engine->rpmCalculator.setRpmValue(200);
 
-	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 0.f, 180.f);
+	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 0.f, 180.f, 360.f);
 
 	// we expect offset of enginePhase (0 since we call onEnginePhase directy) + 100° of samplingAngle (default setting)
 	bool averageDone = eth.assertEventExistsAtEnginePhase("startMapAveraging callback", startAveragingAction, static_cast<angle_t>(100));
@@ -139,9 +139,50 @@ TEST(EngineModules, MapAveragingModule_onEnginePhase60_2_one_cylinderCustomSampl
 	setArrayValues(engineConfiguration->map.samplingAngle, 75);
 
 	engine->module<MapAveragingModule>()->onFastCallback();
-	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 0.f, 180.f);
+	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 0.f, 180.f, 360.f);
 
 	// we expect offset of enginePhase (0 since we call onEnginePhase directy) + 75° of samplingAngle
 	bool averageDone = eth.assertEventExistsAtEnginePhase("startMapAveraging callback", startAveragingAction, static_cast<angle_t>(75));
     EXPECT_TRUE(averageDone);
+}
+
+// One-tooth-ahead scheduling: with the sampling start (200 deg) inside the
+// EARLY window [nextPhase, nextNextPhase) = [180, 360) the start is armed a
+// full tooth early, at 150 deg from the current phase.
+TEST(EngineModules, MapAveragingModule_onEnginePhase_oneToothAhead) {
+    EngineTestHelper eth(engine_type_e::TEST_CRANK_ENGINE);
+    engineConfiguration->isMapAveragingEnabled = true;
+    engineConfiguration->measureMapOnlyInOneCylinder = true;
+	engine->engineState.mapAveragingDuration = 100;
+    engine->rpmCalculator.setRpmValue(200);
+	setArrayValues(engineConfiguration->map.samplingAngle, 200);
+	engine->module<MapAveragingModule>()->onFastCallback();
+
+	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 50.f, 180.f, 360.f);
+
+	// one-tooth-ahead arm: 200 deg target at 50 deg current phase = 150 deg offset
+	bool averageDone = eth.assertEventExistsAtEnginePhase("startMapAveraging early window", startAveragingAction, static_cast<angle_t>(150));
+    EXPECT_TRUE(averageDone);
+}
+
+// The early-window arm from the previous tooth is still in the future on the
+// NEXT tooth: the current window [180, 360) also contains the 200 deg start,
+// but must NOT schedule a duplicate.
+TEST(EngineModules, MapAveragingModule_onEnginePhase_armedGuard) {
+    EngineTestHelper eth(engine_type_e::TEST_CRANK_ENGINE);
+    engineConfiguration->isMapAveragingEnabled = true;
+    engineConfiguration->measureMapOnlyInOneCylinder = true;
+	engine->engineState.mapAveragingDuration = 100;
+    engine->rpmCalculator.setRpmValue(200);
+	setArrayValues(engineConfiguration->map.samplingAngle, 200);
+	engine->module<MapAveragingModule>()->onFastCallback();
+
+	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 50.f, 180.f, 360.f);
+	size_t sizeAfterEarly = engine->scheduler.size();
+    ASSERT_EQ(1, sizeAfterEarly);
+
+	// Next tooth: both windows could match, but the armed start is still in the
+	// future - startArmedNt must suppress the duplicate.
+	engine->module<MapAveragingModule>()->onEnginePhase(200, getTimeNowNt(), 180.f, 360.f, 540.f);
+    EXPECT_EQ(sizeAfterEarly, engine->scheduler.size());
 }

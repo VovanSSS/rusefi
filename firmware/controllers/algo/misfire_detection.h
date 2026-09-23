@@ -29,7 +29,8 @@ public:
 
 	// Per-tooth: bin teeth into per-cylinder expansion windows and time the segments.
 	void onEnginePhase(float rpm, efitick_t edgeTimestamp,
-					   angle_t currentPhase, angle_t nextPhase) override;
+					   angle_t currentPhase, angle_t nextPhase,
+					   angle_t nextNextPhase) override;
 
 	// Engine stopped: discard transient detection state (baselines/streaks/timers).
 	// Cumulative counters and the MIL latch persist until power cycle ("since key-on").

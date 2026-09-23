@@ -211,11 +211,22 @@ void MapAveragingModule::onFastCallback() {
     engine->engineState.mapAveragingDuration = clampF(10, duration, cylinderPeriod - 10);
 }
 
-// Callback to schedule the start of map averaging for each cylinder
+// Callback to schedule the start of map averaging for each cylinder.
+// ONE TOOTH AHEAD (the dwell pattern): the window is searched in
+// [nextPhase, nextNextPhase) - a full tooth of slack to the TIM5 executor -
+// instead of [currentPhase, nextPhase), where startAveraging fired at the
+// window boundary and was ~100% late (lockstats 2026-08-23, maxLateUs
+// 22.7 ms). The sampling window itself then starts up to ~6 deg earlier than
+// its nominal angle but ON TIME - irrelevant for a 30-50 deg average on a
+// shared plenum. The current-tooth window stays as the fallback for the
+// first cycle after a (re)sync, when the start angle can already be inside
+// the current tooth; startArmedNt prevents double scheduling while the
+// one-tooth-ahead arm of the previous tooth is still in the future.
 TRIGGER_RAM_CODE void MapAveragingModule::onEnginePhase(float /*rpm*/,
-						efitick_t edgeTimestamp,
-						float currentPhase,
-						float nextPhase) {
+														efitick_t edgeTimestamp,
+														float currentPhase,
+														float nextPhase,
+														float nextNextPhase) {
 	if (!engineConfiguration->isMapAveragingEnabled) {
 		return;
 	}
@@ -227,7 +238,25 @@ TRIGGER_RAM_CODE void MapAveragingModule::onEnginePhase(float /*rpm*/,
 	for (int i = 0; i < samplingCount; i++) {
 		angle_t samplingStart = engine->engineState.mapAveragingStart[i];
 
-		if (!isPhaseInRange(samplingStart, currentPhase, nextPhase)) {
+		auto& s = samplers[i];
+
+		// A previous arm whose start time is still in the future covers this
+		// window (the one-tooth-ahead arm of the previous tooth): do not
+		// schedule twice. Once the armed time has passed, the arm has fired
+		// (or was lost) and a window match is the NEXT cycle's scheduling.
+		if (s.startArmedNt != 0 && static_cast<int32_t>(s.startArmedNt - edgeTimestamp) > 0) {
+			continue;
+		}
+
+		// The early window is only meaningful with a distinct next-next tooth:
+		// useOnlyRisingEdges wheels store the falling edge at the preceding
+		// rise's angle, so nextNextPhase == nextPhase and isPhaseInRange would
+		// match every angle. Fall back to the current-tooth window (the same
+		// guard as the dwell/fire arms).
+		bool scheduleEarly = nextNextPhase != nextPhase && isPhaseInRange(samplingStart, nextPhase, nextNextPhase);
+		bool scheduleNow = isPhaseInRange(samplingStart, currentPhase, nextPhase);
+
+		if (!scheduleEarly && !scheduleNow) {
 			continue;
 		}
 
@@ -236,9 +265,7 @@ TRIGGER_RAM_CODE void MapAveragingModule::onEnginePhase(float /*rpm*/,
 			angleOffset += engine->engineState.engineCycle;
 		}
 
-		auto& s = samplers[i];
-
-		scheduleByAngle(&s.timer, edgeTimestamp, angleOffset, action_s::make<startAveraging>(&s));
+		s.startArmedNt = scheduleByAngle(&s.timer, edgeTimestamp, angleOffset, action_s::make<startAveraging>(&s));
 	}
 }
 
@@ -265,5 +292,5 @@ void MapAveragingModule::init() {
 void MapAveragingModule::onFastCallback(){}
 void MapAveragingModule::onConfigurationChange(engine_configuration_s const *){}
 void MapAveragingModule::init() {}
-void MapAveragingModule::onEnginePhase(float, efitick_t, float, float){}
+void MapAveragingModule::onEnginePhase(float, efitick_t, float, float, float){}
 #endif /* EFI_MAP_AVERAGING */

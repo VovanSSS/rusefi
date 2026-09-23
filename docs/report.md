@@ -1,5 +1,39 @@
 # Work Report
 
+## 2026-09-23 - m74_9: MAP sampling windows scheduled one tooth ahead (variant A implemented)
+
+The apply_all relocation option A from the same day is implemented: the MAP
+sampling window start is now armed in the EARLY window, like dwell.
+
+What changed:
+| file | change |
+| --- | --- |
+| firmware/controllers/core/engine_module.h | EngineModule::onEnginePhase virtual signature extended with angle_t nextNextPhase (one-tooth-ahead upper bound) |
+| firmware/controllers/modules/map_averaging/map_averaging.h | mapSampler gains efitick_t startArmedNt (the dwellStartArmed pattern); declaration updated |
+| firmware/controllers/modules/map_averaging/map_averaging.cpp | onEnginePhase: early window [nextPhase, nextNextPhase) with the RiseOnly nextNext==next guard + current window [currentPhase, nextPhase) as the first-cycle-after-sync fallback + startArmedNt duplicate suppression; scheduleByAngle unchanged |
+| firmware/controllers/algo/misfire_detection.h/.cpp | override updated to the 5-arg signature (nextNextPhase unused) |
+| firmware/controllers/engine_cycle/main_trigger_callback.cpp | apply_all call passes nextNextPhase |
+| unit_tests/.../test_map_averaging.cpp | 3 call sites updated + 2 new tests (oneToothAhead, armedGuard) |
+| unit_tests/tests/test_misfire_detection.cpp | call site updated |
+
+Semantics: the sampling window now starts up to ~6 deg EARLIER than its
+nominal angle but ON TIME - before, startAveraging was armed at the window
+boundary and fired ~100% late from the executor (2026-08-23 lockstats:
+late=5618/5640, worst maxLateUs=22.7 ms). A <=6 deg shift on a 30-50 deg
+averaging window of a shared plenum is irrelevant; the endAveraging chain is
+untouched (still planned from the ACTUAL start moment inside startAveraging).
+
+What A does NOT do (honest): the per-tooth detection (4 x isPhaseInRange) and
+the executor insert on the 4 window-hit teeth per cycle stay in the handoff -
+variant A re-times the arm and fixes the lateness, it does not remove MAP
+from the handoff. Option B (all 4 windows planned once per revolution from
+onTdcCallback) remains the full-removal path with the accel-drift tradeoff.
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL; unit_tests make BUILD SUCCESSFUL
+(clang/macOS); gtest filter EngineModules.MapAveraging*:*Misfire* = 15/15
+PASSED incl. the two new tests. Car check pending: lockstats startAveraging
+late stats must drop, and the sniffer MAP windows will open ~1 tooth early.
+
 ## 2026-09-23 - m74_9: per-tooth debounce gate compiled out of the handoff (EFI_TRIGGER_DEBOUNCE=FALSE)
 
 The input debounce gate (custom_board_triggerDebounceUs, TriggerCentral::

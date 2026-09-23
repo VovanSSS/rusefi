@@ -63,10 +63,14 @@ public:
 	// Queried to determine whether this module needs a delayed shutoff, defaults to false
 	virtual bool needsDelayedShutoff() { return false; }
 
-	// Called on every successfully decoded tooth of the primary trigger
+	// Called on every successfully decoded tooth of the primary trigger.
+	// nextNextPhase is the phase of the tooth AFTER the next one - the upper
+	// bound of the one-tooth-ahead scheduling window (see MapAveragingModule:
+	// MAP sampling windows are scheduled a full tooth ahead, like dwell).
 	virtual void onEnginePhase(float /*rpm*/,
-								efitick_t /*edgeTimestamp*/,
-								angle_t /*currentPhase*/,
-								angle_t /*nextPhase*/)
-								{ }
+														efitick_t /*edgeTimestamp*/,
+														angle_t /*currentPhase*/,
+														angle_t /*nextPhase*/,
+														angle_t /*nextNextPhase*/)
+														{ }
 };

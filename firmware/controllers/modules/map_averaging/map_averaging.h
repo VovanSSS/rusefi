@@ -18,6 +18,11 @@
 struct mapSampler {
 	scheduling_s timer;
 	uint8_t cylinderNumber;
+	// Absolute dispatch time of the already-scheduled startAveraging for this
+	// cylinder (0 = none). While it is still in the future, the one-tooth-ahead
+	// arm of the previous tooth covers this window - do not schedule twice
+	// (the dwellStartArmed / injectionStartArmed pattern).
+	efitick_t startArmedNt = 0;
 };
 
 #if EFI_MAP_AVERAGING
@@ -69,7 +74,7 @@ public:
 	void onConfigurationChange(engine_configuration_s const * previousConfig) override;
 
 	void onFastCallback() override;
-    void onEnginePhase(float /*rpm*/, efitick_t edgeTimestamp, float currentPhase, float nextPhase) override;
+    void onEnginePhase(float /*rpm*/, efitick_t edgeTimestamp, float currentPhase, float nextPhase, float nextNextPhase) override;
 
 	void triggerCallback(uint32_t index, efitick_t edgeTimestamp);
 	void init();

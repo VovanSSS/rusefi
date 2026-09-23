@@ -444,7 +444,7 @@ TRIGGER_RAM_CODE void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edge
 #endif
 
 	engine->engineModules.apply_all([=](auto & m) {
-		m.onEnginePhase(rpm, edgeTimestamp, currentPhase, nextPhase);
+		m.onEnginePhase(rpm, edgeTimestamp, currentPhase, nextPhase, nextNextPhase);
 	});
 
 	/**
