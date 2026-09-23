@@ -267,12 +267,16 @@ static void m74_9_boardConfigOverrides() {
 	 * tune predates this bit. Remove once computeImmoResponse() is real. */
 	config->m74_9ImmoOff = true;
 
-	// Raw EXTI9_5 capture (crank PF8/line 8) MUST be highest-priority IRQ.
-	// The handoff ISR (I2C1_EV) decodes the previous edge; if EXTI9_5 were
-	// delayed by the handoff (44 us avg) the timestamp would be wrong by up
-	// to ~50 us, enough to push the gap ratio outside [1.6, 3.75] at 1887 rpm.
-	nvicEnableVector(EXTI9_5_IRQn, 0);   // Raw edge capture: priority 0 (fast IRQ)
-	nvicEnableVector(I2C1_EV_IRQn, 4);   // Handoff ISR: priority 4 (below executor)
+	/* Re-assert the trigger NVIC priorities from the canonical defines.
+	 * efiExtiInit() programs them earlier, but ConfigOverrides runs AFTER it
+	 * at every loadConfiguration(), and this block used to hardcode the
+	 * handoff to 4 - silently downgrading the 2026-09-22 handoff raise (the
+	 * handoff ran co-equal with the executor instead of above it; the nvic:
+	 * lockstats line showed handoff=4 against want 3). Use the ladder defines
+	 * (interrupt_priority.h): EXTI9_5 = 0 fast capture, handoff = 3 top
+	 * kernel priority, above the TMR fires (4) and the TIM5 executor (5). */
+	nvicEnableVector(EXTI9_5_IRQn, EFI_IRQ_EXTI_PRIORITY);
+	nvicEnableVector(I2C1_EV_IRQn, EFI_IRQ_EXTI_HANDOFF_PRIORITY);
 
 	//CAN 1 bus overwrites
 	engineConfiguration->canRxPin = Gpio::G0;
@@ -1102,13 +1106,13 @@ void setup_custom_board_overrides() {
 				(unsigned)(sched.maxCbDurationNt[i] / (NT_PER_SECOND / 1000000)));
 		}
 
-		// Ground truth for the interrupt-priority swap: read the NVIC
+		// Ground truth for the interrupt-priority ladder: read the NVIC
 		// priority registers directly. IRQ numbers per the Artery CMSIS:
 		// EXTI9_5=23 (raw trigger capture, want 0), I2C1_EV=31 (trigger
-		// handoff, want 3 - raised above the executor 2026-09-22),
-		// TIM5=50 (executor, want 4), CAN1_TX=19/
-		// CAN1_RX0=20 (want 11), ADC1_2=18 (want 6).
-		efiPrintf("nvic: exti=%u handoff=%u tim5=%u canTx=%u canRx0=%u adc=%u (want 0/3/4/11/11/6)",
+		// handoff, want 3 - top kernel priority since the 2026-09-23 +1
+		// shift), TIM5=50 (executor, want 5), CAN1_TX=19/
+		// CAN1_RX0=20 (want 12), ADC1_2=18 (want 7).
+		efiPrintf("nvic: exti=%u handoff=%u tim5=%u canTx=%u canRx0=%u adc=%u (want 0/3/5/12/12/7)",
 			(unsigned)((NVIC->IP[23] >> 4) & 0xF), (unsigned)((NVIC->IP[31] >> 4) & 0xF),
 			(unsigned)((NVIC->IP[50] >> 4) & 0xF), (unsigned)((NVIC->IP[19] >> 4) & 0xF),
 			(unsigned)((NVIC->IP[20] >> 4) & 0xF), (unsigned)((NVIC->IP[18] >> 4) & 0xF));
@@ -1135,12 +1139,12 @@ void setup_custom_board_overrides() {
 		// Three-timer angle clock: TMR2=dwell(IRQ28) TMR4=spark(IRQ30) TMR3=inj(IRQ29).
 		// lateArm: target beyond 30 deg lookahead or tick already past (-> TIM5 fallback).
 		// immediate: events found past-due at refresh, fired NOW (matching FALSE build).
-		// All want nvic prio 3.
+		// All want nvic prio 4 (one notch below the handoff since 2026-09-23).
 		efiPrintf("angclk dwell fired=%u lateArm=%u  spark fired=%u lateArm=%u  inj fired=%u lateArm=%u",
 			(unsigned)angleClockFiredDwell(), (unsigned)angleClockLateArmDwell(),
 			(unsigned)angleClockFiredSpark(), (unsigned)angleClockLateArmSpark(),
 			(unsigned)angleClockFiredInj(),   (unsigned)angleClockLateArmInj());
-		efiPrintf("angclk maxLateUs=%u immediate=%u initRate=%u/%u psc=%u nvic T2=%u T4=%u T3=%u (want 3)",
+		efiPrintf("angclk maxLateUs=%u immediate=%u initRate=%u/%u psc=%u nvic T2=%u T4=%u T3=%u (want 4)",
 			(unsigned)(angleClockMaxLateTicks() / (NT_PER_SECOND / 1000000)),
 			(unsigned)angleClockImmediateFireCount(),
 			(unsigned)angleClockInitAcDelta(), (unsigned)angleClockInitNtDelta(),
@@ -1173,7 +1177,7 @@ void setup_custom_board_overrides() {
 		}
 		// TIM5 CC2 injection close: cc2fired must track inj_open_TMR3.
 		// cc2fired=0 means injectors never close (CC2 not firing).
-		efiPrintf("injCC2 scheduled=%u fired=%u nvic TIM5=%u (want 3)",
+		efiPrintf("injCC2 scheduled=%u fired=%u nvic TIM5=%u (want 5)",
 			(unsigned)getInjectionCC2ScheduledCount(),
 			(unsigned)getInjectionCC2FiredCount(),
 			(unsigned)((NVIC->IP[50] >> 4) & 0xF));

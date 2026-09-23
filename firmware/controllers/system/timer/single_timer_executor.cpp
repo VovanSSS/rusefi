@@ -103,8 +103,9 @@ TRIGGER_RAM_CODE void SingleTimerExecutor::schedule(const char *msg, scheduling_
 	if (!reentrantFlag) {
 #if EFI_PROD_CODE
 		// In interrupt context (trigger handoff / angle-clock ISRs) do NOT run
-		// due events inline. Since 2026-09-22 the executor (TIM5 CC1) runs at
-		// EFI_IRQ_SCHEDULING_TIMER_PRIORITY BELOW the handoff, so with the
+		// due events inline. Since 2026-09-23 the executor (TIM5 CC1) runs at
+		// EFI_IRQ_SCHEDULING_TIMER_PRIORITY BELOW the handoff (3) and the TMR
+		// fires (4), so with the
 		// queue empty the CC1 fire itself re-arms and dispatches in its own
 		// ISR instead of preempting the handoff; the handoff then completes
 		// without running executor callbacks. Inline execution here would

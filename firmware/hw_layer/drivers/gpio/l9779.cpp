@@ -388,14 +388,15 @@ struct L9779 : public GpioChip {
 	uint8_t						wd_last_ec;		/* error counter as reported by the chip */
 	bool						wd_int;			/* WDA_INT flag (EC > 4) */
 	int							wd_delay_ms;	/* response delay, aimed at window center */
-	/* The WDA feed runs as a FREE-RUNNING auto-reload TMR7 ISR (priority 5,
+	/* The WDA feed runs as a FREE-RUNNING auto-reload TMR7 ISR (priority 6,
 	 * the TIM5 pattern): the answer must land inside the chip's ~12.6 ms
 	 * window, and a thread wakeup can be delayed past that by trigger-decode
 	 * ISR load at cranking (the observed wd_timing_miss/EC>4 kills). TMR7
-	 * runs BELOW the trigger handoff on purpose: the old executor feed
-	 * (priority 3) preempted the handoff and delayed decode/scheduling by up
-	 * to ~100 us per cycle. The 12.6 ms window absorbs any handoff preemption
-	 * of the burst.
+	 * runs BELOW the TIM5 executor on purpose (2026-09-23 ladder): the old
+	 * executor feed (then priority 3) preempted the handoff and delayed
+	 * decode/scheduling by up to ~100 us per cycle. The 12.6 ms window
+	 * absorbs any handoff/fire/executor preemption of the burst (the SPI
+	 * clock merely pauses mid-frame).
 	 *
 	 * ONE burst per monitoring cycle: pipelined status/question reads
 	 * (REQUHI/REQULO), answer-period adaptation, then the whole 4-byte
@@ -1785,16 +1786,17 @@ void L9779::wdFeedFromExecutor()
 	 * the config never changes, and the first feed is only kicked after
 	 * the thread's chip_init(). */
 
-	/* Mask ISRs at priority >= 4 (the trigger handoff and below) around the
-	 * SPI sequences: the chip's frame state (RESP_CNT, the reply pipeline)
-	 * must not be torn mid-sequence by a preempting handoff - a stretched
-	 * frame or a paused burst scrambles the chip's question engine (the
-	 * W_RESP/RESP_Z0/addr_err storms). The executor (priority 3) stays
-	 * unmasked: its callbacks are us-scale and it fires the spark. The
-	 * debugger halt is unmaskable - a torn burst there self-heals: the
-	 * RESP_CNT resets at the next sequencer run and the next atomic burst
-	 * answers the freshly re-read question (no chip reset needed). */
-#define WDA_BURST_BASEPRI		(4u << (8u - __NVIC_PRIO_BITS))
+	/* Mask ISRs at priority >= 5 (the TIM5 executor and below) around the
+	 * SPI sequences - purely belt-and-suspenders: the burst is a single
+	 * atomic 4-byte sequence, and a preemption merely pauses the SPI clock
+	 * (the chip has no max tlead/tcsn), so nothing can desync RESP_CNT any
+	 * more. The TMR2/3/4 fires (4), the handoff (3) and the fast EXTI stay
+	 * UNMASKED on purpose: the 2026-09-23 ladder forbids the feed from ever
+	 * delaying a spark/dwell/injection fire. The debugger halt is
+	 * unmaskable - a torn burst there self-heals: the RESP_CNT resets at
+	 * the next sequencer run and the next atomic burst answers the freshly
+	 * re-read question (no chip reset needed). */
+#define WDA_BURST_BASEPRI		(5u << (8u - __NVIC_PRIO_BITS))
 
 	/* Pipelined status/question reads. FOUR frames, not three: the DO reply
 	 * to a read request arrives one or TWO frames after the request (the
@@ -2063,8 +2065,8 @@ void L9779::wdFeedFromExecutor()
 	 * reason (2026-08-30 night: the reloads at 19:48:39/19:51:09 did not even
 	 * stop the rejections - wrong kept climbing after each reset). */
 
-	/* The response: all four bytes back-to-back, masked against the handoff
-	 * like the reads. The cycle restarts at the END of the RESP_BYTE0 write,
+	/* The response: all four bytes back-to-back, under the same BASEPRI mask
+	 * as the reads. The cycle restarts at the END of the RESP_BYTE0 write,
 	 * and the period is set so the next BYTE0 lands wd_delay_ms later. */
 	const uint8_t *resp = wd_resp_table[wd_last_req];
 	basepri = __get_BASEPRI();
@@ -2226,7 +2228,7 @@ brain_pin_diag_e L9779::getDiag(size_t pin)
  * HCLK itself is validated end-to-end by the working USB (48 MHz PLL
  * output) and CAN timing.
  *
- * Measurement A (masked, ~10 ms): the WDA ISR (priority 5) is masked so
+	 * Measurement A (masked, ~10 ms): the WDA ISR (priority 6) is masked so
  * TMR7 free-runs without period changes, and TIM5 (NT) + TMR7 are compared
  * against CYCCNT in one window. Healthy clock tree: NT ~4 MHz, TMR7 tick
  * ~250 kHz (input 288 MHz). NOTE what this instrument CANNOT see: its
@@ -2740,8 +2742,8 @@ int L9779::init()
 	/* WDA watchdog: RESPTIME=10 is written at init (short deterministic
 	 * window [15.8, 28.4] @ 64 kHz / [25.9, 38.5] @ 39 kHz). The feed is
 	 * kicked by the driver thread after chip_init and then runs as a
-	 * free-running auto-reload TMR7 ISR (priority 5, below the trigger
-	 * handoff) with a single atomic burst per cycle; the delay is adapted by
+	 * free-running auto-reload TMR7 ISR (priority 6, below the TIM5
+	 * executor) with a single atomic burst per cycle; the delay is adapted by
 	 * the REQUHI timing verdicts only (ce32509e policy, no walk). The timer
 	 * rate is measured here against the NT domain (TIM5) and the PSC
 	 * programmed so the counter ticks at exactly 250 kHz (4 us) on any

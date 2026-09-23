@@ -13103,3 +13103,130 @@ lockstats dumps, the sched per-kind lines, trgPostDecode histograms, the
 19:07:04 C9009 rpm=3452) and the firmware sources listed above. No unit
 tests touched (the arm path is register-level TMR2 code, not host-testable
 beyond the pure tick math already covered in test_angle_clock.cpp).
+
+## 2026-09-23 - m74_9: lambda heater hard-PWM options (analysis)
+
+Question: the user currently drives the lambda-1 heater (physically on the
+EVAP output) with Lua startPwm, which runs as soft PWM on the microsecond
+executor. What are the options to keep the heater powered without loading
+the scheduler with hard PWM?
+
+### Facts established
+
+- Lua `startPwm` -> `startSimplePwmExt` -> `startSimplePwm`
+  (pwm_generator_logic.cpp): soft PWM only. `startSimplePwm` has a TODO
+  "should we try to init MCU PWM on on-chip brainPin?" - it NEVER tries
+  hard PWM; only `startSimplePwmHard` does (via hardware_pwm::tryInitPin).
+- The L9779 OUT5/6/7 (heater 1 / EVAP / heater 2) are direct-driven
+  outputs: the MCU parallel inputs IN5/IN6/IN7 = PG7/PG5/PG6
+  (board_configuration.cpp l9779_cfg.direct_gpio [8/9/10]) switch them in
+  real time; no SPI per toggle. So the soft PWM cost is 2 executor events
+  per PWM period (palSetPort/palClearPort GPIOG), not SPI frames.
+- PG5/PG6/PG7 have NO timer channel on AT32F435 (datasheet pin table,
+  at32f.txt): PG5 = TMR20_EXT (an INPUT - external clock of TMR20) /
+  XMC_A15 / XMC_SDBA1; PG6 = QSPI1_CS / XMC_INT2 / DVP_D12; PG7 =
+  USART6_CK / XMC_INT3 / DVP_D13. The L9779 has no internal PWM generator.
+  -> Hardware PWM of the SBC outputs OUT5/6/7 is IMPOSSIBLE on the
+  existing wiring, same conclusion as the 2026-09-22 fan analysis.
+- The native heater path exists and is pure on/off: `o2heaterPin`
+  (currently "NONE" in 21129.msq) -> Engine::periodicSlowCallback (20 Hz)
+  -> enginePins.o2heater.setValue(forceO2Heating ||
+  rpmCalculator.isRunning()). ONE setValue per 20 Hz tick, zero executor
+  events, zero Lua. There is NO heater PWM anywhere in the firmware
+  (verified: only isO2HeaterOn output channel + on/off setValue).
+
+### Options (recommended first)
+
+Option A - native on/off heater (zero load, zero code): set o2heaterPin in
+the tune to the NAME of the output the heater physically hangs on
+("Oxygen sensor 1 heater" = OUT5/AC4, or "EVAP solenoid control" = OUT6/
+AE4 - the user's current wiring). The heater is then held ON the whole
+time the engine runs and OFF when stopped/cranking; forceO2Heating=yes
+holds it ON always (bench testing). Loses duty control; a narrowband
+heater always-on is acceptable practice but watch the first warm-up.
+
+Option B - keep Lua PWM but drop the frequency to 1 Hz: soft PWM cost is
+2 executor events per period, so 1 Hz = 2 events/s = negligible (Lua
+clamps startPwm to [1, 1000] Hz; the heater thermal time constant is
+seconds, 1 Hz duty quantization is irrelevant for it). No code, no
+rewire; stays on the SBC output with its open-load protection.
+
+Option C - real hard PWM with duty control (needs rewire + new code):
+move the heater wire off the SBC output to a free timer-capable MCU pin +
+external protected low-side MOSFET. Candidates (checked against the board
+yaml/mcuconf): PA8/PA9/PA10 (TIM1_CH1..3, AF1 - TIM1 disabled in the at32
+mcuconf, `stm32_pwm.cpp` already has the PA8-11 entries under
+STM32_PWM_USE_TIM1), PC8/PC9 (TIM8_CH3/4, TIM8 already enabled). NOT
+available: PB14/PB15 (TIM12 - ETB + DIR1), TMR2/3/4 (angle clock), TIM5
+(executor), PG5/6/7 (no timer AF). Code: no heater PWM module exists -
+needs a small module using startSimplePwmHard (the ETB pattern) or a hard-
+PWM variant of GpPwm, plus STM32_PWM_USE_TIM1=TRUE (+STM32_TIM1_SUPPRESS_
+ISR) in the at32 mcuconf. Cost: loses the L9779 open-load/diag + the SBC
+protection.
+
+### Validation
+
+Analysis only, no code changes. Datasheet pin table at32f.txt (PG5/PG6/
+PG7 mux), stm32_pwm.cpp getConfigForPin, at32 mcuconf PWM section,
+l9779.cpp/board_configuration.cpp direct_gpio, engine.cpp heater chain,
+21129.msq (o2heaterPin=NONE), lua_hooks.cpp startPwm clamp. The
+recommendation is Option A; Option B if duty control must stay.
+
+## 2026-09-23 - m74_9: NVIC priority ladder +1 shift: handoff 3 > TMR fires 4 > executor 5
+
+User directive: shift the whole ISR ladder one notch down so the trigger
+handoff is REALLY at 3 and strictly above the angle-clock fires. Along the
+way found and fixed the 09-22 regression: `m74_9_boardConfigOverrides` still
+hardcoded `nvicEnableVector(I2C1_EV_IRQn, 4)` (stale "below executor"
+comment), and since `loadConfiguration()` runs AFTER `initHardwareNoConfig`
+(efiExtiInit programs the handoff to the header value 3), the override won
+and the car ran handoff co-equal with the executor - the whole 09-22 raise
+was silently undone. Now the override uses the canonical EFI_IRQ_* defines.
+
+New ladder (16 levels total, 4 priority bits on the AT32F435, 0 = highest;
+kernel BASEPRI masks 3..15 so only the fast capture may use 0-2):
+
+| Prio | IRQ | Role |
+|---|---|---|
+| 0 | EXTI9_5 (23) | raw crank-edge capture (fast IRQ) |
+| 3 | I2C1_EV (31) | trigger decode + angle-clock arming (handoff) |
+| 4 | TMR2/4/3 (28/30/29) | dwell start / spark / injection start |
+| 5 | TIM5 CC1/CC2 (50) | executor: inj close, rescue, MAP/knock, soft PWM, WDA buddy |
+| 6 | TMR7 (55) | L9779 WDA feed |
+| 7 | ADC1/2/3 (18/17) | slow ADC |
+| 8 | TIM6 | fast-ADC trigger GPT |
+| 9 | SysTick | system tick (core SysTick, SYSTICKv1 ST driver) |
+| 10 | SDIO (49) | SD card |
+| 11 | SPI1 (35) | L9779 SPI (thread polled) |
+| 12 | CAN1 TX/RX0/RX1 | dash CAN + ISO-TP + OpenBLT |
+| 13 | USART (39) | LIN master (USART3) |
+| 15 | USB OTG (67) | CDC console + USB MSD |
+
+Trade (vs 09-22 co-equal handoff/TMR): a TMR fire pending during a running
+handoff now waits for the decode - fire edge lateness can reach the decode
+duration (~44-250 us on scheduling teeth, watch angclk maxLateUs); the fires
+are anchored 'from now' at arm time so the dwell->spark interval survives,
+bounded by the overdwell rescue + charge-anchored spark re-arm. The WDA
+burst mask moved 4->5 (WDA_BURST_BASEPRI) so the feed can never delay a
+dwell/spark/injection fire. The bootloader shares the same headers/mcuconf
+(board.mk CONFDIR): its EXTI stays 6, CAN moves to 12, SysTick to 9 - no
+flashing impact expected.
+
+Change inventory:
+
+| Change | File(s) |
+|---|---|
+| Ladder header: handoff 3, angle clock 4, TIM5 5, WDA 6 + full ladder table comment; dead-on-AT32 defines kept in sync | `firmware/hw_layer/ports/at32/interrupt_priority.h` |
+| LLD values +1: ADC 7, TIM6 8 (STM32_IRQ_TIM6 + STM32_GPT_TIM6_IRQ_PRIORITY), UART 13, CAN 12, SDIO 10, SPI 11, ST 9, USB 15 + ladder banner comment in the IRQ block | `firmware/hw_layer/ports/at32/at32f4/cfg/mcuconf.h` |
+| Handoff hardcode 4 -> EFI_IRQ_EXTI_HANDOFF_PRIORITY; lockstats want strings 0/3/5/12/12/7, angclk want 4, injCC2 want 5 | `firmware/config/boards/m74_9/board_configuration.cpp` |
+| WDA_BURST_BASEPRI 4 -> 5 (fires stay unmasked); prio comments | `firmware/hw_layer/drivers/gpio/l9779.cpp` |
+| Comments: handoff above fires | `firmware/hw_layer/angle_clock/angle_clock.cpp`, `firmware/hw_layer/digital_input/digital_input_exti.cpp`, `firmware/controllers/system/timer/single_timer_executor.cpp` |
+| Doc: ladder table + superseded-09-22 note | `CLAUDE.md`, `docs/report.md` |
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL (app target); unit tests
+affected file set is firmware-only (no unit-test impact). Car check:
+`lockstats` -> `nvic: exti=0 handoff=3 tim5=5 canTx=12 canRx0=12 adc=7`,
+`angclk ... nvic T2=4 T4=4 T3=4`, `injCC2 ... nvic TIM5=5`; watch angclk
+maxLateUs on scheduling teeth (the documented trade). Open: the full bundle
+(which also rebuilds the bootloader with the new mcuconf values) must be
+flashed via rusefi.bin once before the next bootloader-CAN session.

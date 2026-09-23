@@ -21,8 +21,9 @@
 #ifdef EFI_IRQ_EXTI_HANDOFF_PRIORITY
 void efiExtiInit() {
 	// Raw EXTI9_5 capture MUST be the highest-priority interrupt (priority 0,
-	// fast IRQ). It runs before the handoff ISR (top kernel priority 3 since
-	// 2026-09-22) and captures the exact moment of the crank edge. If this
+	// fast IRQ). It runs before the handoff ISR (top kernel priority 3,
+	// above the TMR fires since 2026-09-23) and captures the exact moment of
+	// the crank edge. If this
 	// handler is delayed by the handoff decoding the previous edge (44 us
 	// average, up to ~1 ms in tails) the captured timestamp is wrong by up to
 	// ~50 us. On m74_9 that is ~10% of the 530 us tooth period at 1887 rpm -

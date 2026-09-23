@@ -19,13 +19,16 @@
  * Concurrency (same analysis as the single-timer design):
  *  - Handoff ISR arms/refreshes/cancels channels.
  *  - TMR ISRs fire them.
- *  - Since 2026-09-22 both run at the SAME top kernel priority (3): the TMR
- *    ISRs can NO LONGER preempt the handoff mid-arm, so an arm sequence is
- *    atomic w.r.t. the fires by priority alone. The ordered arm sequence is
- *    kept (clear stale CCxIF -> write future CCR -> store action -> enable
- *    CCxIE) as defense-in-depth and for any future priority skew.
- *    A fire pending during a running handoff instead waits for it - the fires
- *    execute right after, bounded by the decode duration (see interrupt_priority.h).
+ *  - Since 2026-09-23 the handoff (3) runs ABOVE the TMR ISRs (4), one step
+ *    ahead of the 2026-09-22 co-equal arrangement: the TMR ISRs cannot
+ *    preempt the handoff mid-arm, so an arm sequence is atomic w.r.t. the
+ *    fires by priority alone. The ordered arm sequence is kept (clear stale
+ *    CCxIF -> write future CCR -> store action -> enable CCxIE) as
+ *    defense-in-depth and for any future priority skew. A fire pending
+ *    during a running handoff instead waits for it - the fires execute
+ *    right after, bounded by the decode duration (see interrupt_priority.h).
+ *    The fires are anchored 'from now' at arm time, so the dwell->spark
+ *    interval is preserved regardless of the wait.
  *  - Fixed channels: the ISR releases a channel before calling action.execute()
  *    so a re-arm from inside the action is safe.
  */

@@ -115,6 +115,31 @@
 
 /*
  * IRQ system settings.
+ *
+ * NVIC priority ladder (m74_9, effective 2026-09-23, +1 shift - see
+ * at32/interrupt_priority.h for the rationale and the canonical list).
+ * App build: EXTI9_5 and the handoff are re-programmed by rusEFI code
+ * (fast capture 0, handoff 3), the angle clock programs TMR2/3/4 at 4,
+ * TMR7 at 6, TIM5 via STM32_PWM_TIM5_IRQ_PRIORITY at 5. Everything below
+ * is consumed from THIS file:
+ *
+ *   0  EXTI9_5   raw crank-edge capture (fast IRQ)
+ *   3  I2C1_EV   trigger decode + angle-clock arming ("handoff")
+ *   4  TMR2/4/3  angle-clock fires: dwell / spark / injection start
+ *   5  TIM5      executor CC1/CC2 (injection close, rescue, MAP/knock,
+ *                soft PWM, watchdog buddy)
+ *   6  TMR7      L9779 WDA feed
+ *   7  ADC1/2/3  slow ADC + ADC DMA streams
+ *   8  TIM6      fast-ADC trigger (GPT)
+ *   9  SysTick   system tick (SYSTICKv1 ST driver -> core SysTick)
+ *  10  SDIO      SD card
+ *  11  SPI1      L9779 SPI (thread-side polled)
+ *  12  CAN1      dash CAN + ISO-TP console + OpenBLT
+ *  13  USART1..8 LIN master (USART3)
+ *  15  USB OTG1/2 CDC console + USB MSD
+ *
+ * The bootloader builds with this same mcuconf (its EXTI stays at 6 via
+ * the EFI_BOOTLOADER guard in interrupt_priority.h).
  */
 #define STM32_IRQ_EXTI0_PRIORITY            6
 #define STM32_IRQ_EXTI1_PRIORITY            6
@@ -139,21 +164,21 @@
 #define STM32_IRQ_TIM3_PRIORITY             7
 #define STM32_IRQ_TIM4_PRIORITY             7
 #define STM32_IRQ_TIM5_PRIORITY             7
-#define STM32_IRQ_TIM6_PRIORITY             7
+#define STM32_IRQ_TIM6_PRIORITY             8
 #define STM32_IRQ_TIM7_PRIORITY             7
 #define STM32_IRQ_TIM8_BRK_TIM12_PRIORITY   7
 #define STM32_IRQ_TIM8_UP_TIM13_PRIORITY    7
 #define STM32_IRQ_TIM8_TRGCO_TIM14_PRIORITY 7
 #define STM32_IRQ_TIM8_CC_PRIORITY          7
 
-#define STM32_IRQ_USART1_PRIORITY           12
-#define STM32_IRQ_USART2_PRIORITY           12
-#define STM32_IRQ_USART3_PRIORITY           12
-#define STM32_IRQ_UART4_PRIORITY            12
-#define STM32_IRQ_UART5_PRIORITY            12
-#define STM32_IRQ_USART6_PRIORITY           12
-#define STM32_IRQ_UART7_PRIORITY            12
-#define STM32_IRQ_UART8_PRIORITY            12
+#define STM32_IRQ_USART1_PRIORITY           13
+#define STM32_IRQ_USART2_PRIORITY           13
+#define STM32_IRQ_USART3_PRIORITY           13
+#define STM32_IRQ_UART4_PRIORITY            13
+#define STM32_IRQ_UART5_PRIORITY            13
+#define STM32_IRQ_USART6_PRIORITY           13
+#define STM32_IRQ_UART7_PRIORITY            13
+#define STM32_IRQ_UART8_PRIORITY            13
 
 /*
  * EXT driver system settings.
@@ -188,18 +213,18 @@
 #define STM32_ADC_ADC1_DMA_PRIORITY         2
 #define STM32_ADC_ADC2_DMA_PRIORITY         2
 #define STM32_ADC_ADC3_DMA_PRIORITY         2
-#define STM32_ADC_IRQ_PRIORITY              6
-#define STM32_ADC_ADC1_DMA_IRQ_PRIORITY     6
-#define STM32_ADC_ADC2_DMA_IRQ_PRIORITY     6
-#define STM32_ADC_ADC3_DMA_IRQ_PRIORITY     6
+#define STM32_ADC_IRQ_PRIORITY              7
+#define STM32_ADC_ADC1_DMA_IRQ_PRIORITY     7
+#define STM32_ADC_ADC2_DMA_IRQ_PRIORITY     7
+#define STM32_ADC_ADC3_DMA_IRQ_PRIORITY     7
 
 /*
  * CAN driver system settings.
  */
 #define STM32_CAN_USE_CAN1                  TRUE
 #define STM32_CAN_USE_CAN2                  FALSE
-#define STM32_CAN_CAN1_IRQ_PRIORITY         11
-#define STM32_CAN_CAN2_IRQ_PRIORITY         11
+#define STM32_CAN_CAN1_IRQ_PRIORITY         12
+#define STM32_CAN_CAN2_IRQ_PRIORITY         12
 
 /*
  * DAC driver system settings.
@@ -223,6 +248,10 @@
 #define STM32_GPT_USE_TIM4                  FALSE
 #define STM32_GPT_USE_TIM5                  FALSE
 #define STM32_GPT_USE_TIM6                  TRUE
+/* TIM6 = fast-ADC trigger (6 kHz, callback SW-starts ADC2) - ladder row 8.
+ * The GPT LLD's default for this priority is the generic 7; pin it to the
+ * ladder explicitly (see the IRQ block comment at the top). */
+#define STM32_GPT_TIM6_IRQ_PRIORITY         8
 #define STM32_GPT_USE_TIM7                  FALSE
 #define STM32_GPT_USE_TIM8                  FALSE
 #define STM32_GPT_USE_TIM9                  FALSE
@@ -348,7 +377,7 @@
  * SDC driver system settings.
  */
 #define STM32_SDC_SDIO_DMA_PRIORITY         3
-#define STM32_SDC_SDIO_IRQ_PRIORITY         9
+#define STM32_SDC_SDIO_IRQ_PRIORITY         10
 #define STM32_SDC_WRITE_TIMEOUT_MS          1000
 #define STM32_SDC_READ_TIMEOUT_MS           1000
 #define STM32_SDC_CLOCK_ACTIVATION_DELAY    10
@@ -397,18 +426,18 @@
 #define STM32_SPI_SPI4_DMA_PRIORITY         1
 #define STM32_SPI_SPI5_DMA_PRIORITY         1
 #define STM32_SPI_SPI6_DMA_PRIORITY         1
-#define STM32_SPI_SPI1_IRQ_PRIORITY         10
-#define STM32_SPI_SPI2_IRQ_PRIORITY         10
-#define STM32_SPI_SPI3_IRQ_PRIORITY         10
-#define STM32_SPI_SPI4_IRQ_PRIORITY         10
-#define STM32_SPI_SPI5_IRQ_PRIORITY         10
-#define STM32_SPI_SPI6_IRQ_PRIORITY         10
+#define STM32_SPI_SPI1_IRQ_PRIORITY         11
+#define STM32_SPI_SPI2_IRQ_PRIORITY         11
+#define STM32_SPI_SPI3_IRQ_PRIORITY         11
+#define STM32_SPI_SPI4_IRQ_PRIORITY         11
+#define STM32_SPI_SPI5_IRQ_PRIORITY         11
+#define STM32_SPI_SPI6_IRQ_PRIORITY         11
 #define STM32_SPI_DMA_ERROR_HOOK(spip)      osalSysHalt("DMA failure")
 
 /*
  * ST driver system settings.
  */
-#define STM32_ST_IRQ_PRIORITY               8
+#define STM32_ST_IRQ_PRIORITY               9
 #define STM32_ST_USE_TIMER                  2
 
 /*
@@ -449,8 +478,8 @@
 #ifndef STM32_USB_USE_OTG2
 #define STM32_USB_USE_OTG2                  TRUE
 #endif /* STM32_USB_USE_OTG2 */
-#define STM32_USB_OTG1_IRQ_PRIORITY         14
-#define STM32_USB_OTG2_IRQ_PRIORITY         14
+#define STM32_USB_OTG1_IRQ_PRIORITY         15
+#define STM32_USB_OTG2_IRQ_PRIORITY         15
 #define STM32_USB_OTG1_RX_FIFO_SIZE         512
 #define STM32_USB_OTG2_RX_FIFO_SIZE         1024
 #define STM32_USB_HOST_WAKEUP_DURATION      2
