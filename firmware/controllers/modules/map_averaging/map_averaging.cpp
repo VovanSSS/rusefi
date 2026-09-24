@@ -311,19 +311,24 @@ void MapAveragingModule::scheduleNextCycleWindows() {
 		return;
 	}
 
-	// Runs from the TDC executor hook once per engine cycle (the hook fires at
-	// engine phase tdcPosition()): plan every window start of the coming cycle
-	// in time. The angle->time conversion happens up to a full cycle ahead with
-	// the current oneDegreeUs - the documented option-B accel-drift tradeoff -
-	// and the events execute on the TIM5 executor. Zero per-tooth handoff work
-	// (this is what replaced the per-tooth onEnginePhase window scan).
+	// Runs from the TDC executor hook once per engine cycle. The hook fires at
+	// ENGINE PHASE 0 (TDC1): tdcMarkCallback schedules it tdcPosition() crank
+	// degrees after the sync point, where E = wrap(phaseFromSync -
+	// tdcPosition()) = 0. mapAveragingStart[] is already an engine-phase angle,
+	// so the window offset IS that absolute angle - subtracting tdcPosition()
+	// again fired every window that many degrees early (the 2026-09-24 bug:
+	// endAveraging 3/cyc while samplingAngle < tdcPosition, see
+	// docs/bug_map_planner_tdc_offset.md). The angle->time conversion happens
+	// up to a full cycle ahead with the current oneDegreeUs - the documented
+	// option-B accel-drift tradeoff - and the events execute on the TIM5
+	// executor. Zero per-tooth handoff work (this is what replaced the
+	// per-tooth onEnginePhase window scan).
 	efitick_t nowNt = getTimeNowNt();
-	angle_t tdcPhase = tdcPosition();
 
 	int samplingCount = engineConfiguration->measureMapOnlyInOneCylinder ? 1 : engineConfiguration->cylindersCount;
 
 	for (int i = 0; i < samplingCount; i++) {
-		angle_t windowOffset = engine->engineState.mapAveragingStart[i] - tdcPhase;
+		angle_t windowOffset = engine->engineState.mapAveragingStart[i];
 		wrapAngle(windowOffset, "mapWindowOffset", ObdCode::CUSTOM_ERR_6562);
 
 		// Re-planning (a new cycle) can overtake events still pending from the

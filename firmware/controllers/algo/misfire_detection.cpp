@@ -30,8 +30,9 @@ static constexpr float MISFIRE_WOBBLE_ALPHA_FALL_DEFAULT = 0.01f;
 // minimum margin -- roughly 1° at 1500 RPM, comfortably below any real misfire signature.
 static constexpr float MISFIRE_WOBBLE_FLOOR_US           = 50.0f;
 
-namespace {
-// Executor actions for the per-cylinder segment boundary events.
+// Executor actions for the per-cylinder segment boundary events. Declared in
+// misfire_detection.h (like startAveraging in map_averaging.h) so the planner
+// tests can identify the scheduled events by callback.
 void misfireSegmentStartAction(uint8_t cylinderNumber) {
 	engine->module<MisfireController>()->captureSegmentStart(cylinderNumber, getTimeNowNt());
 }
@@ -39,7 +40,6 @@ void misfireSegmentStartAction(uint8_t cylinderNumber) {
 void misfireSegmentEndAction(uint8_t cylinderNumber) {
 	engine->module<MisfireController>()->finishSegment(cylinderNumber, getTimeNowNt());
 }
-} // namespace
 
 void MisfireController::resetDetectionState() {
 	for (size_t i = 0; i < MAX_CYLINDER_COUNT; i++) {
@@ -289,13 +289,14 @@ void MisfireController::scheduleNextCycleSegments() {
 		return;
 	}
 
-	// Schedule the segment events relative to the TDC mark (engine phase =
-	// tdcPosition()) once per engine cycle, like the MAP windows. Both boundary
-	// events fire on the TIM5 executor - the segment is timed between executor
-	// fire times, and each end event evaluates the segment of the cylinder that
-	// already fired.
+	// Schedule the segment events once per engine cycle, like the MAP windows.
+	// The TDC mark fires at ENGINE PHASE 0 (TDC1) and windowStart is already an
+	// engine-phase angle, so the offset IS windowStart - no tdcPosition()
+	// subtraction (the 2026-09-24 double-subtraction bug, see
+	// docs/bug_map_planner_tdc_offset.md). Both boundary events fire on the
+	// TIM5 executor - the segment is timed between executor fire times, and each
+	// end event evaluates the segment of the cylinder that already fired.
 	efitick_t nowNt = getTimeNowNt();
-	angle_t tdcPhase = tdcPosition();
 	size_t cylCount = engineConfiguration->cylindersCount;
 
 	for (size_t i = 0; i < cylCount; i++) {
@@ -308,8 +309,7 @@ void MisfireController::scheduleNextCycleSegments() {
 		angle_t windowEnd = tdc + windowEndOffset;
 		wrapAngle(windowEnd, "misfireEnd", ObdCode::CUSTOM_ERR_6562);
 
-		angle_t startOffset = windowStart - tdcPhase;
-		wrapAngle(startOffset, "misfireStartOffset", ObdCode::CUSTOM_ERR_6562);
+		angle_t startOffset = windowStart;
 		angle_t segmentWidth = windowEnd - windowStart;
 		if (segmentWidth < 0) {
 			segmentWidth += getEngineState()->engineCycle;

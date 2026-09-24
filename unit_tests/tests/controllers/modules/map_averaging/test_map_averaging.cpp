@@ -104,8 +104,9 @@ TEST(EngineModules, MapAveragingModule_scheduleNextCycleWindows) {
     engineConfiguration->measureMapOnlyInOneCylinder = true;
 	engine->rpmCalculator.setRpmValue(200);
 
-	// Reference the planner to engine phase 0 so scheduled offsets equal the
-	// absolute window angles (the TDC executor hook fires at tdcPosition()).
+	// Zero the trigger phase so scheduled offsets equal the absolute window
+	// angles: the TDC executor hook fires at ENGINE PHASE 0 (TDC1), so with
+	// tdcPosition() = 0 the offset == mapAveragingStart[i] exactly.
 	getTriggerCentral()->triggerShape.tdcPosition = 0;
 	engineConfiguration->globalTriggerAngleOffset = 0;
 
@@ -164,6 +165,90 @@ TEST(EngineModules, MapAveragingModule_scheduleAllFourWindows) {
 	EXPECT_TRUE(offsetExpected(255));
 	EXPECT_TRUE(offsetExpected(435));
 	EXPECT_TRUE(offsetExpected(615));
+}
+
+// Regression for the 2026-09-24 double-subtraction bug (see
+// docs/bug_map_planner_tdc_offset.md): with a nonzero tdcPosition() - the real
+// m74_9 runs 112 - the windows must STILL be planned at their absolute
+// engine-phase angles, because the TDC hook fires at engine phase 0. Before the
+// fix the subtraction scheduled every window tdcPosition() degrees early.
+TEST(EngineModules, MapAveragingModule_scheduleWindowsWithNonzeroTdcOffset) {
+    EngineTestHelper eth(engine_type_e::TEST_CRANK_ENGINE);
+    engineConfiguration->isMapAveragingEnabled = true;
+    engineConfiguration->measureMapOnlyInOneCylinder = false;
+	engine->rpmCalculator.setRpmValue(200);
+
+	// m74_9 configuration: shape tdcPosition 0 + tunable offset 112
+	getTriggerCentral()->triggerShape.tdcPosition = 0;
+	engineConfiguration->globalTriggerAngleOffset = 112;
+
+	// sampling angle BELOW the offset (like the car below ~2375 rpm): with the
+	// bug slot 0 wrapped 105 - 112 -> 713 deg
+	setArrayValues(engineConfiguration->map.samplingAngle, 105);
+
+	engine->module<MapAveragingModule>()->onFastCallback();
+	engine->module<MapAveragingModule>()->scheduleNextCycleWindows();
+
+	EXPECT_EQ(4, engine->scheduler.size());
+
+	float usPerDeg = engine->rpmCalculator.oneDegreeUs;
+	std::vector<float> scheduledOffsets;
+	for (int i = 0; i < engine->scheduler.size(); i++) {
+		auto event = engine->scheduler.getForUnitTest(i);
+		if (event->action.getCallback() == startAveragingAction.getCallback()) {
+			scheduledOffsets.push_back((event->getMomentUs() - getTimeNowUs()) / usPerDeg);
+		}
+	}
+	ASSERT_EQ(4, scheduledOffsets.size());
+
+	auto offsetExpected = [&](angle_t expected) {
+		return std::any_of(scheduledOffsets.begin(), scheduledOffsets.end(), [&](angle_t actual) {
+			return std::abs(actual - expected) < 1.0f;
+		});
+	};
+	EXPECT_TRUE(offsetExpected(105));
+	EXPECT_TRUE(offsetExpected(285));
+	EXPECT_TRUE(offsetExpected(465));
+	EXPECT_TRUE(offsetExpected(645));
+}
+
+// Regression: every started window must also close. With the old tdcPosition()
+// double subtraction and samplingAngle < tdcPosition, slot 0's 50-deg window
+// straddled the cycle boundary and the next cycle's plan (cancel-before-re-arm)
+// killed its pending close every cycle - endAveraging 3/cyc on the car. Step a
+// full cycle, re-plan at the next mark (engine phase 0), and check that nothing
+// is still averaging shortly after the boundary.
+TEST(EngineModules, MapAveragingModule_allWindowsCloseAcrossCycleBoundary) {
+    EngineTestHelper eth(engine_type_e::TEST_CRANK_ENGINE);
+    engineConfiguration->isMapAveragingEnabled = true;
+    engineConfiguration->measureMapOnlyInOneCylinder = false;
+	engine->rpmCalculator.setRpmValue(200);
+
+	getTriggerCentral()->triggerShape.tdcPosition = 0;
+	engineConfiguration->globalTriggerAngleOffset = 112;
+	setArrayValues(engineConfiguration->map.samplingAngle, 105);
+
+	engine->module<MapAveragingModule>()->onFastCallback();
+	engine->module<MapAveragingModule>()->scheduleNextCycleWindows();
+
+	// 200 rpm: 720 deg = 600 ms; 1 ms steps so executor events fire at
+	// distinct instants. With the fix the last window closes at 695 deg
+	// (579 ms); with the bug slot 0 latches 'true' at 713 deg and its close
+	// (763 deg) is cancelled by the re-plan.
+	for (int i = 0; i < 595; i++) {
+		eth.moveTimeForwardMs(1);
+		eth.executeActions();
+	}
+
+	// the next engine cycle's TDC mark: re-plans and (before the fix)
+	// cancels slot 0's still-pending close
+	engine->module<MapAveragingModule>()->scheduleNextCycleWindows();
+
+	// 30 ms past the boundary: all four closes fired -> idle flag
+	eth.moveTimeForwardMs(30);
+	eth.executeActions();
+
+	EXPECT_FALSE(engine->outputChannels.isMapAveraging);
 }
 
 TEST(EngineModules, MapAveragingModule_scheduleSkipsWhenDisabledOrStopped) {

@@ -103,3 +103,9 @@ private:
 	// when the window widens to a valid size or detection state is reset.
 	bool m_windowTooNarrow = false;
 };
+
+// Executor trampolines for the per-cylinder segment boundary events, fired via
+// scheduleByAngle. Declared here (like startAveraging in map_averaging.h) so the
+// planner tests can identify the scheduled events by callback.
+void misfireSegmentStartAction(uint8_t cylinderNumber);
+void misfireSegmentEndAction(uint8_t cylinderNumber);

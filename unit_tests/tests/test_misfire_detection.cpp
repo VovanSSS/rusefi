@@ -2,6 +2,8 @@
 #include "misfire_detection.h"
 #include "idle_thread.h"
 
+#include <cmath>
+
 // 2026-09-23: the detector moved out of the handoff. The per-cycle planner
 // scheduleNextCycleSegments() schedules 2N executor events (segment start/end per
 // cylinder); each end event evaluates the segment of the cylinder that already
@@ -85,6 +87,38 @@ TEST(MisfireDetection, plannerSchedulesTwoEventsPerCylinder) {
 	engine->module<MisfireController>()->scheduleNextCycleSegments();
 
 	EXPECT_EQ(engineConfiguration->cylindersCount * 2, engine->scheduler.size());
+}
+
+// ---- Planner anchor regression (the 2026-09-24 double subtraction) ----
+
+TEST(MisfireDetection, plannerSegmentOffsetsIgnoreTdcPosition) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	setupMisfireConfig(eth);
+	engine->module<IdleController>().unmock().isIdling = true;
+
+	// Nonzero tunable offset (m74_9 runs 112): the TDC hook fires at engine
+	// phase 0, so segment offsets are the absolute window angles - NOT
+	// windowStart - tdcPosition() (see docs/bug_map_planner_tdc_offset.md).
+	engineConfiguration->globalTriggerAngleOffset = 112;
+
+	engine->module<MisfireController>()->scheduleNextCycleSegments();
+	EXPECT_EQ(engineConfiguration->cylindersCount * 2, engine->scheduler.size());
+
+	// cylinder 0's segment must start TDC(0) + misfireWindowStart(20) = 20 deg
+	// after the plan; before the fix it wrapped 20 - 112 -> 628 deg.
+	auto const segStartAction{ action_s::make<misfireSegmentStartAction>(uint8_t{0}) };
+	float usPerDeg = engine->rpmCalculator.oneDegreeUs;
+	bool foundStartAt20 = false;
+	for (int i = 0; i < engine->scheduler.size(); i++) {
+		auto event = engine->scheduler.getForUnitTest(i);
+		if (event->action.getCallback() == segStartAction.getCallback()) {
+			float offsetDeg = (event->getMomentUs() - getTimeNowUs()) / usPerDeg;
+			if (std::abs(offsetDeg - 20.0f) < 1.0f) {
+				foundStartAt20 = true;
+			}
+		}
+	}
+	EXPECT_TRUE(foundStartAt20);
 }
 
 // ---- Executor-driven segments seed the baseline and arm detection ----

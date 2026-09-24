@@ -1,5 +1,63 @@
 # Work Report
 
+## 2026-09-24 - m74_9 BUG RECORD: MAP window planner double-subtracts tdcPosition -> windows ~112 deg early, endAveraging 3/4 below ~2375 rpm
+
+Found from the first Variant A car session lockstats (10:55-10:59; five
+snapshots, ~2000 engine cycles): endAveraging fires exactly 3 per engine
+cycle (end/start 0.762/0.751/0.750/0.753/0.757; the 09-23 per-tooth build
+was 4/4). Detailed write-up: docs/bug_map_planner_tdc_offset.md.
+
+Root cause (code-proven): MapAveragingModule::scheduleNextCycleWindows()
+computes windowOffset = wrap(mapAveragingStart[i] - tdcPosition()), but the
+hook (onTdcCallback, scheduled by tdcMarkCallback) fires at ENGINE PHASE 0:
+tdcMark schedules it tdcPosition() crank degrees after the sync point and
+engine phase E = wrap(phaseFromSync - tdcPosition()) = 0 at TDC1. tdcPosition
+is subtracted TWICE - mapAveragingStart[] is already an engine-phase angle
+(the same space the old per-tooth isPhaseInRange compared against). The
+in-file comment "the hook fires at engine phase tdcPosition()" is wrong; the
+correct offset is wrap(mapAveragingStart[i]).
+
+Consequences on m74_9 (tdcPosition 112, samplingAngle(rpm) 100..130, window
+50 deg):
+- ALL four windows fire ~112 deg early at every rpm (the tune's sampling
+  angle table is effectively shifted by -112).
+- Below ~2375 rpm (s < tdcPosition) cylinder 1's window wraps to ~708-720
+  deg, its 50-deg end lands in the NEXT cycle and the next plan's
+  cancel-before-rearm kills it every cycle -> endAveraging 3/4,
+  mapPerCylinder[0] frozen while running, the single averager accumulates a
+  ~190-deg smear (discarded at the next slot's start), and the Variant A
+  last-window->first-cylinder rescale link never executes via endAveraging.
+  Masked by the tooth-time MapFast/basis refresh - the designed redundancy -
+  which is why the engine ran clean at idle on a shared plenum.
+- The misfire planner (scheduleNextCycleSegments) has the identical defect
+  (latent: misfireDetectionEnabled = disabled in 21129.msq).
+- The planner unit tests pass triggerShape.tdcPosition = 0, so the
+  subtraction no-ops and the offset coincides with the correct answer - the
+  nonzero-offset path (the real car) is never exercised.
+
+Fix (APPLIED 2026-09-24 later the same session, working tree - not
+committed):
+- map_averaging.cpp scheduleNextCycleWindows: windowOffset =
+  mapAveragingStart[i] (the tdcPhase subtraction removed; comment corrected
+  to document that the TDC hook fires at engine phase 0).
+- misfire_detection.cpp scheduleNextCycleSegments: startOffset = windowStart
+  (the tdcPhase subtraction removed, same comment correction).
+- The two misfire executor trampolines moved OUT of the anonymous namespace
+  and declared in misfire_detection.h (startAveraging-style) so tests can
+  identify the events by callback. Gotcha hit on the way: declaring a
+  header prototype for a function DEFINED inside an anonymous namespace
+  creates two same-signature entities -> the name becomes an overload set
+  and action_s::make<Func> ('auto' NTTP) rejects it - never mix anonymous-
+  namespace definitions with namespace-scope declarations.
+- Three regression tests: MapAveragingModule_scheduleWindowsWithNonzeroTdcOffset
+  (offsets == absolute window angles under globalTriggerAngleOffset 112),
+  MapAveragingModule_allWindowsCloseAcrossCycleBoundary (full-cycle
+  boundary-crossing re-plan, all closes fire),
+  MisfireDetection.plannerSegmentOffsetsIgnoreTdcPosition.
+Validation: unit tests 1163 pass / 12 fail (the same 12 pre-existing, +3
+new all green); m74_9 board build BUILD SUCCESSFUL. Car check pending: next
+lockstats must show endAveraging 4/cyc and a live mapPerCylinder[0].
+
 ## 2026-09-24 - cleanup pass: orphaned EngineModule::onEnginePhase + Map2/MapSlow2/MapFast2..4 SensorType values removed
 
 Follow-up to the Variant A commit: the two deferred cleanups are done.
