@@ -14036,3 +14036,131 @@ handoff savings convert directly into high-rpm angle precision.
   the ISR entry is now prologue + tooSoonToHandleSignal + two gates +
   direct handleShaftSignal - no bl to boardRawTriggerEdge anywhere in the
   trigger path (LTO dropped the empty call). log lines: none.
+
+## 2026-09-24 (3rd) - m74_9: lockstats 14:51/14:53 + two c9009diag lines - executor composition named, C9009 Mode A/B split
+
+- What: analysis of two on-car lockstats snapshots (14:51:15 -> 14:53:50,
+  155 s; the window holds ~20 s of running at 505-521 rpm = ~84.4 engine
+  cycles, the rest engine-off) plus two c9009diag lines at 14:53:21. The
+  flashed build matches the local tree (ELF built today 12:50): all five
+  executor othercb addresses resolve to the expected callbacks, and the
+  window-2 deltas close exactly (1074 events = 333+310+341+85+2+3 fuel).
+- Executor composition PROVEN by addr2line, per-cycle deltas over 84.4
+  cycles (variant-A design = 13 events/cyc + 1 Hz watchdog, misfire OFF):
+
+  | callback | delta | per cycle |
+  | --- | --- | --- |
+  | startAveraging (mapSampler) | +333 | 3.9 |
+  | endAveraging (MapAverager) | +310 | 3.7 |
+  | startKnockSampling | +341 | 4.0 |
+  | onTdcCallback | +85 | 1.0 |
+  | watchDogBuddyCallback | +2 | - |
+  | TOTAL | +1074 | 12.7 |
+
+  endAveraging 23 short of startAveraging = the engine-stop tail (the last
+  plan's pending ends cancelled on stop), not a planner fault. sched fuel
+  +3 = the 3 inj tickPast TIM5 fallbacks (1:1). No misfire segment
+  callbacks -> misfireDetectionEnabled=no on this tune.
+- Executor lateness reading (durable): the histogram shows 89.9% of events
+  in the 4-16 us bucket - the normal entry+batch mode; the 'late>=10us =
+  96.6-98.3%' line is a THRESHOLD ARTIFACT cutting through that bucket,
+  NOT a stall. The 8.6% in 16-64 and ~1.0% in 64-256 (max 104-113 us) are
+  batch order - 2-3 callbacks co-due in one CC1 tick sum their durations
+  (othercb maxDur 24-51 us each; schedulerIsr 100-250 us share = 5.2%).
+- Angle clock: dwell/spark/inj lateArm = 0/0/3 over the whole window
+  (split: dwell guard=0 tickPast=0, inj guard=0 tickPast=3; refusal none),
+  maxLateUs 81 -> 115 (a TMR fire waiting on the running prio-3 handoff -
+  the documented +1 ladder trade), immediate 88 -> 17. tim2clk healthy in
+  both snapshots: ARR=FFFFFFFF (PMEN 32-bit fix holds), EN/LPEN/CEN/PSC=71,
+  sleep T2d~NTd ~399600-399800, busy T2d~NTd ~400000-400183 per 100 ms.
+  injCC2 scheduled==fired exact in both (15330/15330, 20278/20278).
+  nvic exti=0 handoff=3 tim5=5 canTx=12 canRx0=12 adc=7 + T2/T4/T3=4 +
+  CC2 TIM5=5 - the +1 ladder is live on-car.
+- Handoff: triggerIsr avg 53.7-54.2 us (pre 5.8, decode 10.0, post
+  36.4-36.9). postDecode 50-100 us band = 1.0-1.1% of teeth vs the
+  ~7%-of-teeth scheduling share on the 09-23 evening build - the
+  variant-A eviction (apply_all + MAP/misfire out of the handoff)
+  collapsed the tails. The peacetime postDecode base (~37 us) is still
+  ~3 us above the 33-34 us morning baseline - unattributed; sub-phase
+  histograms remain the tool (09-23 list). triggerMaxDuration 430/557
+  ticks (107-139 us), maxPrecisionCallbackDuration 601/805 ticks
+  (150/201 us), maxSchedulingPrecisionLoss/maxLockedDuration/
+  maxTriggerReentrant/maxEventCallbackDuration all 0.
+- C9009 - the two lines: Coil 1 counter=19322 fall=19321, Coil 3
+  19324/19323 - both counter - fall == 1 (REAL double-schedule), 180 deg
+  apart in phase, same engine cycle (rev 4830), rpm 521 -> 504 across the
+  two, gapCorr=36, early=0, off=6/13 tenths = 0.6/1.3 deg = 192/416 us at
+  521 rpm, lead to next tooth still 5.4/4.7 deg (1.73/1.5 ms), dwell
+  duration 10.1/9.7 deg (~3.2 ms), advance 15.0/14.7 deg BTDC.
+- KEY RESULT - the C9009 modes are now separable from ONE lockstats: this
+  session's ==1 double-schedules landed in a window with dwell guard=0
+  tickPast=0 and sched dwell n=0 - the adjacent-slot re-arm did NOT pass
+  through a failed TMR2 arm. This is Mode B, the post-fire phase re-anchor
+  (docs 2026-09-21): fire updates signalFallSparkId and clears
+  dwellStartArmed -> the gapCorr/phase re-anchor on the rpm drop makes the
+  fixed dwellAngle reappear in the current window [cur,next) of the very
+  next teeth -> onTriggerEventSparkLogic re-arms the same coil at fall+1
+  with the arm succeeding (no tickPast). Mode A (09-22/09-23, mid-rpm
+  decel) = early arm at T-1 skipped + tickPast -> TIM5 fallback, and shows
+  itself as tickPast>0 in the same snapshot. Cross-check: window-2 spark
+  fired = dwell + 2 = exactly the two wasted sparks of the double-schedules.
+- Diagnostic caveat (durable): the two c9009diag lines print into the PC
+  log 1 ms apart while the events are 180 deg (~57.6 ms at 521 rpm) apart
+  in engine phase - console text-channel buffering; PC receive timestamps
+  cannot order ECU-side sub-second events.
+- Fix candidate for Mode B (not implemented): in the current-window branch
+  of onTriggerEventSparkLogic refuse the arm while sparkCounter -
+  signalFallSparkId < 2 (the normal next-cycle dwell is fall+4, so the
+  guard only blocks the adjacent-slot re-arm; the first-cycle-after-resync
+  path has fall far in the past and is unaffected). Validate that a burst
+  cannot stall the firing sequence before shipping.
+- Open: inj tickPast 62-280/window (09-23, mid-rpm) -> 3 here is a real
+  improvement, but the 09-23 class was mid-rpm/decel and this session is
+  idle-band (500 rpm margins are ~2.7x larger) - confirm with a 1300-1400
+  rpm run before declaring the class dead.
+
+## 2026-09-24 (4th) - m74_9: single-jerk observation between the 15:05:44 and 15:06:52 lockstats - aggregates clean, event-level diagnostic gap
+
+- User observation: between the two dumps the engine hiccuped ONCE
+  (single jerk) - a spark not on time or an injector miss; random
+  occurrence, suspicion of ISR/priority/race.
+- Window arithmetic: window 4 (15:05:44 -> 15:06:52, 68 s) = 511 engine
+  cycles at ~902 rpm average (2044 dwell fires = 4 x 511; 59420 teeth =
+  116 x 511 + 4). READING GOTCHA (durable): injCC2 scheduled/fired are
+  CUMULATIVE-since-boot - angleClockResetStats() (end of each lockstats)
+  does NOT reset them - while the angclk fired/lateArm and executor stats
+  DO reset at each lockstats. Window-4 CC2 delta 43744-41695 = 2049
+  closes vs 2043 injection opens = 1:1 within 6 (cranking extras).
+  Window 3's pasted angclk figures cover only a trailing sub-window (the
+  CC2 delta 20278->41695 = 21417 closes over the 713 s foots to ~5354
+  cycles ~= 900 rpm continuous; the pasted 1307 dwell fires = the last
+  ~327 cycles) - an intermediate unpasted lockstats reset in between.
+- The jerk window is PERFECT in aggregate: dwell=spark=2044, inj=2043,
+  lateArm 0/0/0, split guard=0 tickPast=0 both, refusal none, immediate=0,
+  sched dwell/spark/overdwell/fuel n=0, injCC2 1:1, tim2clk sleep/busy
+  exact (398668/398668, 400002/400000 per 100 ms), nvic all match,
+  executor composition by design (startAveraging 2043, endAveraging 2044,
+  startKnockSampling 2043, onTdc 511 = 2044/4, buddy 68 -> 13/cyc).
+- Conclusion: the jerk is a SINGLE-EVENT class. Cumulative equality
+  counters are blind to it - one ±1 hides in the noise floor. The only
+  elevations in the window: angclk maxLateUs 78 -> 128 (one TMR fire
+  waited ~128 us behind the handoff = 0.69 deg at 900 rpm - not a felt
+  jerk), executor maxLate 96 -> 109 us, and the usual low-rate handoff
+  100-250 us tails (37 teeth in the 68 s, same per-running-second rate as
+  window 3). Nothing ms-class exists in any histogram bucket.
+- Diagnostic gap (what would capture the next jerk): 1) the console
+  message log AROUND THE INSTANT - C9009 'looks like skipped spark',
+  c9009diag bursts, C935x rescue, C9002/C9007/C9008 - none of these are
+  in lockstats dumps; 2) synctrace + gapAnchorCorrectionDeg immediately
+  after a jerk (phase re-anchor / trigger resync class); 3) engine
+  sniffer during a run (per-cycle spark/inj timing, the TS tool);
+  4) firmware-side: a small per-cylinder ring (NT ticks + phase) of
+  fire/open/close records - cumulative counters cannot see this class.
+- Candidate classes with the signature that proves each: Mode B phase
+  re-anchor (c9009diag ==1 burst + C9009 warning), trigger resync
+  (synctrace + gapCorr jump + trgsynchronizationcounter), injection
+  open/close race (scheduled > fired gap - ABSENT here, exact), L9779/
+  VRS decode stall (handoff 100-250 us burst), executor lateness (not
+  felt at these magnitudes).
+- Positive datapoint carried over: window 4 ran at ~900 rpm with ZERO
+  tickPast - the variant-A handoff eviction holds at 900 rpm too.
