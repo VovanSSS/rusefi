@@ -1,9 +1,10 @@
 # Bug: MAP/misfire window planners double-subtract tdcPosition() (Variant A, recorded 2026-09-24)
 
-Status: **FIXED in the working tree (2026-09-24, not committed)** - applied
-later the same day as the record. Car validation pending (see section 7).
-The fix moves the MAP sampling phase, so it belongs together with a tune
-sanity pass (idle VE/AFR) on the next drive.
+Status: **FIXED and CAR-VALIDATED (2026-09-24)** - committed as
+32272cfcc05, car lockstats 14:43-14:48 the same evening confirmed the
+signature (see section 7). The fix moves the MAP sampling phase, so a tune
+sanity pass (idle VE/AFR) is still recommended - the engine ran clean on
+the validation drive.
 
 ---
 
@@ -201,10 +202,23 @@ Regression tests added (all three green):
 Validation: unit tests 1163 pass / 12 fail (the same 12 pre-existing
 injection/trigger failures, none new); m74_9 board build BUILD SUCCESSFUL.
 
-Expected car signature after the fix: endAveraging 4/cyc, live
-mapPerCylinder[0], sniffer shows 4 clean 50-deg pulses. The not-yet-run
-pre-fix prediction test (4/4 above ~2375 rpm on the unfixed build) is now
-moot - validate directly on the fixed build instead.
+CAR VALIDATION (2026-09-24 14:43-14:48, ELF built 12:50, ~1150-1215 rpm -
+the exact band where the unfixed build measured 3/cyc):
+
+| snapshot | startAveraging | endAveraging | end/start |
+| -------- | -------------- | ------------ | --------- |
+| 14:44:15 | 308            | 306          | 0.994     |
+| 14:45:29 | 3002           | 3002         | 1.000     |
+| 14:48:42 | 7377           | 7364         | 0.998     |
+
+(pre-fix: 0.747-0.763). Supporting numbers: executor event load 13.1 per
+engine cycle (was ~12.1 - the restored close is the +1); onTdcCallback
+1/cyc throughout; handoff unchanged (~52-53 us/tooth, postDecode 50-100 us
+bucket 0.71-0.79%); dwell/spark lateArm 0, inj lateArm 2/0/3 (tickPast),
+injCC2 scheduled==fired, tim2clk sleep/busy exact. The residual
+end<start in the first and third snapshots (-2 over ~79 cycles, -13 over
+~1845 cycles) is the snapshot instants catching a window in flight plus the
+by-design accel re-plan cancel - not the lost-close bug.
 
 Cautions:
 

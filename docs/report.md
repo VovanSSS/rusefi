@@ -55,8 +55,14 @@ committed):
   boundary-crossing re-plan, all closes fire),
   MisfireDetection.plannerSegmentOffsetsIgnoreTdcPosition.
 Validation: unit tests 1163 pass / 12 fail (the same 12 pre-existing, +3
-new all green); m74_9 board build BUILD SUCCESSFUL. Car check pending: next
-lockstats must show endAveraging 4/cyc and a live mapPerCylinder[0].
+new all green); m74_9 board build BUILD SUCCESSFUL. CAR-VALIDATED the same
+evening (14:43-14:48, ELF 12:50, ~1150-1215 rpm - the exact band where the
+pre-fix build showed 3/cyc): endAveraging/startAveraging 306/308 = 0.994,
+3002/3002 = 1.000, 7364/7377 = 0.998 (was 0.747-0.763); executor load is
+13.1 events per engine cycle (was ~12.1) = the restored close, +1/cyc.
+Handoff unchanged (~52-53 us/tooth, postDecode 50-100 bucket 0.71-0.79%);
+angle clock clean (dwell/spark lateArm 0, refusal none, inj lateArm 2/0/3
+tickPast, injCC2 scheduled==fired, tim2clk exact).
 
 ## 2026-09-24 - cleanup pass: orphaned EngineModule::onEnginePhase + Map2/MapSlow2/MapFast2..4 SensorType values removed
 
