@@ -14164,3 +14164,62 @@ handoff savings convert directly into high-rpm angle precision.
   felt at these magnitudes).
 - Positive datapoint carried over: window 4 ran at ~900 rpm with ZERO
   tickPast - the variant-A handoff eviction holds at 900 rpm too.
+
+## 2026-09-24 (5th) - m74_9: execution-latency telemetry for armed spark/injector discharges - what exists, what is missing, lockstats design
+
+- User hypothesis to verify: a FLOATING execution delay on the discharge
+  of the armed spark and injector (single jerk class). Ask: can lockstats
+  print the per-event execution delay? Answer: partially today - the
+  spark/inj fire latency is measured but POOLED and max-only; the
+  injection CLOSE has NO latency telemetry at all.
+- What exists today (code-verified in angle_clock.cpp /
+  injection_close_hw.cpp):
+
+  | path | ISR | latency measured | where |
+  | --- | --- | --- | --- |
+  | dwell start | TMR2 (prio 4) | late = CNT-CCR at dispatch, pooled into s_maxLateTicks | dispatch32 |
+  | spark fire | TMR4 (prio 4) | same pooled max | dispatch16 |
+  | injection open | TMR3 (prio 4) | same pooled max | dispatch16 |
+  | injection close | TIM5 CC2 (prio 5) | NONE - only scheduled/fired counts | hwInjectionCloseCallback |
+  | executor batch | TIM5 CC1 (prio 5) | full 7-bucket hist + count>=10us + max | EventQueue::executeOne |
+
+  The printed 'angclk maxLateUs' is the MAX of (CNT - armed CCR) over all
+  three kinds pooled since the last lockstats - it cannot say WHICH kind
+  floats nor HOW OFTEN; a slowly drifting typical delay is invisible in a
+  max. The measured instant is the ISR entry before act.execute(), so it
+  captures priority-blocking (wait behind the prio-3 handoff, behind
+  another prio-4 fire, behind locked sections) and excludes the callback
+  body - exactly the 'спуск' delay class under suspicion.
+- Missing and to add (design, not implemented):
+  1) per-kind fire latency in angle_clock.cpp: split s_maxLateTicks into
+     {nFired (exists), nLateGt10Us, sumLateTicks, maxLateTicks} x 3 kinds
+     (dispatch32/16 take the stats struct instead of the bare counter).
+     Print in lockstats:
+       angclk xsec dwell fired=N lateGt10=N maxUs=N meanUs=N
+       angclk xsec spark ... / angclk xsec inj ...
+     meanUs = sumLate / fired = the drifting typical delay the user looks
+     for; lateGt10 = its frequency; max = the tail. Cost: ~10 cycles in a
+     prio-4 ISR firing ~4 times/cyl/cycle (~30/s per kind at 900 rpm) -
+     negligible. 16-bit wrap caveat: the int16 CNT-CCR comparison is only
+     valid to +-8.2 ms; the executor is prio-blocked ~250 us max today, so
+     fine, but clamp outliers explicitly when they appear (a wrapped read
+     looks like ~-8 ms).
+  2) injection CLOSE latency in injection_close_hw.cpp: dispatchAndRearm
+     already computes now = CNT and fireAt per slot; add
+     {nLateGt10Us, sumLateTicks, maxLateTicks} (late = CNT - slot.fireAt,
+     32-bit NT, no wrap) and print after the scheduled/fired pair:
+       injCC2 sched=N fired=N lateGt10=N maxUs=N meanUs=N nvic TIM5=5 (want 5)
+     This is the MOST exposed path: CC2 runs at prio 5, below the prio-3
+     handoff AND the prio-4 TMR2/3/4 ISRs, so its entry can wait behind
+     both; today nothing measures it.
+  3) spark discharge is armed 'from now' at the charge moment
+     (angleClockArmSparkFromNow), so its CCR is exact regardless of the
+     arm basis - any late spark reading = pure ISR-entry blocking.
+- Reading plan once implemented: collect the three xsec lines + injCC2
+  across idle and a load pull; the jerk class shows as lateGt10>0 in the
+  spark or injCC2 line where the pooled max said nothing, or as a growing
+  mean under load (the floating-delay signature).
+- The per-cyl event ring (NT + phase, from the 4th entry) remains the tool
+  for the ±1 single-event class; these per-kind delay lines are the tool
+  for the drifting-delay class. Both would have caught the 15:05-15:06
+  jerk's nature.
