@@ -15018,6 +15018,59 @@ ARR=FFFFFFFF, PSC=71); nvic all want. triggerIsr 50-100 = 41-51% is bin-crossing
 the trgDecode 100-250 us outlier, and the flap's immediate/pending cost is bounded but
 not eliminated (the long-standing rpm-flap story).
 
+## 2026-09-26 (16th) - m74_9: Option B post-trip capture - immediate 2.01% over a drive (vs 7.04% pre-B flap) but NOT ~0; inj tickPast rate ~4.6x lower; residual = boundary-event + handoff-latency class, the LOOKAHEAD lever
+
+Two more post-flash windows: 00:29:51 (idle, ~4.8 min after the (15th) pair)
+and 00:34:38 ("after the drive", 287 s later, ~1447 rpm avg, 401k teeth -
+the transient window the (15th) said was missing):
+
+| окно | teeth | avg trigIsr us | avg postDecode us | ratio disposed | skip | write | pending | immediate (%% dwell) | dwell lateArm | inj lateArm | sched fuel | injCC2 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 00:29 idle | 16440 | 45.5 | 33.7 | 0.134 | 73.0 | 25.4 | 1.7 | 2 (0.36) | 0 | 0 | 0 | 11268/11267 |
+| 00:34 drive | 401342 | 44.1 | 32.2 | 0.136 | 80.1 | 16.6 | 3.3 | 278 (2.01) | 0 | 27 | 27 | 25220/25220 |
+
+Readings:
+- 00:29 (idle): the cleanest window on this build - immediate=2 (0.36%%),
+  ALL lateArm 0, ZERO TIM5 fallback (sched fuel n=0), injCC2 off-by-1 is a
+  pending close at the snapshot instant, not a leak.
+- 00:34 (drive, the decisive transient case): immediate=278 = 2.01%% of dwell.
+  This IS an order of magnitude below the pre-option-B flap end-member (23:45
+  = 346 = 7.04%%) but NOT the ~0 the (15th) optimistically predicted. The
+  cleanest evidence the fresh basis helps transients is the inj tickPast RATE:
+  09-24 16:43 (oneDegreeUs basis, same three-timer architecture) = 759/1766 s
+  = 0.430/s at ~2350 rpm; 00:34 (fresh basis) = 27/287 s = 0.094/s at ~1447
+  rpm -> ~4.6x lower. inj fired 13909 vs dwell 13823 (+86 = +0.62%%, the
+  known double-window armedAt-passed re-schedule, in the historical
+  0.7-2.7%% band).
+
+Verdict: Option B is validated for REGRESSION-freedom (all health markers
+green: dwell/spark lateArm 0/0, spark==dwell exact, injCC2 exact in the
+DRIVE window, tim2clk healthy ARR=FFFFFFFF/PSC=71/T2d~NTd, nvic all want,
+no C9009/C935x/C9002) and MEASURABLY helps the transient class (immediate
+7.04%% -> 2.01%%, inj tickPast rate ~4.6x lower). BUT immediate does NOT
+collapse to ~0: the residual ~2%% over a drive is the BOUNDARY-EVENT +
+HANDOFF-LATENCY class (the 2026-09-24 branch=2 recipe, NOT a basis problem):
+m74_9 dwell/inj START angles land AT tooth boundaries by construction
+(advance + dwell relationships); when the early window at T-1 misses, the
+current-window arm runs with rem~0 and ANY handoff latency (~100-250 us
+postDecode on scheduling teeth) leaves the event past-due at refresh ->
+immediate. A fresh basis cannot fix an event whose angle is already at the
+current phase when the arm executes. The recorded lever for THIS class is
+the LOOKAHEAD fix (arm early-window targets up to K deg PAST nextPhase so
+boundary events catch at T-1 with a full-tooth lead), not the current-window
+arm and not the basis.
+
+So the 23:45 reframe now decomposes: the 7.04%% flap immediate had TWO
+components - (a) basis lag (oneDegreeUs), fixed by option B (tickPast rate
+4.6x down, the 2.01%% includes this reduction), and (b) boundary events at
+rem~0, which option B does NOT touch and no basis can - that is the
+remaining ~2%% floor, target of the LOOKAHEAD lever.
+
+Durable: disposed/tooth rock-stable 0.134/0.136 over the drive too; avg
+postDecode 33.7/32.2 us unchanged (option B per-tooth cost still invisible);
+branch=2-in-drive (the 27 tickPast + the 278 immediate) is the live
+boundary-events-under-transients signature.
+
 ## 2026-09-26 (15th) - m74_9: Option B first car capture - NO regression, healthy; quiet-idle immediate within noise; the transient/flap verdict still pending
 
 Two post-flash lockstats windows (00:24:37 / 00:25:03, ~927 rpm idle, 26.5 s
