@@ -14978,3 +14978,42 @@ What it does NOT do (unchanged): fix the 100-250 us trgPostDecode tails (6th/8th
 trimmed). Validation: compile.sh m74_9 BUILD SUCCESSFUL (this commit's three source
 files). Car validation pending - next lockstats names whether skip dominates in
 steady rpm as designed.
+
+## 2026-09-25 (12th) - m74_9: skip-write car-validated - disposed/tooth = 0.134-0.137 rock-stable; C9009 =4 flap confirmed benign
+
+Four lockstats windows with the new refresh telemetry in ~1 h of running (~800-1150
+rpm incl. an idle flap with 2x C9009 right before the last window):
+
+| окно | teeth | disposed/зуб | skip | write | pending | immediate | avg postDecode us | 50-100 post |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 23:40 | 13732 | 0.136 | 84.2% | 12.7% | 3.1% | 10 | 34.2 | 0.60% |
+| 23:41 | 109221 | 0.137 | 82.5% | 16.4% | 1.0% | 12 | 36.0 | 1.00% |
+| 23:43 | 90016 | 0.137 | 83.5% | 12.3% | 4.1% | 56 | 35.9 | 0.90% |
+| 23:45 | 142828 | 0.134 | 71.6% | 24.0% | 4.3% | 346 | 37.3 | 1.39% |
+
+New durable fact: disposed/tooth (of 12 channels, the armed-in-range-not-due ones that
+actually reach the skip/write/pending logic) is a rock-stable 0.134-0.137 across all
+four windows regardless of rpm/flap. This caps skip-write's real saving at ~2
+peripheral ops x 0.136/tooth = tens of ns - a proof that refresh's per-tooth cost was
+always tiny, and why avg postDecode stays 34-37 us (no measurable speedup, no
+regression - as predicted in (11th)).
+
+The 23:45 window (idle flap, the two C9009 just before) is the dynamic end-member:
+skip 71.6%, write 24.0%, pending 4.3%, immediate=346 (7% of dwell events fired past-due
+at refresh vs 1.8% quiet). All lateArm=0 still - arms did NOT fail, no TIM5 fallback
+(sched fuel n=2 == inj lateArm 2, 1:1), no C935x; bounded precision loss during the
+storm, the flap's angle-clock cost now quantifiable.
+
+C9009 both benign (the 2026-09-20 taxonomy mode counter-fall==4, idle rpm-flap desync
+where the rpm gate skipped the prevSparkName update): 23:45:03 Coil4 fall=10887
+counter=10891, 23:45:16 Coil3 fall=11254 counter=11258; rpm 806-808, charged=0
+bail=no, sparkCounter-fall==cylinderCount exactly = one engine cycle - no actual
+skipped spark, no double-charge. The dangerous ==1 (double-schedule) and charged=1
+modes not seen.
+
+Health: dwell/spark lateArm=0 in ALL four windows; injCC2 exact (7356/7356,
+12285/12285); tim2clk exact (sleep T2d~NTd 398943/398943, busy 399999/400000,
+ARR=FFFFFFFF, PSC=71); nvic all want. triggerIsr 50-100 = 41-51% is bin-crossing (avg
+48-50 us), not a slow phase; postDecode 100-250 = 0 in both windows. Open (unchanged):
+the trgDecode 100-250 us outlier, and the flap's immediate/pending cost is bounded but
+not eliminated (the long-standing rpm-flap story).
