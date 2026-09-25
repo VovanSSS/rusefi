@@ -1,5 +1,32 @@
 # Work Report
 
+## 2026-09-25 - m74_9: per-tooth tooth-timing check (isToothExpectedNow) compiled out of the handoff (EFI_TRIGGER_CHECK_TOOTH_TIMING=FALSE)
+
+The tooth-timing plausibility check (TriggerCentral::isToothExpectedNow,
+handleShaftSignal) ran on EVERY decoded tooth on m74_9 - a per-tooth slice of
+the ~5-6 us trgPreDecode bucket - estimating the current engine phase from the
+last tooth and rejecting teeth deviating more than 10 deg from the expected
+next phase (C9007/C9008 warnings plus the triggerIgnoredToothCount drop). On
+m74_9 the decoder already validates gaps and teeth harder than this 10 deg
+phase check (gap-ratio windows + custom_board_syncAcceptToothLoss /
+syncEarlyGapWhileCranking + the tooth-loss tolerance), and the L9779 VRS time
+filter shifts the decode edge, which the check does not model. Following the
+EFI_TRIGGER_DEBOUNCE precedent, the check is now a compile-time flag with the
+shared default TRUE in trigger_central.cpp (all other boards AND the host
+unit-test build keep the check); m74_9 compiles it out.
+
+Change inventory:
+| file | change |
+| --- | --- |
+| firmware/controllers/trigger/trigger_central.cpp | new EFI_TRIGGER_CHECK_TOOTH_TIMING flag, shared default TRUE; the isToothExpectedNow call site wrapped in the flag |
+| firmware/config/boards/m74_9/efifeatures.h | EFI_TRIGGER_CHECK_TOOTH_TIMING FALSE with rationale |
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL (the flag is FALSE on this
+board, so trigger_central.cpp was compiled with the call wrapped out). NOT
+car-tested yet - the next lockstats should show the ~5-6 us trgPreDecode
+bucket shrink by the isToothExpectedNow slice, and C9007/C9008 + the
+'tooth ignored' drops should stop on m74_9.
+
 ## 2026-09-24 - m74_9 BUG RECORD: MAP window planner double-subtracts tdcPosition -> windows ~112 deg early, endAveraging 3/4 below ~2375 rpm
 
 Found from the first Variant A car session lockstats (10:55-10:59; five

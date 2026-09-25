@@ -46,6 +46,19 @@
  * keep the gate. */
 #define EFI_TRIGGER_DEBOUNCE FALSE
 
+/* Per-tooth tooth-timing plausibility check (isToothExpectedNow in
+ * trigger_central.cpp, C9007/C9008) is compiled out: the check estimates the
+ * current engine phase from the last tooth and rejects teeth deviating >10 deg
+ * from the expected next phase, on EVERY decoded tooth (~5 us of the
+ * trgPreDecode budget). m74_9 runs the same class of handoff-trim work as
+ * EFI_TRIGGER_DEBOUNCE / EFI_TRIGGER_CONFIG_RUNTIME_RELOAD above; the decoder
+ * already validates gaps and teeth harder than a 10 deg phase check
+ * (gap-ratio windows + custom_board_syncAcceptToothLoss / syncEarlyGapWhileCranking
+ * + the tooth-loss tolerance), and the L9779 VRS time filter shifts the decode
+ * edge, which the check does not model. Shared default is TRUE in
+ * trigger_central.cpp - other boards keep the check. */
+#define EFI_TRIGGER_CHECK_TOOTH_TIMING FALSE
+
 /* TMR2 hardware angle clock (OC channels as software comparators, events
  * programmed one tooth ahead, fired by a priority-3 ISR): removes the
  * trigger-decode/handoff latency from the spark/injection timing chain.

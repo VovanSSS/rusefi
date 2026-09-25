@@ -48,6 +48,18 @@ WaveChart waveChart;
 #define EFI_TRIGGER_DEBOUNCE TRUE
 #endif
 
+// Per-tooth tooth-timing plausibility check (isToothExpectedNow, see
+// handleShaftSignal below): estimates the current engine phase from the last
+// tooth and rejects teeth deviating more than 10 deg from the expected next
+// phase (C9007/C9008). Runs on EVERY decoded tooth, part of the ~5-6 us
+// trgPreDecode bucket. Boards with a strongly-synchronized trigger pipeline
+// that already validates gaps/teeth can compile the check out so the handoff
+// skips the per-tooth work; the shared default is TRUE (all other boards keep
+// it).
+#ifndef EFI_TRIGGER_CHECK_TOOTH_TIMING
+#define EFI_TRIGGER_CHECK_TOOTH_TIMING TRUE
+#endif
+
 #if EFI_SHAFT_POSITION_INPUT
 
 TriggerCentral::TriggerCentral() :
@@ -955,10 +967,12 @@ TRIGGER_RAM_CODE void TriggerCentral::handleShaftSignal(trigger_event_e signal, 
 		}
 	}
 
+#if EFI_TRIGGER_CHECK_TOOTH_TIMING
 	if (!isToothExpectedNow(timestamp)) {
 		triggerIgnoredToothCount++;
 		return;
 	}
+#endif // EFI_TRIGGER_CHECK_TOOTH_TIMING
 
 	isSpinningJustForWatchdog = true;
 
