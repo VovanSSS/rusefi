@@ -14424,3 +14424,52 @@ handoff savings convert directly into high-rpm angle precision.
   0x0805A241 endAveraging, 0x08048451 startKnockSampling, 0x08049F45 onTdc,
   0x08071E79 watchDogBuddy, 0x0803D3E5 timerValidation, 0x0804C4A5 /
   0x08072A7B Prime adapters).
+
+## 2026-09-25 (2nd) - m74_9: current ISR priority ladder + the maxLateUs 183 us dispatch chain
+
+- What: the user asked to tabulate the CURRENT AT32 m74_9 ISR priorities and
+  to tie the `sched fuel maxLateUs 183 us` figure (16:13/16:43 lockstats)
+  to them - i.e. prove it is DISPATCH waiting behind higher-priority ISRs,
+  not callback work.
+- Ladder (arrangement 2026-09-23; on-car confirmed by BOTH lockstats nvic
+  lines: exti=0 handoff=3 tim5=5 canTx=12 canRx0=12 adc=7, plus angclk
+  T2/T4/T3=4 and injCC2 TIM5=5 - all want-matches):
+
+  ```
+  prio  irq / vector      role
+  0     EXTI9_5 (23)      raw crank-edge capture (fast IRQ, ~2-3 us)
+  3     I2C1_EV (31)      trigger decode + angle-clock arming (handoff)
+  4     TMR2/4/3 (28/30/29) dwell start / spark / injection start
+  5     TIM5 CC1/CC2 (50) executor: inj close, overdwell, MAP/knock, WDA buddy
+  6     TMR7 (55)         L9779 WDA feed (~100 us SPI per ~28 ms)
+  7     ADC1/2 (18), ADC3 (17) slow ADC
+  8     TIM6              fast-ADC trigger GPT
+  9     SysTick           system tick
+  10    SDIO (49)         SD card
+  11    SPI1 (35)         L9779 SPI (thread-side)
+  12    CAN1 TX/RX0/RX1 (19/20/21) dash CAN + ISO-TP console + OpenBLT
+  13    USART (39)        LIN master (USART3)
+  15    USB OTG (67)      CDC console + USB MSD
+  no ISR: IWDG (reset only), TIM12 ETB PWM (suppressed), TIM8 PWM (no ch)
+  ```
+
+  16 levels, 0 = highest; kernel BASEPRI masks 3..15, so only the fast
+  capture may live in 0-2.
+- The 183 us path (fuel-open fallback, `turnInjectionPinHigh` in TIM5 prio 5,
+  reached via a tick-past arm refusal on the current window): TIM5 cannot
+  start while ANY ISR of prio < 5 is running; on a scheduling tooth the
+  handoff (prio 3) stays up ~100-250 us (pre 5 + decode 8-17 + postDecode
+  29-40 us on scheduling teeth, with the arm chain at the end), and TMR2/3/4
+  fires (prio 4, ~10-25 us) + a locked-section can interleave. Callback body
+  itself is only ~9 us (cbmaxUs). So 183 us = pure preemption wait - NOT
+  work; it is schedulable only after the whole handoff batch + any pending
+  TMR fires drain.
+- Limitation (durable): the aggregates CANNOT split the 183 us into
+  handoff-vs-TMR fractions - that needs the per-kind CC1 maxLateUs + a CC1
+  duration histogram (planned in the 2026-09-24 (6th) entry, not
+  implemented). The measured `schedulerIsr` gross (modal 50-100 us) together
+  with `angclk maxLateUs 150 us` (a TMR fire waiting on the same handoff)
+  bracket the wait: both classes sit behind the same prio-3 scheduling-tooth
+  handoff.
+- Validation: analysis only; ladder from CLAUDE.md + the two log nvic lines,
+  no code change.
