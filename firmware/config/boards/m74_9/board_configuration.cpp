@@ -1152,15 +1152,22 @@ void setup_custom_board_overrides() {
 			(unsigned)((NVIC->IP[28] >> 4) & 0xF),
 			(unsigned)((NVIC->IP[30] >> 4) & 0xF),
 			(unsigned)((NVIC->IP[29] >> 4) & 0xF));
-		// Refresh skip-write telemetry (2026-09-25): refresh runs on EVERY
-		// tooth over 12 armed channels. skip ~= 12 x teeth = the optimization
-		// doing its job (steady rpm, armed CCR already optimal - no write, no
-		// SR re-read); write > 0 marks accel/decel teeth where the only-earlier
-		// anchor really moved a CCR; pending = channels whose CCxIF was set
-		// (TMR ISR about to fire - refresh correctly left them alone).
-		efiPrintf("angclk refresh skip=%u write=%u pending=%u (12ch/tooth; skip=steady no-op)",
+		// Refresh write-split telemetry (2026-09-26): skip = armed CCR already
+		// optimal (steady no-op, ~12 x teeth); write = re-anchors that pulled the
+		// event EARLIER by more than the deadband - only real accel/decel
+		// corrections, since sub-deadband pulls are per-tooth basis jitter and are
+		// absorbed into jitter=; jitter = the absorbed sub-2us pulls (the "armed
+		// tick slightly late vs freshest basis" population); pending = channels
+		// whose CCxIF was latched (TMR ISR about to fire - refresh left them
+		// alone). maxPullUs = worst |fresh - armed| gap seen in us: if it stays
+		// large while write stays high the ARM basis is genuinely stale (next
+		// lever is the arm side, not refresh); if jitter dominates and maxPullUs
+		// is a few us the old write count was just basis jitter.
+		efiPrintf("angclk refresh skip=%u write=%u jitter=%u pending=%u maxPullUs=%u (12ch/tooth; skip=steady no-op)",
 			(unsigned)angleClockRefreshSkip(), (unsigned)angleClockRefreshReanchored(),
-			(unsigned)angleClockRefreshPending());
+			(unsigned)angleClockRefreshJitter(),
+			(unsigned)angleClockRefreshPending(),
+			(unsigned)(angleClockRefreshMaxPullTicks() / (NT_PER_SECOND / 1000000)));
 		// LOOKAHEAD (2026-09-26): early-window arms whose target landed in the
 		// extended band [nextNextPhase, nextNextPhase + 6 deg) - the boundary
 		// events that used to fall to the current-window arm at rem ~ 0 and fire

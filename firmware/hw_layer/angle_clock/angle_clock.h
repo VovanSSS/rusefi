@@ -63,6 +63,23 @@ static inline uint32_t angleClockDelayTicks(float angleFromNow, float ticksPerDe
 // phase, well inside MAX_LEAD_DEG (30).
 static constexpr float ANGLE_CLOCK_LOOKAHEAD_DEG = 6.0f;
 
+// Re-anchor deadband (2026-09-26): refresh only rewrites a CCR when the fresh
+// prediction is MEANINGFULLY earlier than the armed tick. The only-earlier
+// anchor means a "pull" is always oldCcr - newTick, and the per-tooth
+// (Option B) basis jitters by a few ticks on nearly every tooth, so the
+// armed-tick-vs-fresh-prediction gap is almost never exactly zero - refresh
+// would rewrite the CCR (and pay the peripheral write + SR re-read) just to
+// absorb sub-µs noise. Keeping the armed CCR for pulls <= DEADBAND fires the
+// event at most DEADBAND later than the freshest prediction: at 7000 rpm 2 us
+// = 0.08 deg, far below the VRS conditioner constant 0.43 deg and the
+// ms-class scheduling precision loss - harmless for a START edge (the
+// injection close is anchored to the actual open; spark is re-armed from the
+// charge moment). Real accel/decel corrections exceed the deadband and still
+// re-anchor. Watch `angclk refresh ... maxPullUs` to size this: if
+// maxPullUs stays large, the arm basis is genuinely stale and the deadband
+// must not absorb that class.
+static constexpr uint32_t ANGLE_CLOCK_REANCHOR_DEADBAND_TICKS = US2NT(2);
+
 // Configure TMR2/TMR3/TMR4, measure rate, enable NVIC. Call once at boot,
 // after the TIM5 executor is running.
 void initAngleClock();
@@ -185,6 +202,15 @@ uint32_t angleClockLookaheadDwell();
 uint32_t angleClockLookaheadInj();
 void angleClockRecordLookaheadDwell();
 void angleClockRecordLookaheadInj();
+
+// Refresh write-split telemetry (2026-09-26): deadband absorbs sub-deadband
+// pulls (per-tooth basis jitter) so `write` counts only MEANINGFUL re-anchors
+// (real accel/decel corrections). jitter = the absorbed small pulls (the
+// "armed tick was slightly late" population); maxPullTicks = worst prediction
+// gap seen in ticks - /4 = us. If maxPullUs stays large the arm basis is
+// genuinely stale and the deadband must not absorb that class.
+uint32_t angleClockRefreshJitter();
+uint32_t angleClockRefreshMaxPullTicks();
 
 // Classify an early-window arm into the LOOKAHEAD band and bump the counter.
 // Call ONLY when the extended early window matched (scheduleEarly == true);

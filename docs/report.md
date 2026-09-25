@@ -15018,6 +15018,75 @@ ARR=FFFFFFFF, PSC=71); nvic all want. triggerIsr 50-100 = 41-51% is bin-crossing
 the trgDecode 100-250 us outlier, and the flap's immediate/pending cost is bounded but
 not eliminated (the long-standing rpm-flap story).
 
+## 2026-09-26 (19th) - m74_9: refresh re-anchor deadband (2 us) + jitter/maxPullUs telemetry - distinguishes basis jitter from a genuinely stale arm basis
+
+User challenge (00:53): with LOOKAHEAD live, `angclk refresh skip=29458
+write=8223 pending=452` - "write just shouldn't be that high, the scheduler
+must still be coming late." The write counter IS the exact question to ask:
+in refresh `anchor = (newTick - oldCcr > 0) ? oldCcr : newTick` (only-earlier),
+so every write is literally "the freshest tooth data says the event fires
+EARLIER than it is armed". A high write count is therefore
+armed-tick-vs-fresh-basis gap - but is that gap (a) per-tooth (Option B) basis
+JITTER of a few ticks on almost every armed channel (scheduler fine), or (b) a
+genuinely STALE arm basis (scheduler really IS late)? The old two-counter
+split could not tell them apart, and with an exact-equality skip
+(anchor == oldCcr) almost every armed channel landed in write just to absorb
+sub-us noise.
+
+IMPLEMENTED: a 2 us (US2NT(2) = 8 ticks) re-anchor deadband in both
+refreshChannel32 and refreshChannel16. The normal re-anchor now computes
+`pull = oldCcr - anchor` (always >= 0 by only-earlier), records the max into
+s_refreshMaxPullTicks, and returns WITHOUT the CCR write + SR re-read when
+pull <= deadband (counted s_refreshJitter). Real accel/decel corrections
+exceed the deadband and still re-anchor (s_refreshReanchored). Bounds: leaving
+the armed tick for a pull <= 2 us fires the event at most 2 us later than the
+freshest prediction = 0.08 deg at 7000 rpm, far below the L9779's constant
+0.43 deg and the ms-class scheduling loss - harmless for a START edge (the
+injection close is anchored to the real open, spark is re-armed from the
+charge moment). The deadband is NOT an allow-to-be-late lever: if maxPullUs
+stays large while write stays high, the arm basis is genuinely stale and the
+next lever is the ARM side (fresher basis at arm time / arm closer to the
+event), not refresh.
+
+New telemetry (`angclk refresh skip=%u write=%u jitter=%u pending=%u
+maxPullUs=%u`):
+- skip = armed CCR already optimal (steady-state no-op; ~12 channels x teeth)
+- write = re-anchors pulling EARLIER by MORE than the deadband = real
+  accel/decel corrections only
+- jitter = absorbed sub-2us pulls - the "armed tick slightly late vs freshest
+  basis" population that used to inflate write
+- pending = channels with CCxIF already latched (TMR ISR about to fire)
+- maxPullUs = worst |fresh - armed| gap seen (ticks /4) - the verdict
+discriminator: small (a few us) = the old write count was basis jitter and the
+scheduler is NOT systematically late; large = the arm basis is genuinely
+stale.
+
+Baseline numbers (00:53 window, ~186k teeth, LOOKAHEAD build, PRE-deadband):
+skip=29458 write=8223 pending=452, disposed/tooth ~0.205. Expected
+post-deadband verdict: calm windows `write -> ~0` (absorbed into jitter) with
+maxPullUs a few us => the 17-22 % write was basis jitter; `write` staying
+high with large maxPullUs would prove the arm side is the real lever.
+
+Change inventory:
+| file | change |
+| --- | --- |
+| firmware/hw_layer/angle_clock/angle_clock.h | ANGLE_CLOCK_REANCHOR_DEADBAND_TICKS = US2NT(2) constant (design comment: bounds, when to enlarge, when the arm basis is the lever) + angleClockRefreshJitter / angleClockRefreshMaxPullTicks accessors |
+| firmware/hw_layer/angle_clock/angle_clock.cpp | s_refreshJitter + s_refreshMaxPullTicks counters + accessors; deadband gate in refreshChannel32 (uint32 pull) and refreshChannel16 (uint16 pull) before the normal re-anchor; reset in angleClockResetStats |
+| firmware/config/boards/m74_9/board_configuration.cpp | refresh lockstats line extended with jitter=%u maxPullUs=%u |
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL (the rebuild after the
+whitespace repair hit the stale-page_4_generated.h static_assert trap
+(sizeof(page4_s) == 2220 vs 1268); fixed per convention with `touch
+firmware/integration/rusefi_config.txt` + rebuild, generated files left
+dirty and not committed). Unit tests link clean (make -j12; the angle-clock
+code is compiled out on host).
+
+Open: flash verdict - `write -> ~0` in calm windows + maxPullUs a few us
+confirms the 17-22 % write was basis jitter and the scheduler is healthy; a
+persistently high write with large maxPullUs would point at the arm-side
+basis. Still open from (18th): the drive-window immediate verdict and the
+trgDecode 100-250 us no-print outlier.
+
 ## 2026-09-26 (18th) - m74_9: LOOKAHEAD first car capture - ENGAGED and healthy; telemetry double-count found + fixed; drive verdict pending
 
 First post-LOOKAHEAD flash windows (00:47:56 / 00:48:25 / 00:49:39, idle +

@@ -113,7 +113,9 @@ static uint32_t s_lateArmInjTickPast   = 0;  // target tick already in the past
 static uint32_t s_maxLateTicks = 0;
 static uint32_t s_immediate    = 0;
 static uint32_t s_refreshSkip         = 0;  // refresh: armed CCR already optimal (steady-state no-op)
-static uint32_t s_refreshReanchored   = 0;  // refresh: actually rewrote a (changed) CCR
+static uint32_t s_refreshReanchored   = 0;  // refresh: rewrote a CCR (pull > deadband = real correction)
+static uint32_t s_refreshJitter       = 0;  // refresh: absorbed a sub-deadband pull (kept armed CCR)
+static uint32_t s_refreshMaxPullTicks = 0;  // refresh: max |fresh - armed| seen in ticks (any non-skip visit)
 static uint32_t s_refreshPending      = 0;  // refresh: left a channel with a pending CCxIF
 static uint32_t s_lookaheadDwell      = 0;  // early-window dwell arm in [nextNext, nextNext+K) (2026-09-26)
 static uint32_t s_lookaheadInj        = 0;  // early-window injection arm in [nextNext, nextNext+K)
@@ -572,7 +574,19 @@ TRIGGER_RAM_CODE static void refreshChannel32(TIM_TypeDef* tmr,
         return;
     }
 
-    // Normal re-anchor.
+    // Normal re-anchor with deadband (2026-09-26): the only-earlier anchor
+    // means a non-zero pull is always oldCcr - anchor (fresh wants it EARLIER).
+    // Absorb sub-deadband pulls - per-tooth (Option B) basis jitter produces a
+    // few-ticks gap on nearly every armed channel, and firing at the armed tick
+    // leaves the event <deadband (0.08 deg @7000) late vs the freshest basis:
+    // harmless for START edges, saves a pointless CCR write + SR re-read per
+    // tooth. Real accel/decel corrections exceed the deadband and still re-anchor.
+    const uint32_t pull = oldCcr - anchor;   // anchor <= oldCcr (only-earlier)
+    if (pull > s_refreshMaxPullTicks) s_refreshMaxPullTicks = pull;
+    if (pull <= ANGLE_CLOCK_REANCHOR_DEADBAND_TICKS) {
+        s_refreshJitter++;
+        return;
+    }
     *ccrReg(tmr, ch) = anchor;
     if (tmr->SR & flag) {
         *ccrReg(tmr, ch) = oldCcr;
@@ -630,7 +644,16 @@ TRIGGER_RAM_CODE static void refreshChannel16(TIM_TypeDef* tmr,
         return;
     }
 
-    // Normal re-anchor.
+    // Normal re-anchor with deadband (2026-09-26): same absorption as
+    // refreshChannel32 - sub-deadband pulls are per-tooth basis jitter, keep
+    // the armed CCR (bounded <deadband late vs freshest basis, harmless for
+    // START edges). Real corrections exceed the deadband and still re-anchor.
+    const uint16_t pull = static_cast<uint16_t>(oldCcr - anchor); // anchor <= oldCcr
+    if (static_cast<uint32_t>(pull) > s_refreshMaxPullTicks) s_refreshMaxPullTicks = pull;
+    if (pull <= ANGLE_CLOCK_REANCHOR_DEADBAND_TICKS) {
+        s_refreshJitter++;
+        return;
+    }
     *ccrReg(tmr, ch) = anchor;
     if (tmr->SR & flag) {
         *ccrReg(tmr, ch) = oldCcr;
@@ -738,6 +761,8 @@ uint32_t angleClockMaxLateTicks()    { return s_maxLateTicks; }
 uint32_t angleClockImmediateFireCount() { return s_immediate; }
 uint32_t angleClockRefreshSkip()      { return s_refreshSkip; }
 uint32_t angleClockRefreshReanchored(){ return s_refreshReanchored; }
+uint32_t angleClockRefreshJitter()    { return s_refreshJitter; }
+uint32_t angleClockRefreshMaxPullTicks() { return s_refreshMaxPullTicks; }
 uint32_t angleClockRefreshPending()   { return s_refreshPending; }
 uint32_t angleClockLookaheadDwell()   { return s_lookaheadDwell; }
 uint32_t angleClockLookaheadInj()     { return s_lookaheadInj; }
@@ -753,7 +778,9 @@ void angleClockResetStats() {
     s_lateArmDwellGuard = s_lateArmDwellTickPast = 0;
     s_lateArmInjGuard = s_lateArmInjTickPast = 0;
     s_maxLateTicks = s_immediate = 0;
-    s_refreshSkip = s_refreshReanchored = s_refreshPending = 0;
+    s_refreshSkip = s_refreshReanchored = s_refreshJitter = 0;
+    s_refreshMaxPullTicks = 0;
+    s_refreshPending = 0;
     s_lookaheadDwell = s_lookaheadInj = 0;
     s_dwellRefusal.branch = 0xFF;  // sentinel: no refusal since last reset
 }
