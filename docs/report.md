@@ -14805,3 +14805,134 @@ CAN/ISO-TP, MSD). The ts-delta of the two offenders (2026-09-25_15_47 and
 17_45, ~5.7 min apart at ~1150 rpm ~ 2200 edges/s) suggests a multicausal or
 periodic-triggered guest, not a process on every-first-stall. No code change;
 analysis only.
+
+## 2026-09-25 (8th) - m74_9: trgPostDecode 100-250 us tail analysis from the 16:16 lockstats (10 teeth in 3.59M)
+
+User pasted one line: `trgPostDecode hist: <50us=3585465 50-100=6555 100-250=10 250-500=0 500-1000=0 >1000us=0 sumUs=103992422`.
+
+- n = 3585465 + 6555 + 10 = 3592030 teeth; avg = 103992422 / 3592030 = 28.95 us.
+- <50 = 99.817%, 50-100 = 0.1825%, 100-250 = 0.000278% (~1 in 359k).
+- The <50 bucket average is ~28.9 us (after removing ~10 x ~150 us and ~6555 x ~60 us
+  from sumUs) = the well-known ~29 us peacetime postDecode base, so the bulk sits
+  near the TOP of the <50 bucket - the slope is a normal-distributed arm chain, not
+  a bimodal fast/slow split.
+- Comparison with today's (5th) sn2 (16:43): 50-100 = 8070/4024534 = 0.2005%,
+  100-250 = 6 (0.00015%). Same class and magnitude; the 16:16 and 16:43 numbers are
+  consistent within regime noise. The 50-100 share (0.1825% here) is far below the
+  09-24 14:51/14:53 ~1.0-1.1% (that was ~505-520 rpm idle; ~1/19 of scheduling teeth
+  cross 50 us here).
+
+What trgPostDecode IS (measured t3-t2 around the whole post-decode block,
+trigger_central.cpp handleShaftSignal L1017-1117, NOT an algorithm of one call):
+- wave/phase: reportEventToWaveChart, eventAngles lookup, wrap currentEngineDecodedPhase,
+  m_lastToothTimer under CriticalSectionLocker (L1017-1033) ~1-2 us
+- rpmShaftPositionCallback (updateInstantRpm binary search + float div; rev counter +
+  VVT checks at trgEventIndex==0) (L1040) ~4 us
+- tdcMarkCallback (L1043): schedules onTdc once/cycle only when
+  sniffer||isMapAveragingEnabled||misfireDetectionEnabled; lean
+- findNextTriggerToothAngle(+2) + wrap expectedNextPhase (L1049-1053) ~1-2 us
+- TpsAccelEnrichment::onEngineCycleTps (only trgEventIndex==0) (L1062-1064)
+- mainTriggerCallback (L1102): angleClockOnTooth (~2-3 us) + scheduleDwellEarlyIfDue
+  (2x getCachedRpm + 4x early windows, ~5 us) + rpm==0 gate -> scheduleEventsUntilNextTriggerTooth
+  (queue flush) + handleFuel x4 (isPhaseInRange + refreshInjectionMassForCylinder multiply +
+  wallFuel.adjust + getInjectionDuration interpolate3d + angleClockArmInjection) ~20 us on
+  scheduling teeth + onTriggerEventSparkLogic x4 (~5-15 us, mostly continue-lock; arm case
+  ~15-25 us worst, NEVER 150-250 - the (5th) correction; prepareIgnitionSchedule runs only
+  when !isReady, i.e. after resync) + angleClockRefresh (12 SR reads + re-anchors, ~7-10 us)
+- decodeMapCam (off) + boardTriggerCallback (no-op, M74_9_TOOTH_PROFILE_LEARNER=0) ~1 us
+
+Candidates for the 10 x 100-250 us tails (same deduction as the trgDecode (7th) OPEN,
+but phase-specific):
+1. Formatted warning()/efiPrintf with %f from ISR context - the ONLY postDecode-path
+   code object that reaches 100+ us. PostDecode-specific candidates:
+   CUSTOM_OBD_NEG_INJECTION "Negative injection pulse %.2f" / CUSTOM_OBD_impossibly_short_INJECTION
+   "Short pulse %.2f" (handleFuel, main_trigger_callback.cpp L212-228 - but the (5th)
+   established the tune does not hit these normally), CUSTOM_DWELL "invalid dwell %.2f"
+   / CUSTOM_ADVANCE_SPARK "NaN advance" (onTriggerEventSparkLogic, spark_logic.cpp L746-780),
+   CUSTOM_ZERO_DWELL / CUSTOM_DWELL_TOO_LONG (prepareIgnitionSchedule, only on !isReady).
+   warning() is rate-limited (prints 1st occurrence per window), so a single firing is
+   plausible for ~1-in-359k.
+2. Prio-0 EXTI noise-storm preemption DURING the postDecode window: the only thing above
+   the prio-3 handoff; each edge ~2-3 us, a burst inflates t3-t2. The catch/storm-flap
+   teeth take the rpm==0 early-return (lean), but a storm overlapping a normal tooth's
+   postDecode is the same class as the trgDecode (7th) suspect.
+3. Cache/RAM cold line / bank conflict / FPU-denormal inside the ISR - same unexplained
+   candidates as trgDecode (7th); the 50-100 vs 100-250 split argues against it as a
+   shared cause (they would skew the whole distribution, not 1-in-359k).
+4. prepareIgnitionSchedule on a resync tooth: heavier than the schedule path (loops all
+   cylinders + initializeIgnitionActions). Only after a desync -> isReady=false; would
+   correlate with a synctrace resync event.
+
+Next step (recommended): sub-phase histograms INSIDE the postDecode block (reuse
+IsrDurationHistogram/triggerPhase[] pattern: rpm / tdc / queue-flush / fuel / spark / refresh),
+correlate the exact outlier NT against the console log and synctrace (a warning line or a
+tooth-loss/resync would resolve candidates 1 vs 4), and/or a rawtrg burst capture (candidate 2).
+The 16:16 and 16:43 ~5-8 min-aperiodic spacing of single offenders matches the trgDecode
+(7th) conclusion: a multicausal or periodic-triggered guest, not a per-first-stall process.
+Analysis only; no code change.
+
+## 2026-09-25 (9th) - m74_9: per-item table of what executes in trgPostDecode (t3-t2, trigger_central.cpp L1017-1117)
+
+User asked for an itemized table. Phase = everything between decodeTriggerEvent
+return (t2) and ISR end (t3); measured code path is the `if (decodeResult)` branch.
+
+| # | item | where (trigger_central.cpp) | every tooth | cost (est.) | note |
+| --- | --- | --- | --- | --- | --- |
+| 1 | wave/phase: reportEventToWaveChart + eventAngles lookup + wrap currentEngineDecodedPhase | L1017-1023 | yes | ~1-2 us | sniffer off -> cheap |
+| 2 | m_lastToothTimer.reset + phase under CriticalSectionLocker | L1027-1033 | yes | <1 us | short BASEPRI window |
+| 3 | rpmShaftPositionCallback: updateInstantRpm (bin-search 116 eventAngles + float div), rev-counter + VVT at trgEventIndex==0 | L1040 | yes (cycle part 1x/cycle) | ~4 us | |
+| 4 | tdcMarkCallback: schedules onTdc executor event 1x/cycle IF sniffer||mapAveraging||misfire | L1043 | check yes / sched 1x/cycle | ~1-2 us | mapAvg enabled on tune -> really schedules 1x/cycle |
+| 5 | findNextTriggerToothAngle(+2) + wrap expectedNextPhase | L1049-1053 | yes | ~1-2 us | +2 for RiseOnly dups |
+| 6 | EFI_CDM_INTEGRATION knockLogic at trgEventIndex==0 | L1056-1060 | 1x/cycle if enabled | - (off) | no CDM on m74_9 |
+| 7 | TpsAccelEnrichment::onEngineCycleTps when cachedRpm>0 && trgIndex==0 | L1062-1064 | 1x/cycle if running | ~1-3 us | |
+| 8 | mainTriggerCallback (see 8a-8h) | L1102 | yes (requireValidatedSync gate, m74_9 sync>=1) | bulk | |
+| 8a | angleClockOnTooth: oneDegreeUs basis -> angle clock | (L398) | yes incl. storm-flap | ~2-3 us | before rpm gate |
+| 8b | scheduleDwellEarlyIfDue: 2x getCachedRpm + 4x early [next,nextNext) windows -> scheduleSparkEvent -> angleClockArmDwell(TMR2) + spark to angle queue | (L402) | yes incl. storm-flap | ~5 us | before rpm gate; sets dwellStartArmed |
+| 8c | rpm==0 gate: angleClockRefresh + return (storm flaps) | (L407-425) | storm only | - | arms NOT cancelled |
+| 8d | scheduleEventsUntilNextTriggerTooth: angle-queue flush + TMR4 spark arm | (L432) | yes | ~8 us elapsed | first, ~8 us from edge |
+| 8e | handleFuel x4: InjectionEvent::onTriggerTooth x4 (2 windows, refreshInjectionMassForCylinder 1 mult, wallFuel.adjust, getInjectionDuration interpolate3d, angleClockArmInjection(TMR3)/TIM5 fallback) | (L436) | yes | ~20 us on sched tooth / ~0 else | early-out by windows |
+| 8f | onTriggerEventSparkLogic x4: 2 windows/cyl, dwellStartArmed skip, TIM5 fallback, prepareIgnitionSchedule if !isReady | (L468) | yes | ~5-15 us, worst ~15-25; NEVER 150-250 ((5th) correction); prepare only after resync | mostly continue |
+| 8g | angleClockRefresh: 12 SR reads + re-anchor; immediate=N (past-due -> fire now) | (L475) | yes | ~7-10 us | at the end |
+| 9 | decodeMapCam (MAP-vvt) | L1109 | yes | ~1 us | off on m74_9 (vvtMode != VVT_MAP_V_TWIN) |
+| 10 | boardTriggerCallback | L1111 | yes | ~0.5 us | m74_9 no-op (M74_9_TOOTH_PROFILE_LEARNER=0) |
+
+Unsynchronized teeth (else branch L1112-1117): only reportEventToWaveChart(idx 0) +
+expectedNextPhase=unexpected, ~1 us.
+
+Structural reading: the ~29 us fixed tax (rows 1-5 + 8a/8b + 8d + idle-8f + 8g)
+is the sumUs/n=28.95 us base on EVERY tooth; scheduling teeth add the real work in
+8e/8f (the 50-100 bucket, 0.18%); the 100-250 us tails are NOT an algorithm - they
+are a rare external guest (formatted warning() with %f from ISR - candidates in
+8e/8f/8b; prio-0 EXTI noise-storm preemption; prepareIgnitionSchedule after resync
+in 8f; or cache/FPU-denormal). Sub-phase histograms INSIDE the postDecode block
+would name the culprit. Analysis only; no code change.
+
+## 2026-09-25 (10th) - m74_9: angleClockRefresh optimization analysis - skip-write is the safe win
+
+Read the full channel lifecycle (arm/dispatch/cancel, angle_clock.cpp L152-700).
+angleClockRefresh runs on EVERY tooth (both mainTriggerCallback exit paths: rpm==0
+flap L419-421 and normal L470-476), 12 channels (4x dwell TMR2/32b, 4x spark TMR4/16b,
+4x inj TMR3/16b). Per-channel cost is dominated by PERIPHERAL traffic on ARMED
+channels (SR read + CCR write + SR re-read every tooth), not by the free-channel
+`!c.action` early-out.
+
+Key stealth fact: in steady rpm the only-earlier anchor gives newTick ~= oldCcr, so
+the code rewrites the SAME CCR and runs the race-check uselessly every arm->fire
+window; on rpm==0 flap teeth angleClockOnTooth keeps the last good basis, so the
+flap refresh also recomputes with an unchanged basis (the 8c "flap overhead").
+
+Recommended optimization (behavior-preserving, ~15 lines, angle_clock.cpp only):
+skip-write in refreshChannel16/32 - if `anchor == oldCcr && oldCcr - CNT >= ARM_MARGIN`
+return BEFORE the SR read and CCR write. Correctness by branch: steady state (skip,
+ISR fires the standing CCR), accel (anchor!=old -> write earlier), decel (anchor==old
+-> skip, keep earlier per only-earlier), due-now (condition false -> immediate path
+as before), desync (MAX_LEAD exit before all), pending ISR (we didn't write, safe).
+Secondary: sentinel fast-path for spark/inj from-now channels (targetAngle=780) -
+check >750 before the SR read to skip it for the most common armed channels.
+NOT recommended: armed-bitmask (mask maintenance in 9 sites, loop already cheap);
+deferring refresh off every tooth (touches validated logic, low gain after skip-write).
+
+Does NOT fix the 100-250 us tails (refresh worst-case ~10-30 us on heavy scheduling
+tooth); it reduces the ~29 us fixed tax and the flap overhead. Measurement: add
+skip/re-anchored/immediate/pending counters + IsrDurationHistogram around refresh.
+Analysis only; no code change. Pending user ok to implement.
