@@ -14223,3 +14223,107 @@ handoff savings convert directly into high-rpm angle precision.
   for the ±1 single-event class; these per-kind delay lines are the tool
   for the drifting-delay class. Both would have caught the 15:05-15:06
   jerk's nature.
+
+## 2026-09-24 (6th) - m74_9: lockstats 16:13 / 16:43 - the branch=2 refusal decomposed: EXECUTION LATENCY, not a clock or NVIC problem
+
+- What: analysis of two on-car lockstats snapshots (16:13:44 and 16:43:10)
+  plus the C9009/c9009diag lines 16:14:47, 16:17:19, 16:35:07, 16:38:25.
+  The user question (is the branch=2 refusal gap `cnt - atTick = 494 ticks`
+  = 123 us a TIME or an ISR-bus/NVIC latency problem?): neither - it is the
+  handoff's OWN in-ISR execution latency; the clock and NVIC evidence are
+  all clean.
+- Windows: sn1 = short (~30229 teeth = 260 cycles, dwell fired 1042);
+  sn2 = 1766 s, 4.024M teeth = ~34694 cycles (dwell fired 138775), mean
+  engine-cycle rate 19.6 cyc/s = ~2350 rpm equivalent (higher if any
+  engine-off time in the window). handoff CPU ~10.1% (179 s / 1766 s),
+  executor ISR ~1.5% (26.8 s). injCC2 scheduled==fired exact
+  (1046/1046, 142004/142004).
+- Clean signals (both snapshots): nvic exti=0 handoff=3 tim5=5 canTx=12
+  canRx0=12 adc=7 + T2/T4/T3=4 + CC2 TIM5=5 - all want-matches;
+  maxTriggerReentrant/maxLockedDuration/maxSchedulingPrecisionLoss = 0;
+  tim2clk EXACT - sleep T2d 397775 / NTd 397774, busy T2d 400014 / NTd
+  400010 per 100 ms, ARR=FFFFFFFF (PMEN 32-bit fix holds), PSC=71,
+  DIER/CCER/SMCR/CR2 = 0. handoff avg 50.5 us (sn1) / 44.5 us (sn2): pre
+  5.4, decode 8.5-9.6, post 29-34. No >1 ms anywhere; sn1 one 500-1000
+  triggerIsr + one 500-1000 postDecode + one 100-250 decode; sn2 only 793
+  teeth in the 100-250 band (0.02%).
+- THE REFUSAL (dwell, sn2, the only one printed, tot=2):
+
+  ```
+  branch=2 win=1 cyl=2 target=328.2 callerPh=328.1/334.1 curPh=328.1
+  cycle=720.0 tpd=492.0 rem=0.1 atTick=964829895 cnt=964830389
+  ```
+
+  Decomposition (durable recipe):
+  - rem 0.1 deg x tpd 492 ticks/deg = 49 ticks = 12 us: the event sits
+    12 us PAST the current tooth edge (target = curPh + rem).
+  - atTick = edgeTs + 49 ticks: the event's absolute fire instant.
+  - cnt - atTick = 494 ticks = 123 us: the current-window arm executed
+    494 + 49 = 543 ticks = 136 us AFTER the tooth edge - the deadline
+    (12 us after the edge) had already passed 123 us when the arm ran.
+
+  Conclusion: the 123 us is the handoff's edge -> current-window-arm
+  latency (scheduling tooth, arm at the END of the chain -
+  onTriggerEventSparkLogic band ~100-250 us documented), NOT a TMR2 clock
+  error and NOT NVIC/bus preemption. Evidence it cannot be clock/bus:
+  tim2clk exact; curPh == callerPh (no phase divergence); tpd 492 fits
+  ~1350 rpm, corroborated by the c9009diag rpm 1369-1426 in the same
+  running stretch; nvic all want-matches + zero reentrancy/locked; atTick
+  is anchored to the fast-EXTI-latched edge timestamp (prio 0
+  capture-only), so handoff ENTRY jitter cannot corrupt the tick - only
+  the in-ISR chain (decode + postDecode + the pre-arm work on scheduling
+  teeth) lengthens edge->arm. ARM_MARGIN (4 us) is irrelevant - the miss
+  is ~30x the margin.
+- Structural root cause (unchanged): the current-window arm is the
+  last-resort path when the early window [next,nextNext) was skipped at
+  T-1. On m74_9 the dwell/inj START angles land AT tooth boundaries by
+  construction (advance + dwell-duration relationships) -> rem ~= 0 in the
+  current window -> ANY handoff latency makes the arm tick-past. The early
+  window, when it arms, has a full tooth (~740 us at 1350 rpm) of margin -
+  so the fix is to make the early window catch boundary targets (LOOKAHEAD
+  past nextPhase), not to chase the current-window arm.
+- inj vs dwell asymmetry (class NOT dead): sn2 dwell lateArm=2 / 138775
+  (0.0014%) but inj tickPast=759 / 140193 (0.54%) - the 09-23 "50x
+  asymmetry" open item, and the 09-24 14:51 idle-band improvement (inj
+  tickPast -> 3) was rpm-regime-contingent as parked: the class returns at
+  mid-rpm 1350-1426 as soon as decel bursts arrive. Mechanism split:
+  dwell's early arm runs early in scheduleDwellEarlyIfDue (before the rpm
+  gate since 09-03) and rarely misses; injection targets miss the fixed
+  [next,nextNext) window more (long PW / high duty / multi-tooth span /
+  the double-window armedAt logic) so they fall to the fragile current
+  window more. inj fired 140193 vs dwell fired 138775 = +1.02% (1418)
+  extra opens - the documented double-window armedAt-passed next-cycle
+  re-schedule candidate, still unquantified.
+- Consequences this window: every tick-past fell 1:1 to the TIM5 time
+  fallback (sched fuel n=759 == inj tickPast 759, sched dwell n=2). Spark
+  still fires correctly - re-armed from the actual charge moment
+  (angleClockArmSparkFromNow) - pure precision/lead loss; max angclk
+  maxLateUs 150 us (a TMR fire waiting on the running handoff, the +1
+  ladder trade). Fuel start shifts <=183 us, mass unchanged (PW
+  time-based), close exact on CC2. No C935x, no C9002/C9007 anywhere in
+  either window.
+- Executor composition (sn2, addr2line-anchored again): per cycle 4x
+  startAveraging + 4x endAveraging + 4x startKnockSampling + 1x onTdc =
+  13/cyc (n = 138776, 138765, 138552, 34692 over 34694 cycles) + ~1 Hz
+  watchdog (1766) - variant-A design exact. 'late>=10us = 71%' is the
+  threshold artifact (the 4-16 us bucket = 72% of all); maxLate 183 us;
+  nothing in 256-1k/>=1k. C9009 taxonomy this session: 16:14:47 and
+  16:38:25 'counter-fall == 4' (benign rpm-flap prevSparkName desync);
+  16:17:19 and 16:35:07 '== 1' Mode-B mixed: all four coils in firing
+  order (rev 3008: 12039/12038, 12041/12040, 12043/12042,
+  12045/12044), off 2.3/2.0/1.4/1.1 deg, early=0, charged=0 bail=no, rpm
+  1373-1426, gapCorr 38 - post-fire phase re-anchor wasted sparks,
+  harmless; no Mode-A signature in the same windows (dwell tickPast=0 at
+  those instants).
+- Follow-ups: (1) when the per-kind xsec telemetry from the 5th entry
+  lands, use it to confirm WHICH window/rpm drives the inj tickPast and
+  whether the +1.02% inj excess is the double-window re-schedule; (2) add
+  the same branch/win refusal snapshot for INJECTION (today only dwell
+  prints one - it would name which window inj misses and why the early arm
+  is skipped); (3) fix directions unchanged: early-window lookahead past
+  nextPhase, arm Start-kind for immediate fire instead of tick-past
+  refusal, or shrink the pre-arm path so the current-window arm runs
+  earlier in the tooth.
+- Validation: analysis only (no code change); all figures from the pasted
+  lockstats/c9009diag, cross-checked against the 5th-entry telemetry
+  design.
