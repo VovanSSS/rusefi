@@ -14473,3 +14473,62 @@ handoff savings convert directly into high-rpm angle precision.
   handoff.
 - Validation: analysis only; ladder from CLAUDE.md + the two log nvic lines,
   no code change.
+
+## 2026-09-25 (3rd) - m74_9: priority design - who must be above what, and the hard/soft executor split
+
+- Question: how should the ISR priorities be built - who should be higher,
+  the executor or the handoff?
+- Rule (first principle): HIGHER priority belongs to the ISR whose waiting
+  turns into a MISSED hardware deadline; a shift of a pre-armed time or
+  deferrable work goes LOWER. Applied to the three scheduler ISRs:
+  - handoff (decode + arm): a delay on the current-window arm (rem~0 margin)
+    is a tick-past refusal (branch=2) -> TIM5 fallback -> the 2-tooth lead
+    collapses - the disease being cured. HIGHEST.
+  - TMR fires (already-armed compare matches, bodies ~10-25 us): can only
+    shift, re-anchored from-now; must never delay the next arm, must never be
+    delayed by executor work. MIDDLE (below handoff, above executor).
+  - executor (TIM5): all downstream work (inj close, overdwell, fallback
+    starts, MAP/knock, soft PWM, watchdog) - lateness is bounded by the
+    handoff/TMR ISR lengths and lands on the degraded path. LOWEST.
+- History is the A/B: executor ABOVE handoff (old era) -> MAP/knock batches
+  preempted the decode mid-arm -> up to 640 tick-past per drive + C9009
+  storms correlated with fan. Executor at default 7 (below ADC, 08-23) ->
+  11-30% of commands >=10 us late up to 389 us. Current (09-23: handoff 3 >
+  TMR 4 > executor 5) -> clean: fuel tickPast 0.54%, dwell 0.0014%, no
+  C9002/C935x, only the documented trade (a pending TMR fire waits for the
+  decode, angclk maxLateUs 114-150 us). So "handoff must be above the
+  executor" is car-verified, not opinion.
+- But the monolithic-executor-below is ALSO not the optimum, because the
+  single executor mixes two classes in one queue/priority:
+  - HARD (must not wait behind a 100-250 us scheduling-tooth handoff):
+    injection CLOSE (CC2), overdwell rescue, fallback dwell/spark/inj starts.
+    Bodies ~2-10 us (raw GPIO). A 250 us close delay on a ~1.5 ms pulse is up
+    to ~17% duty error at the worst tooth alignment - non-zero.
+  - SOFT (deferrable): MAP windows, knock windows, soft PWM, watchdog, TS.
+- injCC2 nvic TIM5=5 in both logs confirms the CLOSE sits on the SAME prio 5
+  as the whole executor - the last low-priority timing survivor.
+- TARGET design (if split):
+
+  ```
+  0   EXTI (capture only)
+  2   HARD-executor: CC2 close + overdwell + fallback starts   <- raised above decode
+  3   handoff (decode + arm)
+  4   TMR2/3/4 (dwell / spark / inj open)
+  5+  SOFT-executor: MAP, knock, soft PWM, watchdog, TS         <- stays low
+  ```
+
+  Rationale: hard bodies are 2-10 us, so preempting the decode costs it only
+  a few us on a ~100+ us tail (invisible), while keeping the close/rescue/
+  fallback from waiting hundreds of us. NEVER raise the whole executor - the
+  soft MAP/knock batches are precisely the historical tick-past source.
+- Hard rules for anything raised above the decode: RAW-only (direct GPIO /
+  register writes, no scheduler.schedule()/queue/locks that can stall the
+  decode), bounded bodies, no warning() prints from ISR context (the 189 us
+  C9009 print path is the violator). CC2 already exists as a separate mini-
+  channel - the change is giving it its own priority and decoupling it from
+  the soft queue.
+- NOT changed in this tree: current ladder stays. Any split must be preceded
+  by the per-kind CC1 xsec telemetry (planned in 2026-09-24 (6th)) to prove
+  the close drift actually hurts fuel.
+- Validation: analysis only; ladder + symptoms from CLAUDE.md and the two
+  lockstats, no code change.
