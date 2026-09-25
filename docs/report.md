@@ -14689,3 +14689,69 @@ handoff savings convert directly into high-rpm angle precision.
   single_timer_executor.cpp L83-228, injector_model.cpp L201-267,
   persistent_store.cpp L29-47, engine_configuration.cpp L84-91,
   stm32f4ems/efifeatures.h L113-114) + the two lockstats; no code change.
+
+## 2026-09-25 (6th) - m74_9: the single 100-250 us trgDecode outlier is ONE synchronous formatted print from the ISR on the accepted tooth-loss path
+
+User pasted two trgDecode histograms with a rare single stall:
+
+| snapshot | <50us | 50-100 | 100-250 | 250-500 | >1000 | n | sumUs | avg |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 15:47:34 | 56140 | 0 | 1 | 0 | 0 | 56141 | 540969 | ~9.6 us |
+| 17:45:29 | 755000 | 0 | 1 | 0 | 0 | 755001 | 6579219 | ~8.7 us |
+
+One tooth in 755000 (~5.7 min at ~2200 edges/s on the 60-2 at ~1150 rpm) and one
+in 56140 landed in the 100-250 us bucket - inside decodeTriggerEvent (the phase
+is measured t1->t2 exactly around the call, trigger_central.cpp L996-1003).
+
+Code walk - what could physically take 100+ us INSIDE the phase:
+- Nothing in the arithmetic: the common path is integer/float ops + RAM reads
+  (ratio vdiv.f32 ~14 cycles, minRealToothNt's one genuine 64-bit division /
+  expectedCount, nextTriggerEvent macro, toothDurations shift, setSpinningUp
+  listener). isSyncPoint does NOT run every tooth - the L645 short-circuit
+  (!tooEarlyForSync && !previousToothNotReal && atExpectedGapPosition &&
+  isSyncPoint(...)) keeps it to the last ~2 teeth before the expected gap
+  (atExpectedGapPosition = eventsSinceSync+2 >= 116 on the 60-2) or while
+  desynced.
+- The ONLY 100+ us thing in the phase is synchronous formatted console output:
+  printGaps/warning call chvsnprintf with float (% .3f) formatting inside the
+  ISR.
+
+Exact path on m74_9 (21129.msq: silentTriggerError="don't print",
+verboseTriggerSynchDetails="no"):
+- The [err]/[vrb] printGaps (L709-712) IS suppressed by silentTriggerError
+  (triggerShape size 116 > 40).
+- Engine::OnTriggerSynchronization's efiPrintf (engine.cpp L423) is suppressed
+  (no verbose).
+- BUT printGaps("toothloss") (L838), printGaps("earlygap"), printGaps("newerr")
+  (L850) and warning(CUSTOM_PRIMARY_NOT_ENOUGH_TEETH/TOO_MANY_TEETH) are NOT
+  gated by silentTriggerError - they print unconditionally on those paths.
+- One swallowed VRS edge (documented L9779 behavior) -> gap arrives at count
+  114/115 vs 116 -> custom_board_syncAcceptToothLoss (m74_9: rpm 500..7000, not
+  self-stim) accepts -> printGaps("toothloss", ...) = up to two % .3f efiPrintf
+  lines (gapTrackingLength=2 for 60-2) -> the 100-250 us stall lands in THAT
+  tooth's trgDecode bucket. If the deficit is not accepted (out of band /
+  self-stim): printGaps("newerr") + warning(C9003/not-enough-teeth) - same
+  cost, plus a desync/re-sync.
+
+Confirmation recipe: grep the console log around the stall for 'toothloss' /
+'newerr' / 'primary trigger error' - exactly one formatted line at the outlier
+instant. Cost source: efiPrintfInternal (loggingcentral.cpp L186-277) =
+CriticalSectionLocker + freeBuffers.fetchI + chvsnprintf with float formatting
++ filledBuffers.postI - the float formatting is the dominant cost (the
+documented 'formatted warning() prints from ISR context' magnitude).
+
+Fix directions (not implemented):
+1. The accepted-path printGaps is debug noise on an EXPECTED condition (the
+   board opted into the tolerance) - replace with a counter
+   (boardTriggerSyncEvent('T') already writes the synctrace ring without
+   printf) or rate-limit / defer the print to thread context.
+2. Convert printGaps float formatting to integer tenths (the c9009diag 'tenths,
+   no %f' precedent) so even the rare error print stays cheap.
+3. The newerr/warning path rate-limits itself (warning() prints only the first
+   occurrence in its window) but the print itself should move off the ISR in a
+   later pass.
+
+Validation: analysis only; code read (trigger_decoder.cpp L448-955,
+loggingcentral.cpp L186-277, error_handling.cpp L708-748,
+board_configuration.cpp setup_custom_board_overrides, 21129.msq), no code
+change. The two pasted histograms are the evidence.
