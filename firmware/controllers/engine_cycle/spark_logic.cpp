@@ -825,14 +825,21 @@ TRIGGER_RAM_CODE void onTriggerEventSparkLogic(float rpm, efitick_t edgeTimestam
 				// the next next-tooth boundary is armed at T-1 with a full tooth of
 				// lead instead of the current-window rem ~ 0 arm (immediate class).
 				scheduleEarly = nextNextPhase != nextPhase && isPhaseInRange(dwellAngle, nextPhase, nextNextPhase + ANGLE_CLOCK_LOOKAHEAD_DEG);
-				if (scheduleEarly) {
-					angleClockNoteLookaheadDwell(dwellAngle, nextNextPhase);
-				}
 #endif // EFI_ANGLE_CLOCK
 				bool scheduleNow = isPhaseInRange(dwellAngle, currentPhase, nextPhase);
 				if (event->dwellStartArmed || (!scheduleEarly && !scheduleNow)) {
 					continue;
 				}
+#if EFI_ANGLE_CLOCK
+				// Count ONLY arms that actually happened here (past the dwellStartArmed
+				// guard). scheduleDwellEarlyIfDue already counted + armed this dwell
+				// earlier in the same tooth, so counting before the guard double-counted
+				// it (measured lookahead dwell == 2x dwell fired); counting after keeps
+				// lookahead dwell ~1:1 with fired, matching inj.
+				if (scheduleEarly) {
+					angleClockNoteLookaheadDwell(dwellAngle, nextNextPhase);
+				}
+#endif // EFI_ANGLE_CLOCK
 			}
 
 			if (i == 0 && engineConfiguration->artificialTestMisfire && (getRevolutionCounter() % ((int)engineConfiguration->scriptSetting[5]) == 0)) {

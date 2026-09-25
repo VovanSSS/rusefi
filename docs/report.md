@@ -15018,6 +15018,55 @@ ARR=FFFFFFFF, PSC=71); nvic all want. triggerIsr 50-100 = 41-51% is bin-crossing
 the trgDecode 100-250 us outlier, and the flap's immediate/pending cost is bounded but
 not eliminated (the long-standing rpm-flap story).
 
+## 2026-09-26 (18th) - m74_9: LOOKAHEAD first car capture - ENGAGED and healthy; telemetry double-count found + fixed; drive verdict pending
+
+First post-LOOKAHEAD flash windows (00:47:56 / 00:48:25 / 00:49:39, idle +
+start/crank transients; also one C9009 at 00:48:13 Coil 2 rpm=800 charged=0
+bail=no counter-fall==4 = the benign rpm-flap false positive, unrelated):
+
+| window | teeth | lookahead dwell/inj | dwell fired | immediate | dwell/inj lateArm | spark==dwell | injCC2 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 00:47:56 (start+idle) | 16632 | 1145 / 572 | 573 | 11 (1.92%%) | 0 / 1 | 573/573 | 575/575 |
+| 00:48:25 (idle ~800) | 25113 | 1720 / 860 | 861 | 6 (0.70%%) | 0 / 0 | 861/861 | 1441/1441 |
+| 00:49:39 (transients) | 65563 | 4510 / 2255 | 2255 | 3 (0.13%%) | 0 / 0 | 2255/2254 | 3702/3702 |
+
+Verdict: LOOKAHEAD IS ENGAGED - lookahead INJ (572/860/2255) is 1:1 with
+dwell fired (573/861/2255), i.e. EVERY START event now passes through the
+extended band and is armed one tooth ahead. No regressions in any window:
+dwell/spark/inj lateArm=0 (two inj lateArm=1-2 are the documented
+current-window/storm handoff miss, 1:1 with sched fuel), spark counts equal
+dwell exactly, injCC2 exact, nvic/tim2clk healthy. Window 3 immediate 0.13%%
+is the best ever (pre-B baseline: quiet band 0.32-2.12%%; the 00:34 drive
+was 2.01%%). C9009 x1 at 00:48:13 is the known benign mode.
+
+TELEMETRY BUG found (this session, my fault - counters only, arming was
+never doubled): `lookahead dwell` read exactly 2x `dwell fired` in all three
+windows (1145/573, 1720/861, 4510/2255) while `inj` was 1:1. Root cause: in
+onTriggerEventSparkLogic (spark_logic.cpp L~828) the
+angleClockNoteLookaheadDwell call sat BEFORE the `dwellStartArmed` guard, so
+the same boundary dwell armed earlier in the same tooth by
+scheduleDwellEarlyIfDue was counted AGAIN (that site also records it).
+Injection is immune because onTriggerTooth's injectionStartArmed guard sits
+before its counter. FIXED: the recording was moved AFTER the
+dwellStartArmed / window guard so only arms that actually happen here are
+counted - lookahead dwell now reads ~1:1 with dwell fired, matching inj.
+The real scheduleSparkEvent was already blocked by dwellStartArmed in the
+double-counted path, so no functional arm was ever duplicated.
+
+Change inventory:
+| file | change |
+| --- | --- |
+| firmware/controllers/engine_cycle/spark_logic.cpp | onTriggerEventSparkLogic: move angleClockNoteLookaheadDwell AFTER the dwellStartArmed/window guard (was double counting scheduleDwellEarlyIfDue arms -> lookahead dwell read 2x fired) |
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL; unit tests 1163/1163 pass,
+the same 12 pre-existing angle-clock failures (EFI_ANGLE_CLOCK compiles the
+moved block out on the host, so the fix does not touch the tested path).
+
+Open: the DRIVE-window verdict is still missing - expect immediate -> ~0
+(was 278 = 2.01%% at 00:34) and lookahead dwell ~1:1 with dwell fired after
+the telemetry fix; also the trgDecode 100-250 us outlier (no-print decode
+tail) is still open.
+
 ## 2026-09-26 (17th) - m74_9: LOOKAHEAD IMPLEMENTED - early-window upper bound extended 6 deg past nextNextPhase so boundary START targets are armed one full tooth early at T-1 (kills the residual immediate class)
 
 The (16th) called the residual ~2%% drive-time immediate a boundary-event +
