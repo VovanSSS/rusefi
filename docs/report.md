@@ -14532,3 +14532,56 @@ handoff savings convert directly into high-rpm angle precision.
   the close drift actually hurts fuel.
 - Validation: analysis only; ladder + symptoms from CLAUDE.md and the two
   lockstats, no code change.
+
+## 2026-09-25 (4th) - m74_9: handoff inventory - exactly what the decode+arm ISR executes per tooth
+
+- Question: itemize what the handoff (I2C1_EV, prio 3) executes per tooth - the
+  trigger decode plus the angle-clock arming - with the measured cost at each
+  stage, so the branch=2 refusal (123 us on the current-window arm) can be
+  traced to its exact step.
+- Context: the fast EXTI (prio 0) only captures {timestamp, level} into the pin
+  queue and STIRs the handoff; the handoff runs the whole decode + scheduling
+  chain. Perf markers triggerPhase[0..2] (trigger_central.cpp) split it into
+  pre/decode/post; the totals below are the two 2026-09-25-validated lockstats
+  (sn1 16:13 idle ~850 rpm ~37 s, sn2 16:43 1766 s ~2350 rpm eq).
+- Measured totals: 44.5-50.5 us/tooth (sn1 50.5 / sn2 44.5), of which ~66-67%
+  is postDecode (sn1 34.1 us = 67.5%, sn2 29.3 us = 65.9%); pre 5.4 us, decode
+  8.3-9.6 us; ~1.4 us of outer ISR plumbing sits outside the sub-phases (pin-
+  queue pop under __disable_irq, tooSoonToHandleSignal, shapeDefinitionError
+  check, ACR, hwEventCounters).
+
+  | # | этап | что исполняется | каждый зуб | extra на scheduling-зубе | elapsed от края |
+  | --- | --- | --- | --- | --- | --- |
+  | 0 | вход ISR | pop очереди под __disable_irq, tooSoonToHandleSignal, shapeDefinitionError check, ACR, hwEventCounters | да | - | ~1.4 us, вне sub-фаз |
+  | 1 | trgPreDecode | boardRawTriggerEdge (rawtrg, выключено), noiseFilter (off), isToothExpectedNow, debounce (EFI_TRIGGER_DEBOUNCE=FALSE, вырезано) | да | - | 5.4 us |
+  | 2 | trgDecode | decodeTriggerEvent: счёт зубьев, toothDurations[], gap-ratio [1.6,3.75], sync-проверки (custom_board_syncAcceptToothLoss / syncEarlyGapWhileCranking), syncRatioAvg, gapAnchorCorrectionDeg EMA, onShaftSynchronization | да | - | 8.3-9.6 us |
+  | 3 | post: wave/фаза | reportEventToWaveChart (sniffer), eventAngles lookup, wrap currentEngineDecodedPhase (tdcPosition), m_lastToothTimer.reset под CriticalSectionLocker | да | - | - |
+  | 4 | post: rpm | rpmShaftPositionCallback: updateInstantRpm (бинарный поиск 116 eventAngles + float div), revolutionCounter++ (trgEventIndex==0), cachedRpm, VVT-чеки | да | cycle-каунтер на trgEventIndex==0 | - |
+  | 5 | post: TDC mark | tdcMarkCallback - планирует раз/цикл executor-событие onTdcCallback ЕСЛИ sniffer||mapAveraging||misfire | да (проверка) | фактически no-op (оба off) | - |
+  | 6 | post: след. зуб | findNextTriggerToothAngle(+1) (+2 под EFI_ANGLE_CLOCK), expectedNextPhase | да | - | - |
+  | 7 | post: AE | TpsAccelEnrichment::onEngineCycleTps (только trgEventIndex==0) | - | да | - |
+  | 8 | mainTriggerCallback | гейт requireValidatedSync (m74_9: sync>=1) -> подпункты ниже | - | - | - |
+  | 8a | ДО rpm-гейта | angleClockOnTooth - базис oneDegreeUs -> angle clock (угол->время) | да (вкл. storm-flap) | - | ~2-3 us |
+  | 8b | ДО rpm-гейта | scheduleDwellEarlyIfDue - раннее окно [next,nextNext) x4 цил.: isPhaseInRange + scheduleSparkEvent -> angleClockArmDwell (TMR2) + spark в angle-очередь | да (вкл. storm-flap) | - | ~5 us elapsed, до gate |
+  | 8c | rpm==0 гейт | на flap-зубьях: angleClockRefresh + return (арм НЕ отменяется) | да (storm) | - | flap-оверхед |
+  | 8d | queue flush | scheduleEventsUntilNextTriggerTooth - flush angle-очереди + arm spark на TMR4 | да | - | ~8 us elapsed, первый |
+  | 8e | handleFuel x4 | InjectionEvent::onTriggerTooth x4: два окна isPhaseInRange, refreshInjectionMassForCylinder (1 умножение), wallFuel.adjust, getInjectionDuration, angleClockArmInjection (TMR3) или TIM5 fallback | да | - | ~13 us elapsed |
+  | 8f | onTriggerEventSparkLogic x4 | два окна/цил. (раннее+текущее), TIM5 fallback при промахе, prepareIgnitionSchedule если !isReady | да | - | ~150-250 us на scheduling-зубе (оверхед числа вызовов) |
+  | 8g | refresh | angleClockRefresh - 12 чтений SR + re-anchor вооружённых каналов; immediate=N (просроченные fire - сейчас) | да | - | в конце |
+  | 9 | после | decodeMapCam (MAP-vvt, off) + boardTriggerCallback (m74_9 tooth-profile learner выключен) | да | - | no-op |
+  | RET | итог | - | да | - | 44.5-50.5 us/зуб, ~66-67% postDecode |
+
+- Key reading: the arm-critical steps (8a-8e + 8g) run in the FIRST ~5-33 us
+  from the tooth edge; everything later in postDecode (8f and the tail) is
+  post-processing that does NOT affect physical timing - TMR2/3/4 are already
+  armed. So the branch=2 refusal on the current window (sn2: 123 us, i.e. the
+  current-window arm ran ~136 us after the tooth edge) is the handoff's OWN
+  in-ISR latency up to step 8f on a scheduling tooth, NOT a clock/NVIC/bus
+  problem. Code anchors: trigger_central.cpp handleShaftSignal L940-1109
+  (t0/t1/t2/t3 sub-phase histograms, postDecode chain), main_trigger_callback.cpp
+  mainTriggerCallback L355-477 (8a-8g order + the rpm==0 gate), spark_logic.cpp
+  scheduleDwellEarlyIfDue L888-946 + onTriggerEventSparkLogic L729-823, and the
+  executor contract in single_timer_executor.cpp scheduleTimerCallback L212-228
+  (arms only the nearest future event, so the executor never calls
+  portSetHardwareSchedulerTimer with an already-passed deadline).
+- Validation: analysis only; code read, no code change.
