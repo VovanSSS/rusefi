@@ -121,7 +121,18 @@ TRIGGER_RAM_CODE void InjectionEvent::onTriggerTooth(efitick_t nowNt, float curr
 	// rise's angle, so nextNextPhase == nextPhase and isPhaseInRange would
 	// match every angle (the arm would refuse every tooth). Fall back to the
 	// current-tooth window, as the fire arm's guard already does.
-	bool scheduleEarly = nextNextPhase != nextPhase && isPhaseInRange(eventAngle, nextPhase, nextNextPhase);
+	//
+	// LOOKAHEAD (2026-09-26): the upper bound is extended past nextNextPhase
+	// by ANGLE_CLOCK_LOOKAHEAD_DEG so a start angle that sits AT the next
+	// next-tooth boundary (m74_9 START angles do by construction) is armed one
+	// full tooth early at T-1 instead of falling to the current-window arm at
+	// rem ~ 0, where any handoff latency makes it past-due at refresh
+	// (immediate). Guard flags block double arming; refresh keeps the CCR
+	// accurate.
+	bool scheduleEarly = nextNextPhase != nextPhase && isPhaseInRange(eventAngle, nextPhase, nextNextPhase + ANGLE_CLOCK_LOOKAHEAD_DEG);
+	if (scheduleEarly) {
+		angleClockNoteLookaheadInj(eventAngle, nextNextPhase);
+	}
 #else
 	bool scheduleEarly = false;
 #endif // EFI_ANGLE_CLOCK

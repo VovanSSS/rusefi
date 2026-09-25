@@ -115,6 +115,8 @@ static uint32_t s_immediate    = 0;
 static uint32_t s_refreshSkip         = 0;  // refresh: armed CCR already optimal (steady-state no-op)
 static uint32_t s_refreshReanchored   = 0;  // refresh: actually rewrote a (changed) CCR
 static uint32_t s_refreshPending      = 0;  // refresh: left a channel with a pending CCxIF
+static uint32_t s_lookaheadDwell      = 0;  // early-window dwell arm in [nextNext, nextNext+K) (2026-09-26)
+static uint32_t s_lookaheadInj        = 0;  // early-window injection arm in [nextNext, nextNext+K)
 
 // Most recent failed dwell arm (diagnostic snapshot, read by lockstats).
 static DwellArmRefusal s_dwellRefusal;
@@ -737,6 +739,10 @@ uint32_t angleClockImmediateFireCount() { return s_immediate; }
 uint32_t angleClockRefreshSkip()      { return s_refreshSkip; }
 uint32_t angleClockRefreshReanchored(){ return s_refreshReanchored; }
 uint32_t angleClockRefreshPending()   { return s_refreshPending; }
+uint32_t angleClockLookaheadDwell()   { return s_lookaheadDwell; }
+uint32_t angleClockLookaheadInj()     { return s_lookaheadInj; }
+void angleClockRecordLookaheadDwell() { s_lookaheadDwell++; }
+void angleClockRecordLookaheadInj()   { s_lookaheadInj++; }
 uint32_t angleClockInitAcDelta()     { return s_initAcDelta; }
 uint32_t angleClockInitNtDelta()     { return s_initNtDelta; }
 uint32_t angleClockInitPsc()         { return s_initPsc; }
@@ -748,6 +754,7 @@ void angleClockResetStats() {
     s_lateArmInjGuard = s_lateArmInjTickPast = 0;
     s_maxLateTicks = s_immediate = 0;
     s_refreshSkip = s_refreshReanchored = s_refreshPending = 0;
+    s_lookaheadDwell = s_lookaheadInj = 0;
     s_dwellRefusal.branch = 0xFF;  // sentinel: no refusal since last reset
 }
 

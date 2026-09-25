@@ -819,7 +819,15 @@ TRIGGER_RAM_CODE void onTriggerEventSparkLogic(float rpm, efitick_t edgeTimestam
 				// armed every tooth and refused, exactly like the fire arm's guard
 				// below. Fall back to the current-tooth window (FALSE-build
 				// behavior) in that case.
-				scheduleEarly = nextNextPhase != nextPhase && isPhaseInRange(dwellAngle, nextPhase, nextNextPhase);
+				//
+				// LOOKAHEAD (2026-09-26): the upper bound extends past
+				// nextNextPhase by ANGLE_CLOCK_LOOKAHEAD_DEG so a dwell that sits at
+				// the next next-tooth boundary is armed at T-1 with a full tooth of
+				// lead instead of the current-window rem ~ 0 arm (immediate class).
+				scheduleEarly = nextNextPhase != nextPhase && isPhaseInRange(dwellAngle, nextPhase, nextNextPhase + ANGLE_CLOCK_LOOKAHEAD_DEG);
+				if (scheduleEarly) {
+					angleClockNoteLookaheadDwell(dwellAngle, nextNextPhase);
+				}
 #endif // EFI_ANGLE_CLOCK
 				bool scheduleNow = isPhaseInRange(dwellAngle, currentPhase, nextPhase);
 				if (event->dwellStartArmed || (!scheduleEarly && !scheduleNow)) {
@@ -936,9 +944,18 @@ TRIGGER_RAM_CODE void scheduleDwellEarlyIfDue(float rpm, efitick_t edgeTimestamp
         // current-window fallback in onTriggerEventSparkLogic is blocked -> no double.
         // The current window in onTriggerEventSparkLogic is the rare fallback for
         // first-cycle-after-sync or isReady=false cases.
-        if (!isPhaseInRange(dwellAngle, nextPhase, nextNextPhase)) {
-            continue;  // dwell not in the early window this tooth
+        //
+        // LOOKAHEAD (2026-09-26): the upper bound extends past nextNextPhase by
+        // ANGLE_CLOCK_LOOKAHEAD_DEG. The START angles sit AT tooth boundaries by
+        // construction (advance + dwell), so a target just past nextNextPhase used to
+        // fall to the current-window arm at rem ~ 0 -> past-due at refresh ->
+        // immediate (the residual ~2% over a drive). The extension arms it here at
+        // T-1 with a full tooth of lead; dwellStartArmed blocks re-arming and the
+        // charge-anchored rescue bounds a late charge start.
+        if (!isPhaseInRange(dwellAngle, nextPhase, nextNextPhase + ANGLE_CLOCK_LOOKAHEAD_DEG)) {
+            continue;  // dwell not in the (extended) early window this tooth
         }
+        angleClockNoteLookaheadDwell(dwellAngle, nextNextPhase);
         // Schedule the full event: arms TMR2 for dwell AND queues spark for
         // TMR4 arming at the next tooth via scheduleEventsUntilNextTriggerTooth.
         // scheduleSparkEvent sets dwellStartArmed=true so onTriggerEventSparkLogic

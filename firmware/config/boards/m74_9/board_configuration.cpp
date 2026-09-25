@@ -1161,6 +1161,13 @@ void setup_custom_board_overrides() {
 		efiPrintf("angclk refresh skip=%u write=%u pending=%u (12ch/tooth; skip=steady no-op)",
 			(unsigned)angleClockRefreshSkip(), (unsigned)angleClockRefreshReanchored(),
 			(unsigned)angleClockRefreshPending());
+		// LOOKAHEAD (2026-09-26): early-window arms whose target landed in the
+		// extended band [nextNextPhase, nextNextPhase + 6 deg) - the boundary
+		// events that used to fall to the current-window arm at rem ~ 0 and fire
+		// past-due (immediate). Engaged when > 0; compare against immediate= in
+		// the maxLateUs line (expect immediate ~ 0 over a drive when engaged).
+		efiPrintf("angclk lookahead dwell=%u inj=%u (boundary targets armed 1 tooth early)",
+			(unsigned)angleClockLookaheadDwell(), (unsigned)angleClockLookaheadInj());
 		// Dwell refusal split: which arm-failure branch fires, plus the
 		// last-refusal phase snapshot to measure the caller-vs-angle-clock
 		// phase divergence directly.

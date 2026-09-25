@@ -15018,6 +15018,65 @@ ARR=FFFFFFFF, PSC=71); nvic all want. triggerIsr 50-100 = 41-51% is bin-crossing
 the trgDecode 100-250 us outlier, and the flap's immediate/pending cost is bounded but
 not eliminated (the long-standing rpm-flap story).
 
+## 2026-09-26 (17th) - m74_9: LOOKAHEAD IMPLEMENTED - early-window upper bound extended 6 deg past nextNextPhase so boundary START targets are armed one full tooth early at T-1 (kills the residual immediate class)
+
+The (16th) called the residual ~2%% drive-time immediate a boundary-event +
+handoff-latency class that the basis (Option B) cannot touch. This entry
+implements the recorded lever: extend the one-tooth-ahead early window upper
+bound by ANGLE_CLOCK_LOOKAHEAD_DEG (6.0 deg = one nominal 60-2 tooth edge,
+720/116 ~ 6.2) so a dwell/inj START angle that sits JUST past nextNextPhase is
+armed at tooth T-1 with a full tooth of lead instead of falling to the
+current-window arm at rem ~ 0 (where any ~100-250 us postDecode handoff
+latency on scheduling teeth left it past-due at refresh -> immediate).
+
+| File | Change |
+| --- | --- |
+| firmware/hw_layer/angle_clock/angle_clock.h | ANGLE_CLOCK_LOOKAHEAD_DEG = 6.0f constant (under EFI_ANGLE_CLOCK) with a design comment; telemetry accessors angleClockLookaheadDwell/Inj + recorders angleClockRecordLookaheadDwell/Inj + inline band-classifiers angleClockNoteLookaheadDwell/Inj (precise check target in [nextNextPhase, nextNextPhase + K), correct across the 720 wrap) |
+| firmware/hw_layer/angle_clock/angle_clock.cpp | s_lookaheadDwell/s_lookaheadInj counters + accessors + reset in angleClockResetStats |
+| firmware/controllers/engine_cycle/main_trigger_callback.cpp | InjectionEvent::onTriggerTooth early window: isPhaseInRange(eventAngle, nextPhase, nextNextPhase + ANGLE_CLOCK_LOOKAHEAD_DEG) + angleClockNoteLookaheadInj |
+| firmware/controllers/engine_cycle/spark_logic.cpp | onTriggerEventSparkLogic (current-window site, L~822) and scheduleDwellEarlyIfDue (early site, L~939): same window extension + angleClockNoteLookaheadDwell |
+| firmware/config/boards/m74_9/board_configuration.cpp | lockstats prints `angclk lookahead dwell=%u inj=%u (boundary targets armed 1 tooth early)` |
+
+Safety chain (unchanged, re-verified): dwellStartArmed / injectionStartArmed +
+armedAt guard off double arming; angleClockRefresh re-anchors every armed
+channel each tooth (only-earlier anchor, MAX_LEAD_DEG=30 exit); the
+charge-anchored overdwell rescue bounds a late charge start; the
+nextNextPhase != nextPhase useOnlyRisingEdges guards are kept at all three
+sites. Window math: an armed target at T-1 sits up to ~2 edges + K = ~18.4 deg
+past the current phase, inside MAX_LEAD_DEG (30) - no armGuard refusal.
+Wrap: nextNextPhase + K may exceed 720; isPhaseInRange's wrap branch then
+extends the window to the cycle end, exactly the boundary events near the wrap,
+and the `next <= current` degenerate match-everything cannot occur (nextNextPhase
+> nextPhase + K > 0). The wrap sliver [720, 720+K) of the PREVIOUS cycle is
+covered by the current-window arm of the next tooth as before.
+
+K = 6 chosen so the extension covers boundary targets up to one full tooth out;
+bigger K (e.g. 12) would also catch targets further into the cycle one arm
+earlier but raises the storm-noise match probability in scheduleDwellEarlyIfDue
+(which runs on ALL teeth incl. rpm==0 flap) - the 2026-09-03 precedent removed a
+current-window check there for exactly that reason. If lockstats later shows the
+double-schedule signature (fired+lateArm ~ 2x expected, C9009 counter-fall==1
+bursts), confine LOOKAHEAD to the two real-teeth-only sites
+(onTriggerEventSparkLogic + onTriggerTooth) and drop it from
+scheduleDwellEarlyIfDue.
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL; ELF contains the BSS counters
+s_lookaheadDwell/s_lookaheadInj (LTO-inlined recorders, live from both the hot
+path and the lockstats read) and the `angclk lookahead` rodata string. Unit
+tests build + link cleanly (24 pre-existing warnings in type_list.h, untouched)
+- EFI_ANGLE_CLOCK is TRUE only on m74_9, so the change compiles out of the test
+binary (the 12 pre-existing angle-clock test failures are unrelated and stay).
+
+Car expectation (pre-LOOKAHEAD baseline): 00:34 drive immediate=278 (2.01%%),
+00:24/00:25 idle 1.36%%/0.61%%, 00:29 idle 0.36%%. Postflash: immediate -> ~0
+in the drive window, `angclk lookahead dwell=N inj=N` nonzero (proves
+engagement), dwell/inj lateArm stay 0, spark==dwell exact, injCC2 exact, no
+C9009/C935x/C9002. If immediate does NOT move (or lookahead counters stay 0),
+the boundary target is being excluded for a reason other than the window upper
+bound (e.g. the early arm at T-1 skipped via isReady=false / NaN dwell / storm
+flap) - the (09-23) 'why was the early arm skipped' open item resurfaces and
+needs a schedule-time snapshot, not more window.
+
 ## 2026-09-26 (16th) - m74_9: Option B post-trip capture - immediate 2.01% over a drive (vs 7.04% pre-B flap) but NOT ~0; inj tickPast rate ~4.6x lower; residual = boundary-event + handoff-latency class, the LOOKAHEAD lever
 
 Two more post-flash windows: 00:29:51 (idle, ~4.8 min after the (15th) pair)

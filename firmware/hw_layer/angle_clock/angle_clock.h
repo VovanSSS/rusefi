@@ -40,6 +40,29 @@ static inline uint32_t angleClockDelayTicks(float angleFromNow, float ticksPerDe
 
 #if EFI_ANGLE_CLOCK
 
+// LOOKAHEAD (2026-09-26): the one-tooth-ahead early window at tooth T-1 spans
+// [nextPhase, nextNextPhase). A dwell/inj START target that lands just past
+// nextNextPhase - the m74_9 START angles sit AT tooth boundaries by
+// construction (advance + dwell relationships) - is excluded by that window,
+// so it falls to the current-window arm at remaining ~ 0, and any handoff
+// latency (~100-250 us on scheduling teeth) makes it past-due at refresh ->
+// immediate fire (the residual ~2% over a drive that Option B's fresh basis
+// could not remove - it is a window/arming artifact, not a basis lag).
+// Extending the upper bound by ANGLE_CLOCK_LOOKAHEAD_DEG arms those boundary
+// events at T-1 with a full tooth of lead; the per-tooth angleClockRefresh
+// keeps the CCR accurate, and dwellStartArmed / injectionStartArmed guard off
+// double arming. The charge-anchored overdwell rescue bounds a late start.
+//
+// The bound is consumed as isPhaseInRange(target, nextPhase,
+// nextNextPhase + ANGLE_CLOCK_LOOKAHEAD_DEG). When nextNextPhase + K crosses
+// 720 the wrap branch of isPhaseInRange extends the window to the cycle end
+// exactly the boundary events near the wrap, no degenerate match-everything
+// (that only happens when next <= current, impossible with nextNextPhase >
+// nextPhase and K > 0). K = 6 deg = one nominal 60-2 tooth edge (720/116 ~=
+// 6.2); an armed target at T-1 sits up to ~2 edges + K = ~18.4 deg past the
+// phase, well inside MAX_LEAD_DEG (30).
+static constexpr float ANGLE_CLOCK_LOOKAHEAD_DEG = 6.0f;
+
 // Configure TMR2/TMR3/TMR4, measure rate, enable NVIC. Call once at boot,
 // after the TIM5 executor is running.
 void initAngleClock();
@@ -152,6 +175,34 @@ uint32_t angleClockLateArmInjTickPast();
 const DwellArmRefusal& angleClockDwellRefusal();
 uint32_t angleClockMaxLateTicks();
 uint32_t angleClockImmediateFireCount();
+
+// LOOKAHEAD telemetry (2026-09-26): count of early-window arms whose target
+// landed in the extended band [nextNextPhase, nextNextPhase + LOOKAHEAD) - the
+// boundary events that previously fell to the current-window arm at rem ~ 0
+// and fired past-due (immediate). > 0 proves the extension is engaged. Dwell
+// vs inj split for attribution. The band check is in the inline helpers below.
+uint32_t angleClockLookaheadDwell();
+uint32_t angleClockLookaheadInj();
+void angleClockRecordLookaheadDwell();
+void angleClockRecordLookaheadInj();
+
+// Classify an early-window arm into the LOOKAHEAD band and bump the counter.
+// Call ONLY when the extended early window matched (scheduleEarly == true);
+// the band check is precise across the 720 wrap (target >= nextNextPhase &&
+// target < nextNextPhase + K) so a wrap-case target in the normal [nextPhase,
+// 720) part is NOT misattributed.
+static inline void angleClockNoteLookaheadDwell(float targetAngle, float nextNextPhase) {
+    if (targetAngle >= nextNextPhase &&
+        targetAngle < nextNextPhase + ANGLE_CLOCK_LOOKAHEAD_DEG) {
+        angleClockRecordLookaheadDwell();
+    }
+}
+static inline void angleClockNoteLookaheadInj(float targetAngle, float nextNextPhase) {
+    if (targetAngle >= nextNextPhase &&
+        targetAngle < nextNextPhase + ANGLE_CLOCK_LOOKAHEAD_DEG) {
+        angleClockRecordLookaheadInj();
+    }
+}
 
 // Refresh telemetry (2026-09-25 skip-write): per-window counts of how the
 // every-tooth angleClockRefresh() disposed of the 12 armed channels (4x
