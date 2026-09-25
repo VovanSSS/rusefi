@@ -14585,3 +14585,80 @@ handoff savings convert directly into high-rpm angle precision.
   (arms only the nearest future event, so the executor never calls
   portSetHardwareSchedulerTimer with an already-passed deadline).
 - Validation: analysis only; code read, no code change.
+
+## 2026-09-25 (5th) - m74_9: CORRECTION to (4th) row 8f + bin-crossing proof + "tables are CCM RAM, not ROM"
+
+- The user challenged row 8f of the (4th) entry ("onTriggerEventSparkLogic x4,
+  ~150-250 us on scheduling teeth"): "is that really in the handoff? are you
+  sure such a big delay?" Two corrections, both code-verified:
+- (a) onTriggerEventSparkLogic IS in the handoff - it is called from
+  mainTriggerCallback (main_trigger_callback.cpp L468), which runs in postDecode
+  of handleShaftSignal (trigger_central.cpp L1088), all inside the I2C1_EV prio-3
+  handoff ISR. BUT its BODY duration is small: the per-cylinder loop is an isnan
+  check + 1-2 isPhaseInRange + a dwellStartArmed skip, ~5-15 us/tooth;
+  scheduleSparkEvent (TMR2 early arm + angle-queue spark) runs only on the rare
+  tooth where a cylinder actually matches, because scheduleDwellEarlyIfDue
+  (already called before the rpm==0 gate, ~5 us elapsed) arms the early window
+  and sets dwellStartArmed=true - so the loop mostly 'continue's. Worst case
+  ~15-25 us, NEVER ~150-250 us.
+- (b) The 150-250 us figure is the CUMULATIVE ELAPSED tooth-edge -> current-window
+  arm (the LAST step of the postDecode chain on a scheduling tooth where the early
+  arm was missed and rem~0), NOT the duration of step 8f. It was measured in the
+  PRE-EVICTION era (before engineModules.apply_all / MAP / misfire left the handoff
+  on 2026-09-23). In the current build the scheduling-tooth postDecode latency is
+  50-100 us for 0.2% of teeth and 100-250 us for 6 teeth out of 4024534
+  (~0.00015%).
+- BIN-CROSSING, proven with sn2 (16:43, 4024534 teeth, 1766 s) numbers:
+
+  histogram (sn2)    | <50 us | 50-100 | 100-250 | n        | sumUs     | avg us
+  -------------------|--------|--------|---------|----------|-----------|-------
+  trgPreDecode       | 4024534| 0      | 0       | 4024534  | 21851280  | 5.4
+  trgDecode          | 4024534| 0      | 0       | 4024534  | 33581322  | 8.3
+  trgPostDecode      | 4016458| 8070   | 6       | 4024534  | 117978111 | 29.3
+  triggerIsr (SUM)   | 3067533| 956208 | 793     | 4024534  | 179009021 | 44.5
+
+  triggerIsr measures the WHOLE ISR = pre + decode + post + ~1.4 us outer
+  plumbing. Because pre (5.4) + decode (8.3) already cost ~13.7 us, a tooth whose
+  post is only ~35-45 us (still inside the postDecode <50 us bucket!) sums to
+  50-60 us and lands in the triggerIsr 50-100 bucket. That is why triggerIsr
+  50-100 = 956208 (23.8%) while postDecode 50-100 = 8070 (0.2%): the big
+  triggerIsr bucket is ADDITIVE BOUNDARY-CROSSING of three sub-50 us phases, not
+  a slow phase. A genuinely slow phase would also appear in its own histogram;
+  none does (pre/decode all <50, post 99.80% <50).
+- "Is this a ROM/ПЗУ table read (VE/ignition)?" - NO, code-proven:
+  - persistent_config_container_s persistentState PERSISTENT_LOCATION
+    (persistent_store.cpp L42, PERSISTENT_LOCATION = CCM_OPTIONAL) - the whole
+    config struct (all VE/ignition/dwell/injector tables) lives in CCM RAM,
+    copied from flash once at boot (loadConfiguration). The config TUs' 'config'
+    / engineConfiguration point at persistentState.persistentConfiguration
+    .engineConfiguration - RAM.
+  - EFI_ACTIVE_CONFIGURATION_IN_FLASH = FALSE on stm32f4ems (m74_9's base,
+    efifeatures.h L113-114) - the activeConfiguration shadow is also RAM
+    (activeConfigurationLocalStorage in engine_configuration.cpp); the
+    flash-mapped reinterpret_cast variant is kinetis-only.
+  - What the handoff ACTUALLY reads per scheduling tooth:
+    - spark: getDwell() returns the CACHED sparkDwell field (the interpolate2d
+      over sparkDwellValues runs in updateDwell() at prepare time, not per
+      tooth). sparkAngle / dwellAngle are precomputed in prepareIgnitionSchedule.
+    - fuel: VE is NOT read in the handoff - injectionMass[cyl] is computed by
+      periodicFastCallback (200 Hz) and refreshed per-tooth with ONE multiply
+      (refreshInjectionMassForCylinder, Variant A). The only per-tooth table read
+      is InjectorModel::getInjectionDuration -> interpolate3d over
+      injectorFlowLinearization (only if useInjectorFlowLinearizationTable) plus
+      the cached m_deadtime (from battLagCorr, updated in InjectorModel::prepare).
+      All 16x16 float tables in CCM RAM - microseconds, already inside the
+      postDecode sum.
+  - Conclusion: scheduler lateness is EXECUTION latency (decode + arm chain +
+    getInjectionDuration + executor dispatch), not flash/ROM access.
+- Optimization (carried from the discussion; to be implemented separately):
+  the branch=2 tick-past class (current-window arm at rem~0 lands too late ->
+  TIM5 fallback, inj 759 = 0.54% / dwell 2 in sn2) is killed by an EARLY-WINDOW
+  LOOKAHEAD past nextPhase (arm boundary targets one tooth earlier) - NOT by
+  speeding up onTriggerEventSparkLogic. The current-window arm is only reachable
+  when the early arm at T-1 was skipped (isReady=false / NaN dwell / storm-flap
+  path).
+- Validation: analysis only; code read (spark_logic.cpp L729-869,
+  main_trigger_callback.cpp L355-477, trigger_central.cpp L940-1109,
+  single_timer_executor.cpp L83-228, injector_model.cpp L201-267,
+  persistent_store.cpp L29-47, engine_configuration.cpp L84-91,
+  stm32f4ems/efifeatures.h L113-114) + the two lockstats; no code change.
