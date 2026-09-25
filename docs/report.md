@@ -15017,3 +15017,253 @@ ARR=FFFFFFFF, PSC=71); nvic all want. triggerIsr 50-100 = 41-51% is bin-crossing
 48-50 us), not a slow phase; postDecode 100-250 = 0 in both windows. Open (unchanged):
 the trgDecode 100-250 us outlier, and the flap's immediate/pending cost is bounded but
 not eliminated (the long-standing rpm-flap story).
+
+## 2026-09-25 (14th) - m74_9: Option B - fresh per-tooth basis with cranking gate (IMPLEMENTED)
+
+**Pivot from per-tooth CNT reset (C) to Option B (free-running absolute + fresh basis):**
+The per-tooth CNT=0 + ARR reset (analyzed in the 13th entry, staged but not committed)
+was superseded by Option B: keep TMR2/TMR3 free-running absolute (no CNT reset, no
+fast-IRQ work, no IE toggling) and change ONLY the basis feed from `oneDegreeUs` (90-deg
+rpm average) to the fresh per-tooth basis (`lastToothTicksPerDegree = toothDurations[0] /
+real span`), with a cranking gate. Same math for events in the current tooth, minus all
+of reset's cost/risk (+2 us fast-IRQ, no IE toggling, no per-channel bitmap, no
+fast-IRQ complexity).
+
+**Why accuracy is equivalent:** For an event armed for tooth T at target angle `A`
+in [currentPhase(T-1), nextPhase(T-1)), the per-tooth-reset math would be
+`CCR = f * ARR_new` where `f = (A - 0) / toothPeriod = A / toothPeriod`. The free-running
+math is `atTick = edgeTimestamp + (A - currentPhase(T-1)) * ticksPerDegree`. Both compute
+the same absolute NT tick for the event's physical firing - the fresh basis is measured
+from the tooth that JUST completed, so the prediction error is bounded by one tooth of
+acceleration (vs the 90-deg lag of oneDegreeUs).
+
+**What was implemented:**
+- `trigger_central.h`: added `float lastToothTicksPerDegree = 0;` under
+  `#if EFI_ANGLE_CLOCK` - NT ticks/deg of the last completed tooth, 0 until the first
+  tooth pair of a sync is decoded.
+- `trigger_central.cpp` handleShaftSignal: added the span computation (exact code from
+  the removed c7024dfafbe, WITHOUT the old 4x-band clamp which was pulled-to-stale):
+  ```
+  float span = currentPhaseFromSyncPoint - m_lastToothPhaseFromSyncPoint;
+  if (span <= 0) span += engine->engineState.engineCycle;
+  lastToothTicksPerDegree = (span > 0) ? triggerState.toothDurations[0] / span : 0;
+  ```
+  Placed BEFORE the CriticalSectionLocker that updates
+  `m_lastToothPhaseFromSyncPoint` (so span uses the previous tooth's phase = correct).
+  The gap tooth carries its true ~18 deg automatically.
+- `main_trigger_callback.cpp` angleClockOnTooth feed: replaced the oneDegreeUs-only feed
+  with a gate:
+  ```
+  float basis = US2NT(engine->rpmCalculator.oneDegreeUs);   // safe default
+  float rpm = engine->rpmCalculator.getCachedRpm();
+  if (rpm >= engine->engineConfiguration->cranking.rpm) {
+      float fresh = getTriggerCentral()->lastToothTicksPerDegree;
+      if (fresh > 0) basis = fresh;   // already NT ticks/deg
+  }
+  angleClockOnTooth(edgeTimestamp, currentPhase, engine->engineState.engineCycle, basis);
+  ```
+  Below cranking rpm: smooth oneDegreeUs (the compression oscillation makes a single
+  per-tooth tooth a 2-3x-stretched predictor, which caused the 2026-08-31 C935x catch
+  overcharge cluster). Above cranking: fresh basis from the just-completed tooth.
+
+**Why the cranking gate is mandatory:** At cranking, the compression stroke stretches
+the last tooth by 2-3x. Using this as the basis would arm events far-future (2-3x
+longer delay than real). The 2026-08-31 car session proved this exactly: the per-tooth
+basis at cranking → armed fires landed 3-12 deg late → the charge-anchored 1.5x-dwell
+rescue discharged first (C9351-4) → the wrong-angle spark broke the first-combustion
+gap ratio → C9002 → stall. The gate keeps the proven oneDegreeUs during this phase.
+
+**Validation expectations (not yet car-tested):** `immediate` should drop from 346 (7% of
+dwell at 23:45 flap) to near-zero; `angclk dwell/inj lateArm split tickPast` should be
+~0 in all rpm bands; `lateArm` should remain 0; spark/fired == dwell/fired (no TIM5
+fallback); no C935x cluster at the catch.
+
+**Code-verified:** m74_9 build compiles with EFI_ANGLE_CLOCK=TRUE; the `#if EFI_ANGLE_CLOCK`
+guard in trigger_central.h means `lastToothTicksPerDegree` is compiled out of the unit
+test build (EFI_ANGLE_CLOCK is board-m74_9-specific, not defined in unit-test config).
+
+## 2026-09-26 (13th) - m74_9: per-tooth CNT-reset angle clock - DESIGN ANALYSIS (GTM-style angular reference vs today's free-running absolute ticks)
+
+User request (2026-09-25/26, after the skip-write windows below): REDESIGN the angle
+clock from the current free-running absolute-tick basis to a per-tooth angle-REFERENCED
+counter - reset CNT=0 and reload ARR at every crank edge, arm events as a FRACTION of
+the current tooth, and let the hardware comparator fire exactly at the event's angle.
+This OVERRIDES the 2026-09-01 design note in angle_clock.h / CLAUDE.md ("WHY NOT the
+originally planned per-tooth reset ... the free-running absolute-tick scheme has
+identical timing quality") - the user judges it does NOT have identical timing quality
+under transients, and is right about the mechanism (below). This entry is the requested
+analysis; implementation is a separate step (flag-gated, bench first, car only after).
+
+### 1. The defect class - why the current basis drifts ("тупой планировщик у которого едет время")
+
+Today every angular event (dwell start on TMR2, injection start on TMR3) is armed as an
+ABSOLUTE tick:
+
+    atTick = edgeTimestamp + remainingAngle(targetAngle) * s_ticksPerDegree
+
+where s_ticksPerDegree = US2NT(oneDegreeUs), and oneDegreeUs is the InstantRpmCalculator
+90-degree moving average of rpm (plus the refeed of the same value by angleClockOnTooth).
+A moving average LAGS the instantaneous rpm by construction: under ANY non-zero accel
+the value fed to the arm is the average over the last ~90 deg of rotation, NOT the rpm
+at the arm moment. The angle->time conversion is therefore systematically wrong in exact
+proportion to (instant rpm - 90-deg-average rpm) * remaining degrees. The per-tooth
+refresh (angleClockRefresh) then finds the true angle already past the predicted tick
+and fires 'immediate' (s_immediate++) - the catch-up fires in the 23:40-23:45 windows:
+
+  quiet windows  23:40/23:41/23:43: immediate 10/12/56 (1.8% of the dwell window)
+  dynamic window 23:45 (idle flap):  immediate 346 = 7% of dwell fired past-due at
+  refresh, while skip dropped 84->71.6% and write rose 12.7->24% (the refresh was
+  RE-ANCHORING hard, i.e. the armed ticks really were wrong for that part of the run)
+
+That is not a VRS 'flap' fault - the arm/refresh logic itself is fine (lateArm=0 in every
+window, no TIM5 fallback, no C935x). It is the PLANNER's time basis being stale. Steady
+rpm hides it (avg~instant), the catch storm and load steps expose it. The user's framing
+is exact: the scheduler's time drifts because it converts angles with a lagging average.
+
+A second, structurally related defect: on m74_9 the dwell/inj START angles land AT tooth
+boundaries BY CONSTRUCTION (advance + dwell / advance + injection relationships modulo 6
+deg teeth). The current-window arm then always has rem~0 at the tooth the event sits on,
+and ANY handoff latency makes it tick-past (the 2026-09-24 branch=2 rem=0.1/rem=0.5
+refusal snapshots). An angular reference fixes this class too (below).
+
+### 2. The per-tooth (angular) reference - mechanics
+
+For the timers that are ANGULAR (dwell start, injection start), replace the free-running
+counter + absolute tick with a re-zeroed counter per tooth:
+
+  - At each real crank edge (the fast EXTI IRQ or the first thing in the handoff):
+      timer->ARR = duration of the tooth just measured (in 4 MHz ticks, = the angular
+      period of the tooth that STARTED at this edge)
+      timer->CNT = 0                      (re-zero the cycle count)
+      timer->SR  = ~CCxIFs               (clear stale compare flags from the prev tooth)
+      re-enable only the channels armed for THIS tooth
+  - Arm an event as a FRACTION of the tooth it will land in:
+      f = (targetAngle - toothStartPhase) / (nextPhase - toothStartPhase)   // 6 or 12 deg
+      CCR = (uint)(f * ARR)               (16-bit truncates on TMR3/TMR4, floor ~200 rpm)
+      the comparator fires exactly when the counter reaches f*ARR - i.e. exactly when the
+      engine is f of the way through the tooth = exactly at targetAngle (given ARR = the
+      true tooth duration, which is the LAST toothed-duration only under constant accel).
+
+Bounded-error claim (the whole point): the ONLY prediction is 'the tooth that just
+started has the duration of the tooth before it' (constant angular Velocity per tooth,
+the stock ME17/GTM model). So even under hard accel the angle error is bounded by ONE
+tooth of accel, never by the 90-deg average lag. rx at 4000 rpm/s over one 6-deg tooth
+(166 us @6000 rpm): 0.11 rpm/tooth ~ 0.003 deg per tooth of residual - negligible (the
+2026-09-01 'prediction error over 12 deg' analysis already showed this order). And an
+event at a TOOTH BOUNDARY becomes f=0 of the next tooth (or f=1 of the current) - the
+hardware compare fires at/just after the boundary with NO handoff latency in the path:
+this is the rem~0 class gone by construction.
+
+### 3. The load-bearing decision: WHERE does the per-tooth reset live, and what does it cost?
+
+This is exactly the design the user quoted (and the 2026-09-01 note rejected):
+
+  FAST EXTI IRQ (prio 0): the only place that sees the TRUE edge. But it has NO decode
+  - it does not know which tooth index this edge is (real vs noise, gap vs normal tooth),
+  so it cannot decide which channels are current on its own. Required work per edge:
+  reload ARR (TMR2/TMR3 - and TMR4 ONLY if spark were angular, see section 5), reset
+  CNT, clear CCxIF, and TOGGLE the channel IEs so an event armed one-tooth-ahead does
+  not fire during the tooth it was armed in (the documented spurious early fire: a CCR
+  value reached by CNT while it still counts the PREVIOUS tooth). Cost ~+2 us on top of
+  the current 2-3 us (a few register writes per timer) - against a 68-83 us edge budget
+  at 6000-7000 rpm this is small CPU-wise; the complexity is the per-channel IE state.
+
+  HANDOFF (prio 3): has full decode (knows exactly which tooth, has toothDurations[0]
+  and the [currentPhase, nextPhase) span, does the arming already). BUT it runs 5-50 us
+  after the edge (100-250 us on scheduled teeth): a CNT reset here re-anchors the
+  reference by the handoff LATENCY, adding that latency (and its jitter) to every fire.
+  That defeats the entire purpose of a hardware compare (fire independent of handoff).
+
+RECOMMENDED split (keeps the best of both):
+  - FAST IRQ: do only the MECHANICAL reset - ARR reload + CNT=0 + SR clear + a per-channel
+    IE restore driven by a handoff-maintained 'armed-for-tooth' state (a per-channel
+    target-tooth bitmap the handoff already updates when it arms/cancels). This is the
+    '+2 us' the note quoted - unavoidable in any per-tooth scheme that keeps the one-
+    tooth-ahead arm lead, and it is what ELIMINATES the spurious early/late fire.
+  - HANDOFF: keep arming with the ONE-TOOTH-AHEAD lead (early window [next, nextNext))
+    but express the arm as a FRACTION (f * ARR) instead of an absolute tick. The
+    fraction is computed against the tooth's phase span, so it is correct for both 6 deg
+    normal teeth and the 12 deg gap (60-2) with no special-casing.
+  The baseline (constant-velocity per tooth) is the SAME data the existing code can
+  already fetch: toothDurations[0] at decode time (already in triggerState, available in
+  the handoff; the fast IRQ would read a latched copy the handoff publishes).
+
+Alternative (NOT recommended, documented for completeness): arm only CURRENT-tooth
+windows (no one-tooth-ahead lead). Simpler fast-IRQ (no IE toggle) but re-introduces the
+0-1 tooth lead / rem~0 fragility this build was reworked to remove (the 09-24 tick-past
+class) - the fraction-arm one-tooth-ahead is what makes the boundary events clean.
+
+### 4. The spurious early/late fire - WHY the IE gating is mandatory
+
+With a re-zeroed counter, a CCR value is compared against a COUNTER THAT RESTARTS AT 0
+AT EVERY EDGE. A channel armed for tooth N+1 (fraction f, CCR=f*ARR) would be reached by
+CNT while it still counts tooth N (f<1 always => CCR<ARR<N+1's ARR) - one tooth too early.
+So every armed channel must be GATED so its IE is on only while its target tooth is the
+one being counted. At each edge the fast IRQ must: clear the CCxIF of channels whose
+target tooth just ended (else they re-fire on the new tooth = spurious LATE fire), and
+enable channels whose target tooth just became current. The handoff owns the truth of
+per-channel target-tooth; the fast IRQ just applies it. This is the 'переключал IE
+каналов' the user quoted and it is the real complexity/cost of the redesign - not the
+register writes themselves.
+
+### 5. SCOPE NARROWING: only TMR2 (dwell start) and TMR3 (inj start) are angular today
+
+In the current three-timer build, TMR4 (spark fire) is armed FROM-NOW by
+angleClockArmSparkFromNow from the actual charge start (spark lateArm=0 in every window
+- it is already precise), and the injection CLOSE is the TIM5 CC2 32-bit time-domain
+queue from the real open moment. NEITHER is angle-predicted, so NEITHER suffers the
+oneDegreeUs drift, and NEITHER needs the per-tooth reset. The angular-reference rework
+applies ONLY to the two START-kind angle events:
+
+  TMR2 dwell start  - angle-predicted (scheduleDwellEarlyIfDue -> angleClockArmDwell)
+  TMR3 injection start - angle-predicted (InjectionEvent::onTriggerTooth -> angleClockArmInjection)
+
+The fast IRQ then resets only TMR2+TMR3 (TMR4 stays free-running absolute; its offset
+s_spark_off must stay valid - a CNT reset would corrupt from-now arms). This also halves
+the fast-IRQ register work and the risk surface. If a later revision moves a spark edge
+into the angular domain it is the same mechanism, but that is NOT required now.
+
+### 6. Hard-won factors the redesign must NOT regress (from the 2026-08-30..09-20 saga)
+
+  - CRANKING/catch: toothDurations[0] is 2-3x STRETCHED by the compression oscillation
+    at cranking (the reason the per-tooth basis was removed 2026-08-31 in favor of
+    oneDegreeUs - C935x cluster). An ARR primed from the last toothed-duration can arm
+    the first-catch events ms-late and the charge-anchored rescue fires first. Mitigation:
+    keep the oneDegreeUs BASIS (or a blended/clamped value) below a cranking rpm threshold
+    and/or clamp ARR to a sane band around the rpm average until the decoder is settled -
+    this is a load-bearing safety detail, validate with the SELF-STIM + a bench crank.
+  - The charge-anchored overdwell rescue (2.5x dwell) and spark-from-now MUST stay
+    time-anchored (they anchor to the ACTUAL charge moment, not a prediction) - the
+    angular rework must keep them on TIM5/TMR4-from-now, never convert them to fractions.
+  - PMEN (TMR2 CR1 bit10) must survive the ARR reload writes (32-bit wide CCR on TMR2).
+  - rccEnableTIMx(true) stays; PSC measurement stays (ARR is a period, PSC still 71 @ 4 MHz).
+  - 16-bit ARR on TMR3: tooth period >= 8 ms ~ below ~200 rpm truncates (same floor as
+    today's 16-bit CCR arm check) - no regression, document only.
+  - Never cancel armed events on an rpm flap / sync event (the durable invariant) - with
+    the reset-in-fast-IRQ the STORM teeth still re-zero the counter; the arm fraction for
+    a REAL tooth must survive noise edges. The 'armed-for-tooth' bitmap (section 3) is
+    what makes a storm edge re-zero the counter without killing a genuine event's IE.
+
+### 7. Implementation plan (separate step, after user oks this analysis)
+
+  1. New flag EFI_ANGLE_CLOCK_PER_TOOTH (default FALSE in m74_9 efifeatures.h), absolute-
+     tick path untouched and bit-identical under it -> the car keeps the validated build.
+  2. angle_clock.cpp: add the ARR/CNT/SR/IE primitives (resetTooth(A, span), armFraction),
+     keep the from-now sentinel (targetAngle=780) path intact on TMR4/TIM5.
+  3. Fast IRQ (digital_input_exti.cpp handleExtiIsr): publish-the-last-tooth latched value
+     from the handoff is not available there (no decode) -> the handoff writes a shared
+     s_lastToothNt the fast IRQ reads; apply the mechanical reset + IE restore for TMR2/3.
+  4. Refresh becomes 're-fraction' (or is skipped for the per-tooth path); telemetry keeps
+     fired/lateArm/immediate and adds a 'resetTooth' count + a per-window per-tooth reset
+     budget so lockstats can verify the +2 us against triggerIsr.
+  5. Validate: compile.sh BUILD SUCCESSFUL -> bench SELF-STIM dwell/charge timings (catch
+     arm must not regress) -> car only after bench; expected lockstats: immediate ~0 in
+     steady AND in the 23:45-class dynamic window, branch=2 (rem~0) refusals gone.
+
+Pending items CONFIRMED by this analysis to be answered before coding: (a) does the
+fast-IRQ mechanical reset publish the tooth duration via a handoff-latched shared value
+or via a direct read of triggerState.toothDurations[0] (race with decode)? (b) exact IE
+restore semantics under a storm (noise) edge vs a real edge - the fast IRQ cannot tell
+real from noise; the bitmap must be updated by DECODE-validated arms only, so a noise
+edge must re-zero the counter but leave the bitmap (and thus genuine IEs) alone - the
+2026-08-31 storm invariant applied to the new mechanism. (c) ARR clamp/blend at cranking.
