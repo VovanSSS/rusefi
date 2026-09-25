@@ -15018,6 +15018,55 @@ ARR=FFFFFFFF, PSC=71); nvic all want. triggerIsr 50-100 = 41-51% is bin-crossing
 the trgDecode 100-250 us outlier, and the flap's immediate/pending cost is bounded but
 not eliminated (the long-standing rpm-flap story).
 
+## 2026-09-26 (15th) - m74_9: Option B first car capture - NO regression, healthy; quiet-idle immediate within noise; the transient/flap verdict still pending
+
+Two post-flash lockstats windows (00:24:37 / 00:25:03, ~927 rpm idle, 26.5 s
+span between the two prints) on the option-B build (commit 46bb7188c42). All
+deferred-cost and healthy-marker metrics compared against the (14th)
+expectations and the pre-option-B quiet windows:
+
+| окно | teeth | avg trigIsr us | avg postDecode us | ratio disposed | skip | write | pending | immediate (%% dwell) | dwell lateArm | inj lateArm | sched fuel |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 00:24 | 19263 | 47.9 | 34.8 | 0.137 | 81.1%% | 16.7%% | 2.2%% | 9 (1.36) | 0 | 1 | 1 |
+| 00:25 | 23925 | 50.6 | 37.0 | 0.137 | 93.0%% | 6.2%% | 0.8%% | 5 (0.61) | 0 | 0 | 0 |
+
+Pre-option-B quiet-idle immediate for comparison: 23:40 = 10/472 = 2.12%%,
+23:41 = 12/3757 = 0.32%%, 23:43 = 56/3096 = 1.81%%, 23:45 (flap) = 346/4918 =
+7.04%%.
+
+Verdict:
+- NO regression (primary pass): dwell/spark lateArm 0/0 exact; spark fired ==
+  dwell fired (662/662, 819/819); injCC2 EXACT (664/664, 1489/1489); tim2clk
+  healthy (ARR=FFFFFFFF, PSC=71, sleep/busy T2d ~ NTd); nvic all want; sched
+  fuel n == inj tickPast (1:1, the TIM5-fallback contract intact); maxLateUs
+  104/65 us (normal handoff-blocking range); no C9009/C935x/C9002 in either
+  window. The inj lateArm=1 in 00:24 is the single known boundary event
+  (armedAt-passed next-cycle re-schedule class), not a basis issue.
+- Immediate at QUIET IDLE: 1.36%% / 0.61%% sits INSIDE the pre-option-B quiet
+  band (0.32%%..2.12%%) - the fresh basis does NOT measurably change steady
+  idle (the 90-deg average does not lag in steady state anyway). This is
+  expected and NOT a verdict.
+- The DECISIVE case is NOT in this capture: the transient/flap window where
+  oneDegreeUs lags real tooth tempo (23:45-class = 7%% immediate) and where
+  option B's fresh per-tooth basis was predicted to collapse immediate to
+  ~0. User reframe (23:45 analysis): "there is no flap, there is a dumb
+  scheduler whose time drifts" - the 7%% was basis lag during the rpm
+  excursion, not a sensor artifact. NEXT: capture a 23:45-class dynamic
+  window (idle flap, snap-throttle-off, decel) on this build and expect
+  immediate ~0 and tickPast ~0 there.
+
+Durable observations:
+- disposed/tooth stays rock-stable 0.1367/0.1366 under option B -> the (12th)
+  skip-write conclusion holds with the fresh basis too; avg postDecode
+  unchanged 34.8-37.0 us. Option B's per-tooth cost is one float compare +
+  (occasionally) one store - invisible.
+- The boundary-event floor: even with an exact basis an event scheduled
+  inside the current tooth with remaining ~0 deg (branch=2 rem~0 class) is
+  past-due the instant it is armed - a small immediate count at idle is
+  expected from boundary-sitting events, NOT basis lag. The flap case (7%%)
+  was the basis-lag end-member; the two are distinguishable by whether the
+  window is transient (basis lag) or steady (boundary floor).
+
 ## 2026-09-25 (14th) - m74_9: Option B - fresh per-tooth basis with cranking gate (IMPLEMENTED)
 
 **Pivot from per-tooth CNT reset (C) to Option B (free-running absolute + fresh basis):**
