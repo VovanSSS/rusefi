@@ -14755,3 +14755,53 @@ Validation: analysis only; code read (trigger_decoder.cpp L448-955,
 loggingcentral.cpp L186-277, error_handling.cpp L708-748,
 board_configuration.cpp setup_custom_board_overrides, 21129.msq), no code
 change. The two pasted histograms are the evidence.
+
+## 2026-09-25 (7th) - m74_9: CORRECTION to (6th) - the trgDecode 100-250 us outlier is NOT the accepted tooth-loss print (user fact: no logs)
+
+The (6th) hypothesis is REFUTED by the user, same day, on the sessions whose
+trgDecode histograms show the 100-250 us outlier: the console log has NO
+'toothloss' / 'newerr' / 'primary trigger error' / synchronization lines at the
+outlier instants. The accepted-tooth-loss path (swallowed L9779 VRS edge -> gap
+at count 114/115 -> custom_board_syncAcceptToothLoss -> printGaps("toothloss")
+with up to two % .3f lines) therefore did NOT fire, and no formatted print ran.
+A decode-error path that prints unconditionally would have left exactly such a
+line; its absence means the stall is inside decodeTriggerEvent WITHOUT any
+print/error branch.
+
+What REMAINS valid (code-verified, independent of the refutation):
+- The silentTriggerError trap: it gates only the [err]/[vrb] printGaps
+  (trigger_decoder.cpp L709-712) and Engine::OnTriggerSynchronization's
+  efiPrintf (engine.cpp L423); printGaps("toothloss"/"earlygap"/"newerr")
+  (L838/L850) and warning(CUSTOM_PRIMARY_NOT_ENOUGH/TOO_MANY_TEETH) print
+  unconditionally. If a tooth-loss path HAD fired, it WOULD have printed
+  regardless of the tune flags - so the absence of lines is a positive
+  discriminator, not a trace artifact.
+- isSyncPoint is NOT per-tooth: the L645 short-circuit keeps it to the last
+  ~2 teeth before the expected gap (atExpectedGapPosition =
+  eventsSinceSync+2 >= 116 on the 60-2) or to desynced periods; the ordinary
+  path is cheap integer/float arithmetic + RAM reads (the only notable item:
+  the 64-bit minRealToothNt = lastFullRevolutionDurationNt / expectedCount
+  division). The ONLY thing in the phase that can reach 100+ us is synchronous
+  formatted output (printGaps/warning -> efiPrintf -> chvsnprintf with % .3f).
+- With the print path excluded, NO code path inside decodeTriggerEvent explains
+  a single 100-250 us phase on a tooth that decoded normally (non-sync tooth,
+  no gap, no errors).
+
+OPEN - cause of the no-print 100-250 us trgDecode phase is unexplained by the
+code. Unmeasured candidates:
+- Cache/RAM access miss (cold line / bank conflict inside the ISR);
+- Preemption by the EXTI storm (prio 0 is the ONLY thing above the handoff) -
+  trgDecode is measured t1->t2 around decodeTriggerEvent, so a preempting prio-0
+  edge + queue push could inflate the phase if it lands mid-call;
+- double-precision or FPU-denormal float path (a subnormal division/ratio)
+  versus the normal fast path;
+- measurement artifact (histogram entry on a non-decode stall that the
+  t1->t2 window straddles).
+
+Next step: sub-phase histograms INSIDE decodeTriggerEvent (reuse the
+IsrDurationHistogram/triggerPhase[] pattern) around the blocks, and/or correlate
+the exact outlier timestamp (NT) against coincident events (WDA TMR7 feed,
+CAN/ISO-TP, MSD). The ts-delta of the two offenders (2026-09-25_15_47 and
+17_45, ~5.7 min apart at ~1150 rpm ~ 2200 edges/s) suggests a multicausal or
+periodic-triggered guest, not a process on every-first-stall. No code change;
+analysis only.
