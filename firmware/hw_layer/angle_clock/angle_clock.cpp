@@ -112,6 +112,9 @@ static uint32_t s_lateArmInjGuard      = 0;  // armGuard refusal (no basis / sta
 static uint32_t s_lateArmInjTickPast   = 0;  // target tick already in the past
 static uint32_t s_maxLateTicks = 0;
 static uint32_t s_immediate    = 0;
+static uint32_t s_refreshSkip         = 0;  // refresh: armed CCR already optimal (steady-state no-op)
+static uint32_t s_refreshReanchored   = 0;  // refresh: actually rewrote a (changed) CCR
+static uint32_t s_refreshPending      = 0;  // refresh: left a channel with a pending CCxIF
 
 // Most recent failed dwell arm (diagnostic snapshot, read by lockstats).
 static DwellArmRefusal s_dwellRefusal;
@@ -512,11 +515,6 @@ TRIGGER_RAM_CODE static void refreshChannel32(TIM_TypeDef* tmr,
                                                AngleClockChannel& c, int ch) {
     if (!c.action) return;
 
-    const uint32_t flag = STM32_TIM_SR_CC1IF << ch;
-    // If CCxIF is pending the ISR is about to fire with the current CCR -
-    // don't touch it (re-anchoring would give a ~2^32 late reading).
-    if (tmr->SR & flag) return;
-
     const float remaining = remainingAngle(c.targetAngle);
     // Phase basis jumped (desync): leave armed to fire by time, exactly
     // like the FALSE build which fires time-scheduled events regardless of sync.
@@ -532,10 +530,33 @@ TRIGGER_RAM_CODE static void refreshChannel32(TIM_TypeDef* tmr,
     const uint32_t anchor = (static_cast<int32_t>(newTick - oldCcr) > 0)
                             ? oldCcr : newTick;
 
-    if (static_cast<int32_t>(anchor - static_cast<uint32_t>(tmr->CNT)) <
+    const uint32_t cnt = static_cast<uint32_t>(tmr->CNT);
+
+    // Skip-write (2026-09-25): when the anchor equals the already-armed CCR
+    // and the event is not yet due, refresh would rewrite the SAME value (and
+    // run the race-check) for nothing - in steady rpm the only-earlier anchor
+    // gives newTick ~= oldCcr, so this is the common case on every tooth,
+    // including rpm==0 flap teeth where the basis is unchanged. Returning here
+    // BEFORE the CCR write and SR re-read removes the per-tooth peripheral
+    // traffic on armed channels; the TMR ISR just fires the standing CCR.
+    if (anchor == oldCcr &&
+        static_cast<int32_t>(oldCcr - cnt) >= static_cast<int32_t>(ARM_MARGIN_TICKS)) {
+        s_refreshSkip++;
+        return;
+    }
+
+    const uint32_t flag = STM32_TIM_SR_CC1IF << ch;
+    // If CCxIF is pending the ISR is about to fire with the current CCR -
+    // don't touch it (re-anchoring would give a ~2^32 late reading).
+    if (tmr->SR & flag) {
+        s_refreshPending++;
+        return;
+    }
+
+    if (static_cast<int32_t>(anchor - cnt) <
         static_cast<int32_t>(ARM_MARGIN_TICKS)) {
         // Due now: arm for immediate ISR fire.
-        const uint32_t nowTick = static_cast<uint32_t>(tmr->CNT) + ARM_MARGIN_TICKS;
+        const uint32_t nowTick = cnt + ARM_MARGIN_TICKS;
         *ccrReg(tmr, ch) = nowTick;
         // Race: old CCR may have matched in the few cycles between the flag
         // check above and this write.  If so, the pending ISR fires the action
@@ -555,6 +576,7 @@ TRIGGER_RAM_CODE static void refreshChannel32(TIM_TypeDef* tmr,
         *ccrReg(tmr, ch) = oldCcr;
     } else {
         c.ccr = anchor;
+        s_refreshReanchored++;
     }
 }
 
@@ -563,9 +585,6 @@ TRIGGER_RAM_CODE static void refreshChannel16(TIM_TypeDef* tmr,
                                                AngleClockChannel& c, int ch,
                                                uint16_t ntOff) {
     if (!c.action) return;
-
-    const uint32_t flag = STM32_TIM_SR_CC1IF << ch;
-    if (tmr->SR & flag) return;
 
     const float remaining = remainingAngle(c.targetAngle);
     if (remaining > MAX_LEAD_DEG) return;
@@ -579,7 +598,25 @@ TRIGGER_RAM_CODE static void refreshChannel16(TIM_TypeDef* tmr,
                             ? oldCcr : newTick;
 
     const uint16_t cnt16 = static_cast<uint16_t>(tmr->CNT);
+
+    // Skip-write (2026-09-25): same rationale as refreshChannel32 - the armed
+    // CCR is already the best value and the event is not due. In steady rpm
+    // newTick ~= oldCcr, so this fires on most teeth and removes the CCR write
+    // + SR re-read (the dominant refresh cost) on armed channels.
+    if (anchor == oldCcr &&
+        static_cast<int16_t>(oldCcr - cnt16) >= static_cast<int16_t>(ARM_MARGIN_TICKS)) {
+        s_refreshSkip++;
+        return;
+    }
+
+    const uint32_t flag = STM32_TIM_SR_CC1IF << ch;
+    if (tmr->SR & flag) {
+        s_refreshPending++;
+        return;
+    }
+
     if (static_cast<int16_t>(anchor - cnt16) < static_cast<int16_t>(ARM_MARGIN_TICKS)) {
+        // Due now: arm for immediate ISR fire.
         const uint16_t nowTick = cnt16 + static_cast<uint16_t>(ARM_MARGIN_TICKS);
         *ccrReg(tmr, ch) = nowTick;
         if (tmr->SR & flag) {
@@ -591,11 +628,13 @@ TRIGGER_RAM_CODE static void refreshChannel16(TIM_TypeDef* tmr,
         return;
     }
 
+    // Normal re-anchor.
     *ccrReg(tmr, ch) = anchor;
     if (tmr->SR & flag) {
         *ccrReg(tmr, ch) = oldCcr;
     } else {
         c.ccr = anchor;
+        s_refreshReanchored++;
     }
 }
 
@@ -695,6 +734,9 @@ uint32_t angleClockLateArmInjTickPast()   { return s_lateArmInjTickPast; }
 const DwellArmRefusal& angleClockDwellRefusal() { return s_dwellRefusal; }
 uint32_t angleClockMaxLateTicks()    { return s_maxLateTicks; }
 uint32_t angleClockImmediateFireCount() { return s_immediate; }
+uint32_t angleClockRefreshSkip()      { return s_refreshSkip; }
+uint32_t angleClockRefreshReanchored(){ return s_refreshReanchored; }
+uint32_t angleClockRefreshPending()   { return s_refreshPending; }
 uint32_t angleClockInitAcDelta()     { return s_initAcDelta; }
 uint32_t angleClockInitNtDelta()     { return s_initNtDelta; }
 uint32_t angleClockInitPsc()         { return s_initPsc; }
@@ -705,6 +747,7 @@ void angleClockResetStats() {
     s_lateArmDwellGuard = s_lateArmDwellTickPast = 0;
     s_lateArmInjGuard = s_lateArmInjTickPast = 0;
     s_maxLateTicks = s_immediate = 0;
+    s_refreshSkip = s_refreshReanchored = s_refreshPending = 0;
     s_dwellRefusal.branch = 0xFF;  // sentinel: no refusal since last reset
 }
 

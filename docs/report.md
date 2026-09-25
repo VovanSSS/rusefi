@@ -14931,8 +14931,50 @@ Secondary: sentinel fast-path for spark/inj from-now channels (targetAngle=780) 
 check >750 before the SR read to skip it for the most common armed channels.
 NOT recommended: armed-bitmask (mask maintenance in 9 sites, loop already cheap);
 deferring refresh off every tooth (touches validated logic, low gain after skip-write).
-
 Does NOT fix the 100-250 us tails (refresh worst-case ~10-30 us on heavy scheduling
 tooth); it reduces the ~29 us fixed tax and the flap overhead. Measurement: add
 skip/re-anchored/immediate/pending counters + IsrDurationHistogram around refresh.
 Analysis only; no code change. Pending user ok to implement.
+
+## 2026-09-25 (11th) - m74_9: angleClockRefresh skip-write IMPLEMENTED with telemetry
+
+(10th) analysis -> code. The optimized refresh is behavior-preserving by
+construction: every branch falls through to the exact pre-change action. What
+changed in refreshChannel16/refreshChannel32 only:
+
+- New static counters s_refreshSkip / s_refreshReanchored / s_refreshPending
+  (angle_clock.cpp ~L115-117).
+- skip-write gate before the SR read + CCR write: if `anchor == oldCcr && (int)oldCcr -
+  cnt >= ARM_MARGIN_TICKS` -> s_refreshSkip++, return. anchor == oldCcr is exactly the
+  steady-state common case (only-earlier anchor gives newTick ~= oldCcr); cnt =
+  tmr->CNT is read ONCE before the gate (the functions already read it for the due-now
+  path, so no new register traffic in the steady skip case - CNT is a plain core read,
+  no SR/CCR peripheral access).
+- The SR-pending (CCxIF) check was MOVED after the newTick/anchor computation and the
+  skip gate. Steady channels with a pending CCxIF now skip too (nothing written - safe,
+  the ISR fires the standing CCR); a pending channel that needs a re-anchor still lands
+  in s_refreshPending (hardware untouched in old and new code, just classified). The
+  due-now and normal re-anchor paths keep their exact old race-check restore
+  (`if (tmr->SR & flag) *ccrReg = oldCcr`).
+- accessors angleClockRefreshSkip/Reanchored/Pending (angle_clock.cpp), declared in
+  angle_clock.h next to angleClockImmediateFireCount. Reset in angleClockResetStats()
+  - so the numbers are lockstats-window deltas like the other angclk counters (reset
+  at END of each lockstats).
+- new lockstats line after the maxLateUs/nvic T2= print (board_configuration.cpp):
+  `angclk refresh skip=%u write=%u pending=%u (12ch/tooth; skip=steady no-op)`.
+
+How to read it: on a steady-rpm window skip must dominate (~12 x teeth; the gate
+catches the ARMED channels, the free ones cost only the `!c.action` early-out). write
+> 0 marks accel/decel teeth where only-earlier really moved a CCR (re-anchored);
+pending = channels whose CCxIF was already set (TMR ISR about to fire - the refresh
+deliberately left them alone). A healthy long drive: skip in the millions, write in
+the thousands, pending in the hundreds/thousands. Pathological = write ~= 12 x teeth
+(continuous hard accel, fine) OR skip ~= 0 with big immediate (the speedup not live -
+check the build) OR pending ~= 12 x teeth (the refresh can never see CCRs far enough
+ahead - ISR always on top of the counter, suspicious).
+
+What it does NOT do (unchanged): fix the 100-250 us trgPostDecode tails (6th/8th/9th
+- the now-OPEN decode sub-phase outlier), remove the flap overhead entirely (only
+trimmed). Validation: compile.sh m74_9 BUILD SUCCESSFUL (this commit's three source
+files). Car validation pending - next lockstats names whether skip dominates in
+steady rpm as designed.

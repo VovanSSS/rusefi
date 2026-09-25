@@ -153,6 +153,16 @@ const DwellArmRefusal& angleClockDwellRefusal();
 uint32_t angleClockMaxLateTicks();
 uint32_t angleClockImmediateFireCount();
 
+// Refresh telemetry (2026-09-25 skip-write): per-window counts of how the
+// every-tooth angleClockRefresh() disposed of the 12 armed channels (4x
+// dwell/spark/inj). skip dominates in steady rpm (armed CCR already optimal - the
+// no-op the optimization removes); write marks accel/decel teeth where the
+// only-earlier anchor actually moved a CCR; pending = a channel whose CCxIF was
+// already set (the TMR ISR is about to fire the standing CCR).
+uint32_t angleClockRefreshSkip();       // skip-write: no CCR write, no SR re-read
+uint32_t angleClockRefreshReanchored(); // actually rewrote a (changed) CCR
+uint32_t angleClockRefreshPending();    // left a channel with a pending CCxIF
+
 // Init-time measurement (printed in lockstats for fuse-incident detection).
 uint32_t angleClockInitAcDelta();
 uint32_t angleClockInitNtDelta();

@@ -1152,6 +1152,15 @@ void setup_custom_board_overrides() {
 			(unsigned)((NVIC->IP[28] >> 4) & 0xF),
 			(unsigned)((NVIC->IP[30] >> 4) & 0xF),
 			(unsigned)((NVIC->IP[29] >> 4) & 0xF));
+		// Refresh skip-write telemetry (2026-09-25): refresh runs on EVERY
+		// tooth over 12 armed channels. skip ~= 12 x teeth = the optimization
+		// doing its job (steady rpm, armed CCR already optimal - no write, no
+		// SR re-read); write > 0 marks accel/decel teeth where the only-earlier
+		// anchor really moved a CCR; pending = channels whose CCxIF was set
+		// (TMR ISR about to fire - refresh correctly left them alone).
+		efiPrintf("angclk refresh skip=%u write=%u pending=%u (12ch/tooth; skip=steady no-op)",
+			(unsigned)angleClockRefreshSkip(), (unsigned)angleClockRefreshReanchored(),
+			(unsigned)angleClockRefreshPending());
 		// Dwell refusal split: which arm-failure branch fires, plus the
 		// last-refusal phase snapshot to measure the caller-vs-angle-clock
 		// phase divergence directly.
