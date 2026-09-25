@@ -14327,3 +14327,100 @@ handoff savings convert directly into high-rpm angle precision.
 - Validation: analysis only (no code change); all figures from the pasted
   lockstats/c9009diag, cross-checked against the 5th-entry telemetry
   design.
+
+## 2026-09-25 (1st) - m74_9: executor (TIM5 scheduler) time-budget tables from the 16:13/16:43 lockstats
+
+- What: the user asked to decompose "skolko i chto imenno" takes time in the
+  scheduler (planirovshchik) and to tabulate it. Uses the same two lockstats
+  as the 6th entry (16:13:44 ~= 259 cycles idle-ish ~850 rpm, window ~36.6 s;
+  16:43:10 = 1766 s, 34694 cycles, ~2350 rpm eq) + the matching ELF (Sep 24
+  12:50 build). All 8 othercb addresses resolve; otherCbStats sums equal sched
+  other EXACTLY (3396/3396, 452551/452551).
+- METRIC SEMANTICS (durable, from single_timer_executor.cpp +
+  event_queue.cpp executeOne):
+  - sched exec n/late>=10us/hist: DISPATCH lateness per executed event
+    (executedAt - scheduledMoment, first event of each CC1 batch); the
+    per-kind/othercb maxDurUs/cbmaxUs are the callback BODY only (measured
+    around action.execute() - the GPIO write + light math, NOT the dispatch).
+  - schedulerIsr hist/sumUs: GROSS executor ISR busy (CC1 entry -> exit =
+    lock + queue-head classify + batch spin + near-deadline spin + re-arm
+    incl. the portSetHardwareSchedulerTimer EGR CC1G re-check). The right
+    number for CPU load; NOT per-callback time.
+  - consequence: a 50-100 us modal schedulerIsr visit is NOT one long
+    callback - no executor callback body exceeds ~50 us except the dwell
+    fallback C9009 print path (189 us).
+- TABLE A - executor global budget:
+
+  ```
+  metric                         sn1 (36.6 s idle)   sn2 (1766 s ~2350rpm)
+  sched exec (events)            3399                453311
+  schedulerIsr visits            3397                449213
+  schedulerIsr sumUs             221073 us           26794273 us (26.79 s)
+  avg ISR / visit                65.1 us             59.6 us
+  ISR modal bucket               50-100 us (83.7%)   50-100 us (64.0%, <50=27%)
+  max single ISR (maxPrCbDur)    687 t = 172 us      877 t = 219 us
+  executor CPU                   0.221/36.6=0.60%    26.79/1766=1.52%
+  late>=10us                     3126/3399=92.0%    323711/453311=71.4%
+  maxLateUs                      123 us              183 us
+  late hist <1/1-4/4-16/16-64/64-256  0/78/2922/356/43   346/50k/328k/68k/5k
+  late 4-16 mode                 86.0%               72.5%
+  late 64-256 (heavy tail)       1.3%                1.13%
+  ```
+
+- TABLE B - per-callback attribution (sn2; "other" = 99.8% of all exec
+  events):
+
+  ```
+  cb (addr)                 n (sn2)     n/cycle   % of exec  maxDurUs (sn2/sn1)
+  startAveraging (0805A40D)  138765      4.00      30.6%      36 / 33
+  endAveraging   (0805A241)  138552      3.99      30.6%      47 / 39
+  startKnockSampling(08048451)138776     4.00      30.6%      24 / 24
+  onTdcCallback  (08049F45)   34692      1.00       7.7%      49 / 49
+  watchDogBuddy  (08071E79)    1766      0.05       0.4%       7 /  4
+  fuel open fallback (TIM5)     759        -        0.17%     cbmax 9
+  dwell start fallback (TIM5)     2        -          -       cbmax 189
+  ```
+
+- TABLE C - engine-timing commands still on TIM5 (the tick-past fallback):
+
+  ```
+  kind     n     late>=10us  maxLateUs  cbmaxUs  == angclk tickPast
+  fuel     759   759         183        9        759 (inj tickPast)
+  dwell      2     2         144        189      2 (dwell tickPast)
+  spark     0     -          -          -        -
+  overdwell 0     -          -          -        -
+  ```
+
+  Exact 1:1 with the angle-clock refusals - every tick-past falls to the
+  TIM5 fallback; the callback itself is fast (turnInjectionPinHigh cb ~9 us)
+  and its 183 us maxLateUs is DISPATCH delay behind the handoff, not work.
+- ANSWER - what takes the scheduler's time:
+  1. WHERE: 99.8% of executor events are the MAP-window machinery
+     (startAveraging 30.6% + endAveraging 30.6% + onTdc 7.7% = 68.9%) and
+     startKnockSampling 30.6%, 13 events/cycle, + 1 Hz watchdog. Engine
+     timing commands are on TMR2/3/4, not here; the TIM5 fallbacks are
+     761/453311 = 0.17%.
+  2. HOW MUCH: executor gross 26.79 s / 1766 s = 1.52% CPU at ~2350 rpm eq
+     (0.6% at idle). ~257 events/s x ~60 us gross per visit. Scaling 13/cyc
+     to 7000 rpm (~754 events/s x 60 us = ~45 ms/s) -> ~4.5% CPU - still no
+     bottleneck.
+  3. PER VISIT ~60 us gross = typical MAP/knock/TDC callback body ~15-50 us
+     (heavy: onTdc 49, endAveraging 47) + ~10-20 us fixed entry/spin/re-arm.
+     Single longest callback everywhere = dwell fallback 189 us (the C9009
+     warning print path), everything else < 50 us.
+  4. DISPATCH: modal 4-16 us (72.5% sn2 / 86% sn1) = the wait behind the
+     prio-3 handoff + prio-4 TMR fires (+1 ladder trade); heavy tail 1.1%/
+     1.3% in 64-256 us (max 183/123) = the fuel/dwell fallback commands
+     landing behind a long scheduling-tooth handoff.
+  VERDICT: the scheduler is NOT the timing problem - the handoff is
+  (44.5 us/teeth, 10.1% CPU, 66% postDecode) and the angle-clock arm margins
+  are. The executor's only timing contribution is the dispatch delay of the
+  handful of tick-past fallbacks (fuel maxLate 183 us = ~1.4 deg at
+  1400 rpm) and the rare 189 us dwell callback.
+- Follow-ups unchanged from the 6th entry; this entry adds only the per-item
+  time tables (no code change).
+- Validation: analysis only; tables from the pasted lockstats, callback
+  attribution addr2line-vs-the-matching-ELF (0x0805A40D startAveraging,
+  0x0805A241 endAveraging, 0x08048451 startKnockSampling, 0x08049F45 onTdc,
+  0x08071E79 watchDogBuddy, 0x0803D3E5 timerValidation, 0x0804C4A5 /
+  0x08072A7B Prime adapters).
