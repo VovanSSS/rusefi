@@ -15059,6 +15059,127 @@ ARR=FFFFFFFF, PSC=71); nvic all want. triggerIsr 50-100 = 41-51% is bin-crossing
 the trgDecode 100-250 us outlier, and the flap's immediate/pending cost is bounded but
 not eliminated (the long-standing rpm-flap story).
 
+## 2026-09-26 (22nd) - m74_9: ANALYSIS - arm events at the PREDICTED tooth entry instead of the actual edge (horizon-extension on predicted edge timestamps)
+
+User proposal (2026-09-26, from the trgDecode/trgPostDecode walkthrough): instead of
+arming in the handoff AT the actual decode edge (which has already passed by the time the
+arm executes, ~8-33 us of postDecode elapsing first), arm at the PREDICTED entry of the
+target tooth using the known tooth duration - "мы же все равно знаем сколько времени
+занимает один зуб". Once the duration is known, the next edge's arrival time can be
+predicted and events armed with a longer lead, decoupling the act of arming from the
+handoff latency entirely.
+
+Where arming happens today (code-verified, main_trigger_callback.cpp / angle_clock.cpp):
+- Every useful edge -> fast EXTI (prio 0, timestamp-only) -> handoff ISR (prio 3):
+  angleClockOnTooth (basis feed), then mainTriggerCallback: scheduleEventsUntilNext-
+  TriggerTooth (~8 us, spark queue flush), handleFuel -> InjectionEvent::onTriggerTooth
+  (~13 us, inj start, TMR3), scheduleDwellEarlyIfDue (~33 us, dwell start, TMR2),
+  onTriggerEventSparkLogic (TIM5 fallback), angleClockRefresh (re-anchor all channels).
+- The arm is EDGE-ANCHORED: atTick = s_edgeTimestamp + (targetAngle - currentPhase) x
+  ticksPerDegree, with s_edgeTimestamp the ACTUAL fast-EXTI edge timestamp.
+- It ALREADY arms ONE TOOTH AHEAD: the early window is [nextPhase, nextNextPhase) (+LOOKAHEAD
+  6 deg past nextNextPhase, 2026-09-26 (17th)), i.e. the arm at tooth T covers events in tooth
+  T+1's window -> ~2-tooth lead (~333 us @6000 rpm).
+- Firing is hardware-compare at the absolute tick (free-running CNT, no per-tooth reset).
+- Spark (TMR4) is re-armed from the actual charge moment (angleClockArmSparkFromNow); inj
+  CLOSE is TIM5 CC2 from the actual open moment. Neither is angle-predicted.
+
+The residual class this targets, measured in the 17:59/18:10/18:16 snapshots (see the
+lockstats delay analysis above this session): inj lateArm 0.73%/0.84%/0.77% (ALL tickPast,
+guard=0), immediate = 2.7%/1.84%/2.01% of dwell. These are the boundary events whose START
+angle lands AT a tooth boundary by construction: when the early-window arm at T-1 is
+skipped (isReady=false, NaN dwell, storm-flap tooth), the only remaining current-window arm
+runs with rem~0 and ANY handoff latency (~100-250 us on scheduling teeth) leaves the event
+past-due at refresh -> immediate / TIM5 fallback. This is the documented residual that
+LOOKAHEAD reduced but did not zero; the current-window arm with rem~0 is the floor.
+
+What "arm at predicted entry" means mechanically: extend the arming horizon using PREDICTED
+edge timestamps instead of only the actual one:
+  predictedEdgeK = actualEdge + sum of predicted tooth durations up to edge K.
+At tooth T, arm events in [phase(T+2), phase(T+3)) anchored on predictedEdge(T+2) =
+edgeTs(T) + dur(T) + dur(T+1); the event's target tick = predictedEdgeK + (targetAngle -
+phaseK) x ticksPerDegree. This removes the actual edge of EVERY future tooth from the
+critical path of the affected events - a boundary event at rem=0 relative to its own tooth
+is armed 2 full teeth ahead with the full lead, and the handoff latency of the teeth in
+between no longer matters for it.
+
+Accuracy (why the prediction error is small at steady state): the current angle->time
+conversion ALREADY implicitly predicts across the next tooth (the arm at T covers events in
+T+1's window using oneDegreeUs). Extending the horizon to 2-3 teeth multiplies the same
+error by the horizon. oneDegreeUs is the 90-deg moving average (InstantRpmCalculator);
+CLAUDE.md documents the first-order accel lag at 4000 rpm/s over 12 deg ~= 0.003 deg, so
+over 24-36 deg (2-3 teeth) the same accel gives ~0.006-0.009 deg - negligible at running
+rpm. The per-tooth refresh then re-anchors every armed channel to the ACTUAL edge when it
+arrives, shrinking any residual error - but see landmine 2.
+
+Three hard-won landmines (all documented earlier in this angle-clock history, must not
+regress):
+1. CRANKING: the last completed tooth is a 2-3x STRETCHED predictor under compression
+   oscillation (the reason the per-tooth basis was removed 2026-08-31, and why Option B
+   needed a cranking gate before being reverted 2026-09-26 (21st)). "We know the tooth
+   duration" is only true as a smooth AVERAGE; the raw single tooth is unreliable exactly
+   at the first-catch event, where an ms-late arm fires the charge-anchored rescue first
+   (C935x cluster 2026-08-31). A predicted-entry scheme MUST keep a cranking gate (smooth
+   basis below ~2x crankingRpm) exactly like Option B.
+2. only-earlier refresh policy vs a LATE actual edge: the refresh moves armed CCRs only
+   EARLIER, never later (deliberate). If an event is armed from a PREDICTED edge and the
+   real edge arrives LATER than predicted (deceleration, stretched gap), the correct target
+   is LATER but only-earlier cannot move it there -> early fire (uncharged coil / early inj
+   start). This is the most load-bearing constraint of the whole proposal: either allow CCR
+   movement later WITHIN a bounded prediction-error band (the true target error over 1-2
+   teeth is a fraction of a degree, so a bounded tolerance is safe), or keep the anchor at
+   the actual edge and only extend the WINDOW scanned (the LOOKAHEAD pattern) - never move
+   the reference itself.
+3. The actual edge is the only exact reference: s_edgeTimestamp is latched in the fast EXTI
+   (prio 0, ~2-3 us, capture-only). Replacing it wholesale with a prediction replaces a
+   measured value with an estimate in the critical path; the refresh can only fix the error
+   AFTER the real edge arrives.
+
+Relation to the (13th) per-tooth CNT-reset design (DISTINCT, must not be conflated):
+- (13th) re-zeros the timer counter in the fast IRQ per tooth and arms by FRACTION of a
+  per-tooth ARR, with IE gating in the fast IRQ; scope narrowed to TMR2/TMR3 (TMR4 and TIM5
+  CC2 stay from-now). That is a GTM-style ANGULAR REFERENCE (the counter restarts each tooth).
+- This proposal (predicted-entry) keeps the free-running absolute-tick counter and the arm
+  mechanism UNCHANGED and only extends the HORIZON with predicted edge timestamps used for
+  the arm DECISION, still writing absolute ticks. Lower risk than (13th): no fast-IRQ work,
+  no IE gating, no CNT-reset races, no offset-invalidation of from-now arms.
+
+Recommended safe variant (analysis only, NOT implemented - user requested analysis + docs
+only this session):
+  A) Keep the actual-edge anchor for the COMMIT path; add a second arming pass at tooth T
+     for events in [phase(T+2), phase(T+3)) using predictedEdge(T+2) = edgeTs(T) + 2 x
+     avgTooth. This is exactly the current +LOOKAHEAD pattern, one more tooth out.
+  B) Rework refresh only-earlier -> allow later movement within a prediction-error band (a
+     few deg worth of ticks) so a late real edge does not strand an early-armed CCR. Argue
+     it is a re-anchor, not a cancel, so the 2026-08-31 storm invariant holds.
+  C) Cranking gate mandatory: predicted-entry arms only above ~2x crankingRpm (smooth
+     basis). First-catch is where Option B's gate and the 08-31 C935x history live.
+  D) Measure: angclk immediate and inj/dwell lateArm across steady + dynamic windows. Target
+     immediate -> ~0 (currently 2.0-2.7%) and inj tickPast -> ~0 (0.73-0.84%).
+
+Expected cost: +1 window scan per event kind per tooth in the handoff (postDecode is already
+74% of the handoff at ~29.5 us mean, 0.3% of teeth in the 50-100 us bin; the scan is a few
+us of isPhaseInRange + one multiply - the same class of cost LOOKAHEAD already accepted).
+
+Open questions to answer before coding:
+  (a) prediction basis at arm time: oneDegreeUs (smooth) vs fresh per-tooth basis. History
+      says smooth gated-by-cranking is the safe default, but Option B's post-trip data
+      showed tickPast rate ~4.6x lower with fresh before it was reverted on the 12:27
+      write-rate/maxPullUs ground - revisit with the band-tolerance refresh from (B).
+  (b) preserve the storm invariant with a bounded later-move (must be argued, then validated
+      with the self-stim + bench crank before any car run).
+  (c) exact prediction-error budget at 7000 rpm (tooth 147.8 us: ~1 deg of error is ~25 us)
+      vs the refresh cadence - does refresh keep the error inside the band between edges?
+  (d) the charge-anchored overdwell rescue and spark-from-now stay time-anchored to the
+      ACTUAL charge/open moment and must keep staying that way; only their START arms move
+      to the predicted-entry path.
+
+Validation performed: none - analysis only, no code change (per user directive). Figures
+cited from the 2026-09-26 17:59/18:10/18:16 lockstats and the documented angle-clock
+history. Pending items from the (13th) design-analysis remain open and separate.
+
+---
+
 ## 2026-09-26 (21st) - m74_9: revert Option B - angle-clock basis back to the 90-deg oneDegreeUs average everywhere
 
 User decision (2026-09-26 12:27-12:33): revert the per-tooth fresh basis (Option B, implemented 2026-09-25) back to the 90-degree rpm average (oneDegreeUs) everywhere. The 12:33:15 lockstats showed write=3246 (18.7% of disposed), maxPullUs=1072 - the per-tooth basis was inflating the refresh re-anchor write rate and pull distance compared to the ~9% write and ~20 us maxPullUs steady state. User phrased it as "verni 90 gradus obrabotku vmesto obrabotki na kazhdom zubе" - return 90-degree processing instead of per-tooth.
