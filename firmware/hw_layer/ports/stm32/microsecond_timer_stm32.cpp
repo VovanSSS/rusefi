@@ -24,45 +24,31 @@ void portSetHardwareSchedulerTimer(efitick_t nowNt, efitick_t setTimeNt) {
 	// This implementation doesn't need the current time, only the target time
 	UNUSED(nowNt);
 
-	// The hardware counter is free-running and monotonic: if the compare value is
-	// written in the past, the CNT == CCR1 equality has already been missed and no
-	// further interrupts fire until the 32-bit counter wraps (~18 min at 4 MHz),
-	// silently killing the whole event scheduler. The scheduler's setTimeNt can be
-	// stale by the time this write lands, so re-check against a fresh counter read
-	// and clamp the compare a small margin into the future.
-	const uint32_t compareMinDelta = static_cast<uint32_t>(US2NT(4));
-	uint32_t compare = static_cast<uint32_t>(setTimeNt);
-	const uint32_t cnt = SCHEDULER_TIMER_DEVICE->CNT;
-	if (static_cast<int32_t>(compare - cnt) < static_cast<int32_t>(compareMinDelta)) {
-		compare = cnt + compareMinDelta;
-	}
+	// The hardware counter is free-running and monotonic. Write the compare exactly
+	// at the requested target so in-flight events fire on schedule (no artificial
+	// margin, as opposed to the old 4 us clamp which pushed every near/past target
+	// a full 4 us into the future - i.e. up to 4 us late). If the target has already
+	// passed by the time the channel is armed (the scheduler can go stale under
+	// load), the free-running counter will never hit the written CCR - the CNT ==
+	// CCR1 equality is already missed and no further interrupt would fire until the
+	// 32-bit counter wraps (~18 min at 4 MHz), silently killing the whole event
+	// scheduler. Force the due event immediately with a software compare (EGR CC1G)
+	// instead.
+	//
+	// The EGR must be written AFTER pwmEnableChannelNotificationI(): that call
+	// clears CC1IF (SR = ~CC1IF) when re-enabling CC1IE on the re-arm path, so a
+	// forced flag written before it would be erased and the event lost. The check
+	// also covers the near-future race where the counter crosses the target between
+	// the CCR write and that SR-clear: by the time the check runs the target is
+	// behind the counter and the EGR fires anyway, so the missed-event hang is
+	// impossible regardless of how wide the arm window was or whether the target
+	// was already stale on entry.
+	const uint32_t compare = static_cast<uint32_t>(setTimeNt);
 
 	pwm_lld_enable_channel(&SCHEDULER_PWM_DEVICE, 0, compare);
 	pwmEnableChannelNotificationI(&SCHEDULER_PWM_DEVICE, 0);
 
-	// ROOT-CAUSE fix for the silent scheduler hang (the 2026-08-23 20:17 lockup:
-	// ccr1 stuck in the past, sr=0x0, dier=0x2, isr/setHw frozen - a lost compare
-	// event, not a too-small re-arm slack).
-	//
-	// pwm_lld_enable_channel_notification() clears CC1IF (SR = ~CC1IF) right before
-	// setting DIER CC1IE, and only when CC1IE was previously off - which is exactly
-	// the re-arm path we are on, because hwTimerCallback() disables CC1IE before
-	// invoking the callback. If the free-running counter crosses `compare` in the
-	// window between the CCR write above and that SR-clear, the just-set CC1IF is
-	// erased: the channel, now with CCR in the past, can never match again, the ISR
-	// never fires and the whole event scheduler sleeps until the counter wraps or
-	// the MCU resets. The 4 us clamp only narrows that window; over a long run under
-	// heavy executor+trigger/fast-IRQ load the window occasionally exceeds it (e.g.
-	// nested re-arms from schedule() inside executeAllPendingActions while CC1IE is
-	// still off, or preemption by the level-0 fast tooth IRQ), so the hang is rare
-	// but real.
-	//
-	// Fix the root cause (a lost compare, not the slack): if after arming the
-	// counter has already reached/passed `compare`, force the missed event with a
-	// software capture/compare generation (EGR CC1G). This guarantees the ISR
-	// always fires and re-arms on a future trip, independent of how wide the arm
-	// window was. In the normal case (compare still in the future) nothing happens.
-	if (static_cast<int32_t>(SCHEDULER_TIMER_DEVICE->CNT - compare) >= 0) {
+	if (static_cast<int32_t>(static_cast<uint32_t>(setTimeNt) - getTimeNowLowerNt()) <= 0) {
 		SCHEDULER_TIMER_DEVICE->EGR = STM32_TIM_EGR_CC1G;
 	}
 }

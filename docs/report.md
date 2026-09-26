@@ -1,5 +1,46 @@
 # Work Report
 
+## 2026-09-26 - microsecond_timer_stm32: drop the 4 us compare clamp - events fire exactly at setTimeNt, overdue events fire immediately (EGR CC1G)
+
+portSetHardwareSchedulerTimer() (TIM5 single-timer executor, shared by all STM32
+boards and the AT32 m74_9 port) used to clamp the compare value a fixed 4 us
+into the future whenever the target was within 4 us or already in the past
+(compare = cnt + US2NT(4)). That made near/past events fire up to 4 us late
+relative to the requested setTimeNt. The clamp no longer exists: CCR is now
+written exactly at static_cast<uint32_t>(setTimeNt), and a post-arm check
+against the raw setTimeNt forces a software compare (EGR CC1G) the moment the
+target has been reached or passed. In-flight events fire on schedule; events
+whose deadline already passed fire immediately (only interrupt latency)
+instead of waiting out the clamp or the ~18 min counter wrap.
+
+Safety reasoning (all code-verified, how it executes on hardware):
+- The wrapper (microsecond_timer.cpp setHardwareSchedulerTimer) already
+  guarantees setTimeNt >= nowNt + 2us before this port function runs, and the
+  whole path executes under a critical section, so in the normal case the
+  target is genuinely in the future and the free-running CNT == CCR1 equality
+  fires naturally at exactly setTimeNt - no EGR.
+- EGR is written AFTER pwmEnableChannelNotificationI(), i.e. after
+  pwm_lld_enable_channel_notification()'s SR = ~CC1IF clear on the re-arm
+  path, so the forced CC1IF survives and the interrupt is honored.
+- The check compares the RAW setTimeNt (not a clamped compare), so it also
+  catches the near-future race where the counter crosses the target between
+  the CCR write and that SR-clear: by the time the check runs the target is
+  already behind the counter and the EGR fires. The lost-compare hang class is
+  closed regardless of how wide the arm window was.
+
+Note (unscoped): this file's TIM5 CC2 (hwInjectionCloseCallback) is untouched;
+this change is CC1 (executor) only.
+
+Change inventory:
+| file | change |
+| --- | --- |
+| firmware/hw_layer/ports/stm32/microsecond_timer_stm32.cpp | removed the 4 us clamp (US2NT(4)/compareMinDelta/cnt), write CCR = static_cast<uint32_t>(setTimeNt) exactly, post-arm check (int32_t)((uint32_t)setTimeNt - getTimeNowLowerNt()) <= 0 -> EGR CC1G |
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL (m74_9 AT32 uses this same file
+via at32_common.mk). NOT car- or bench-tested yet - expected effect: sched
+lateness / maxLateUs for near-deadline executor events shrinks (no more +4us
+floor), overdue re-arms fire immediately instead of +4us.
+
 ## 2026-09-25 - m74_9: per-tooth tooth-timing check (isToothExpectedNow) compiled out of the handoff (EFI_TRIGGER_CHECK_TOOTH_TIMING=FALSE)
 
 The tooth-timing plausibility check (TriggerCentral::isToothExpectedNow,
