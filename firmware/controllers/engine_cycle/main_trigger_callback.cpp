@@ -406,34 +406,15 @@ TRIGGER_RAM_CODE void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edge
 		//     passed -> lateArm -> TIM5 fallback. This caused 59% dwell lateArm
 		//     on the 2026-09-03 drive. Under EFI_ANGLE_CLOCK, scheduleSparkEvent
 		//     has UNUSED(rpm) and UNUSED(dwellMs), so passing rpm==0 is safe.
-		// Angle->time basis for this tooth's arming and the per-tooth
-		// refresh.
-		//
-		// Strategy: below cranking rpm use the smooth 90-deg rpm average
-		// (oneDegreeUs), which is the same basis the proven time-based path
-		// uses. Above cranking rpm use the per-tooth basis
-		// (lastToothTicksPerDegree = toothDurations[0] / real span), which is
-		// measured from the last completed tooth's NT ticks over its real
-		// angular width (including the ~18 deg gap tooth). This eliminates the
-		// 90-degree lag that causes "immediate" fires in the 23:45 flap window
-		// (immediate=346, 7% of dwell fired past-due from oneDegreeUs lag).
-		//
-		// At cranking (rpm < threshold) the compression oscillation stretches
-		// the last tooth 2-3x, so we keep oneDegreeUs there (verified 2026-08-31:
-		// per-tooth basis caused C935x catch-overcharge). The fresh basis is
-		// safe once the engine is running: the per-tooth span is the actual
-		// tooth that just happened, bounded by MAX_LEAD_DEG via angleClockOnTooth.
-		// The per-tooth basis is 0 before the first tooth pair of a sync -
-		// this can't happen above cranking rpm since rpm==0 gate already ran.
-		float basis = US2NT(engine->rpmCalculator.oneDegreeUs);   // safe default
-		float rpm = engine->rpmCalculator.getCachedRpm();
-		if (rpm >= engineConfiguration->cranking.rpm) {
-			float fresh = getTriggerCentral()->lastToothTicksPerDegree;
-			if (fresh > 0) {
-				basis = fresh;   // already NT ticks/deg, no US2NT
-			}
-		}
-		angleClockOnTooth(edgeTimestamp, currentPhase, engine->engineState.engineCycle, basis);
+		// Angle->time basis for this tooth's arming and the per-tooth refresh.
+		// Always the 90-deg rpm average (oneDegreeUs) - see the rationale above.
+		// (Option B 2026-09-25 - feeding the fresh last-tooth basis
+		// lastToothTicksPerDegree above cranking rpm - was reverted 2026-09-26:
+		// the 90-degree basis is back everywhere, the per-tooth refresh still
+		// re-anchors each armed channel from it every tooth, so the prediction
+		// error stays bounded to one tooth of acceleration.)
+		angleClockOnTooth(edgeTimestamp, currentPhase, engine->engineState.engineCycle,
+		                  US2NT(engine->rpmCalculator.oneDegreeUs));
 	}
 	// Dwell arm runs on ALL teeth including rpm==0 storm-flap teeth (see above).
 	scheduleDwellEarlyIfDue(engine->rpmCalculator.getCachedRpm(),

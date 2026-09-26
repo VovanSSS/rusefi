@@ -15018,6 +15018,95 @@ ARR=FFFFFFFF, PSC=71); nvic all want. triggerIsr 50-100 = 41-51% is bin-crossing
 the trgDecode 100-250 us outlier, and the flap's immediate/pending cost is bounded but
 not eliminated (the long-standing rpm-flap story).
 
+## 2026-09-26 (21st) - m74_9: revert Option B - angle-clock basis back to the 90-deg oneDegreeUs average everywhere
+
+User decision (2026-09-26 12:27-12:33): revert the per-tooth fresh basis (Option B, implemented 2026-09-25) back to the 90-degree rpm average (oneDegreeUs) everywhere. The 12:33:15 lockstats showed write=3246 (18.7% of disposed), maxPullUs=1072 - the per-tooth basis was inflating the refresh re-anchor write rate and pull distance compared to the ~9% write and ~20 us maxPullUs steady state. User phrased it as "verni 90 gradus obrabotku vmesto obrabotki na kazhdom zubе" - return 90-degree processing instead of per-tooth.
+
+Change inventory:
+| file | change | reason |
+| --- | --- | --- |
+| main_trigger_callback.cpp L409-417 | removed cranking-gate basis feed; angleClockOnTooth now always gets US2NT(oneDegreeUs) | per-tooth basis reverted to 90-deg average |
+| trigger_central.cpp | removed lastToothTicksPerDegree = toothDurations[0] / span block in handleShaftSignal | basis source removed |
+| trigger_central.h | removed float lastToothTicksPerDegree = 0; member | field removed from TriggerCentral |
+| angle_clock.h L66-71 | updated deadband comment: "per-tooth (Option B) basis jitters" -> "oneDegreeUs (90-deg rpm average) basis re-derived on every tooth jitters" | comment matches reverted state |
+
+Keep (orthogonal, NOT reverted): per-tooth angleClockRefresh() re-anchor (bounds prediction error to one tooth of acceleration), MAX_TICKS_PER_DEGREE ceiling in angleClockOnTooth, whole arming/rescue/ISR ladder. m_lastToothPhaseFromSyncPoint still used elsewhere (getCurrentEnginePhase, isToothExpectedNow, syncEnginePhaseAndReport) - leave it.
+
+Validation: m74_9 build SUCCESSFUL. grep lastToothTicksPerDegree in firmware/** returns 0 source-code matches. LSP diagnostics show only include-resolution noise - build is the source of truth.
+
+Expected lockstats signature:
+- write should shrink in calm windows (was 18.7% / maxPullUs 1072 with per-tooth; expect back to the ~9-12% / few us maxPullUs seen in the pre-Option-B stable state, e.g. the 12:29:26 snapshot where write=593 / maxPullUs=14)
+- Transient/instantaneous rpm tracking back to the known oneDegreeUs lag - the immediate class will return during flaps (the 7.04% pre-B level at 23:45, NOT fully recoverable during storms because the 90-deg average is inherently lagging)
+- The LOOKAHEAD window (ANGLE_CLOCK_LOOKAHEAD_DEG=6.0) remains the lever to catch boundary events at T-1 - it compensates for the 90-deg lag on the arming side
+- Deadband/maxPullUs telemetry now reflects oneDegreeUs jitter (sub-us basis changes), not per-tooth basis jitter (multi-us changes)
+- Drive verdict: the 12:33:15 window that triggered this revert is now moot for the basis lever; the companion lines (immediate, inj tickPast/g-split, tim2clk) are the right next capture to verify post-revert behavior on the car.
+
+## 2026-09-26 (20th) - m74_9: lockstats delay analysis - two 12:27/12:29 snapshots; the only anomalies are startup-window inj lateArm 84 / maxPullUs 2175 / inj excess 1.145x; steady idle textbook-clean
+
+Requested delay analysis of two consecutive lockstats windows (12:28:55 and
+12:29:26, both ~1160-1170 rpm idle; 58 teeth/rev; the first covers ~116 s in
+cluding startup/cranking - RTC set 12:27:13, three startup one-shot executor
+callbacks, one 500-1000 us triggerIsr tooth, triggerMaxDuration 792 us; the
+second is ~30.5 s of pure idle, ~295 cycles).
+
+| metric | 12:28:55 (start+idle) | 12:29:26 (idle) |
+| --- | --- | --- |
+| teeth | 131126 | 34479 |
+| triggerIsr avg | 47.3 us | 47.7 us |
+| trgPre/Decode/Post avg | 1.0 / 9.1 / 35.7 us | 1.0 / 9.2 / 35.8 us |
+| postDecode 50-100 | 1789 (1.36%) | 295 (0.86%) |
+| triggerIsr 500-1000 | 1 (startup) | 0 |
+| schedulerIsr avg | 67 us | 68 us |
+| sched exec late>=10us | 13942/14912 (93.5%) | 3825/3867 (98.9%) |
+| sched exec hist 4-16us | 12976 (87%) | 3289 (85%) |
+| sched exec maxLateUs | 125 | 114 |
+| sched fuel (TIM5 fallback) | 84, maxLate 125, cb 63 | 0 |
+| angclk dwell/spark/inj lateArm | 0 / 0 / 84 | 0 / 0 / 0 |
+| angclk inj lateArm split | guard 0 / tickPast 84 | 0 / 0 |
+| angclk immediate | 25 (0.55%) | 0 |
+| angclk maxLateUs | 114 | 57 |
+| angclk lookahead dwell/inj | 4519 (100%) / 4469 (87.8%) | 1181 / 1181 (100%) |
+| angclk refresh skip/write/jitter/pend | 20896/3265/1528/494 | 5959/593/530/0 |
+| angclk maxPullUs | 2175 | 14 |
+| inj opens vs dwell | 5175 / 4520 (1.145x) | 1181 / 1181 (1.000x) |
+| injCC2 scheduled/fired | 5175/5175 | 6364/6364 |
+| executor composition | 3x4/cyc + 1/cyc + ~1Hz + 3 one-shots | 3x4/cyc + 1/cyc + ~1Hz = 13/cyc |
+| tim2clk | exact (ARR=FFFFFFFF, PSC 71, sleep/busy T2d==NTd ~400k) | exact |
+| nvic / angclk nvic | all want (0/3/5/12/12/7; T2/T4/T3=4) | all want |
+
+Verdict: engine and the three-timer stack are HEALTHY. Delay-by-delay:
+
+1. Angle-clock fires are precise: dwell/spark lateArm 0 throughout, spark==
+   dwell exact, CC2 close queue scheduled==fired exact (no stuck injector).
+   The ONLY anomaly is 84 injection-start lateArm in the FIRST window: 100%
+   tickPast (guard=0, no phase-jump), 1:1 with sched fuel = 84 TIM5 time-
+   fallbacks that fired (maxLate 125 us, cb 63 us) - a startup precision
+   loss (0.1-0.7 deg), not a miss; steady idle = 0. Mechanism: the
+   boundary-event + handoff-latency class - inj START angles sit at tooth
+   boundaries, and during sync settle / rpm flap the early (lookahead) arm
+   at T-1 is skipped more (lookahead inj coverage 87.8% vs 100% steady), so
+   the current-window arm runs with rem~0 and any handoff latency makes it
+   tick-past. Converges to 0 in steady state.
+2. maxPullUs 2175 us is a SINGLE large only-earlier re-anchor in the startup
+   transient (basis not settled at the catch); the steady window shows
+   14 us. Not the "scheduler systematically late" signature: write is 8-12%
+   of disposed in calm windows with maxPull a few us => the (19th) deadband
+   absorbed the sub-2us jitter and the residual writes are 2-14 us nudges.
+   (19th) open question answered: scheduler healthy, arm basis NOT stale;
+   write did not fall to exactly ~0 but the residual is tiny.
+3. Executor late>=10us ~94-99% is the documented THRESHOLD ARTIFACT: 85-87%
+   of events sit in the normal 4-16 us entry+batch bucket; maxLate 114-125 us
+   = batch order behind co-due MAP/knock callbacks; callback bodies bounded
+   (maxDur <= 45 us steady; 124/56 us were the two startup one-shots).
+   Executor CPU ~0.87%, handoff ~5.3% at 1170 rpm.
+4. Startup-window injection EXCESS: total opens 5175 vs dwell 4520 (1.145x)
+   - extra fuel during the sync storm / double-window re-schedule at start,
+   confined to the startup window (steady = exactly 1.000x). The 09-24
+   steady-state "+1.02% inj>dwell" was NOT reproduced at ~1170 rpm idle.
+
+No code changes this session. The trgDecode 100-250 us no-print outlier is
+still open (one such event here, in the startup window).
+
 ## 2026-09-26 (19th) - m74_9: refresh re-anchor deadband (2 us) + jitter/maxPullUs telemetry - distinguishes basis jitter from a genuinely stale arm basis
 
 User challenge (00:53): with LOOKAHEAD live, `angclk refresh skip=29458

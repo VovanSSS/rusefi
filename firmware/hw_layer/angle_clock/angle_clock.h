@@ -65,8 +65,9 @@ static constexpr float ANGLE_CLOCK_LOOKAHEAD_DEG = 6.0f;
 
 // Re-anchor deadband (2026-09-26): refresh only rewrites a CCR when the fresh
 // prediction is MEANINGFULLY earlier than the armed tick. The only-earlier
-// anchor means a "pull" is always oldCcr - newTick, and the per-tooth
-// (Option B) basis jitters by a few ticks on nearly every tooth, so the
+// anchor means a "pull" is always oldCcr - newTick, and the oneDegreeUs
+// (90-deg rpm average) basis re-derived on every tooth jitters by a few ticks
+// (float rounding, the rpm average updating), so the
 // armed-tick-vs-fresh-prediction gap is almost never exactly zero - refresh
 // would rewrite the CCR (and pay the peripheral write + SR re-read) just to
 // absorb sub-µs noise. Keeping the armed CCR for pulls <= DEADBAND fires the
