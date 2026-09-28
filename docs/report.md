@@ -16351,3 +16351,226 @@ Validation: code-verified against the working tree (single_timer_executor.cpp
 L136-143/L148-206, event_queue.cpp executeOne L255-335, angle_clock.cpp dispatch
 L171-227, interrupt_priority.h ladder). No build/tests run - no code touched.
 Not car-tested (analysis only). Committed locally, never pushed.
+
+## 2026-09-29 - m74_9: analysis - shrinking the BASEPRI=3 window: the pop-under-lock / execute-outside-lock split (full safety audit, exact code shape, expected effect)
+
+User thread: the 60-70 us root cause is confirmed (the executor's critical
+section masks the prio-3 fires for the whole batch) -> 'analysis to reduce the
+time executed at prio 3'. Deliverable: this analysis only - no code change.
+Deepens the 2026-09-28 entry's section-6 option list into an implementable
+design; every claim code-verified against the working tree.
+
+### 1. The mask, verified to the register
+
+- The CS IS the kernel lock: CriticalSectionLocker (ch.hpp L389-397) =
+  chSysGetStatusAndLockX (os/rt/src/chsys.c L423-443) -> ISR context ->
+  chSysLockFromISR (static inline in chsys.h L451-456) -> port_lock_from_isr
+  -> port_lock() = __set_BASEPRI(CORTEX_BASEPRI_KERNEL) (ARMv7-M chcore.h
+  L825-835). CORTEX_BASEPRI_KERNEL = CORTEX_PRIO_MASK(3) = 0x30
+  (CORTEX_PRIORITY_BITS=4 / 16 levels - the documented ladder uses 0..15;
+  the at32 chconf.h sets NO CORTEX_* overrides, all defaults: SVCALL=2,
+  MAX_KERNEL=3, SIMPLIFIED=FALSE). Masks EXACTLY 3..15: the fires (3), the
+  handoff (4), the executor (5) and everything else; only the fast EXTI (0-2)
+  gets through.
+- port_is_locked() = (BASEPRI != 0) (chcore.h L744-745, L799-803) - the lock
+  state IS the BASEPRI register, there is no separate flag.
+- NO API exists for locking shallower: chSysLock / chSysLockS /
+  chSysGetStatusAndLockX all funnel into the same port_lock(); the level is a
+  compile-time constant. A raw __set_BASEPRI(0x40) 'lock' would be invisible
+  to lock_cnt / isLocked() (os_util.h L25: ch0.dbg.lock_cnt > 0) and to the
+  chSysRestoreStatusX() restore path - it cannot be composed with the
+  existing re-entrant lockers.
+- The masked span today = the WHOLE batch: onTimerCallback (single_timer_
+  executor.cpp L136-143) holds the CS (L139) over executeAllPendingActions()
+  (spin-wait <= 8us L285, unlink L302, action move L306, tryReturnScheduling
+  L308, every action.execute() L324) AND scheduleTimerCallback() (CCR re-arm
+  L226). schedulerIsr 50-100 us mode (avg ~71-80 us, 2026-09-28 car windows)
+  = a mid-batch fire's wait budget.
+
+### 2. Option A - pop under lock, execute outside lock (RECOMMENDED)
+
+Code shape (whole change in single_timer_executor.cpp + one new EventQueue
+method; ~60-100 lines):
+
+  onTimerCallback():
+    timerCallbackCounter++
+    executeAllPendingActions()            // no outer CS anymore
+    { CS csl; scheduleTimerCallback() }   // final short CS: re-arm
+
+  executeAllPendingActions():
+    reentrantFlag = true
+    executeCounter = -1
+    do {
+      PopResult pr{};
+      { CS csl;                        // SHORT CS: the only masked window
+        pr = queue.popDueEvent();      // head check; head->moment >
+      }                                 // now+lateDelay -> no-op (no unlink);
+      if (!pr.executed) break;         // else UNLINK + move action out +
+      while (pr.moment > getTimeNowNt()) {}   // spin OUTSIDE the lock
+      pr.action.execute();              // execute OUTSIDE the lock
+      recordExecutionLateness(pr...);
+      if (executeCounter++ == 500) firmwareError(CUSTOM_ERR_LOCK_ISSUE);
+    } while (true);
+    reentrantFlag = false
+
+The CS spans: head read, due-check, classify (4 trampoline-pointer compares),
+unlink, action move, tryReturnScheduling. ~100 ns per entry/exit pair at
+288 MHz (mrs IPSR + mrs/msr BASEPRI + the 2 debug stores). 13 pops/cycle ->
+~1.3 us/cycle masked total - negligible.
+
+Adaptations the split forces:
+- 'Someone has stolen my lock' (L201-204, isLocked() = lock_cnt > 0): the
+  outer CS is gone, so the check becomes a per-callback lock_cnt balance
+  (save the counter right after the pop CS, compare after execute; a
+  mismatch = a callback dropped the lock, e.g. chThdSleep from ISR context -
+  the original bug class, still caught).
+- schedule()'s CS (L100) today wraps insertTask + executeInline +
+  scheduleTimerCallback; restructure it to wrap insertTask only (the other
+  two self-manage). The thread-context inline path keeps identical behavior
+  (reentrantFlag guards are unchanged).
+- assertListIsSorted() (executeOne L334, after execute): move it under the
+  next pop's CS (or drop the unlocked read - it is an EFI_ENABLE_ASSERTS-only
+  debug hook, and an unlocked read could false-fire in a debug build while a
+  fire/handoff mutates under its own CS).
+- classifyAction's per-call action_s::make<...>(nullptr) trampolines
+  (L56-70): hoist the four pointers to a constinit global (micro-opt, keeps
+  the pop CS minimal).
+
+Why the fires stay safe unmasked mid-callback (the audit):
+- After the split the callback body runs at BASEPRI=0. NEW preemptors vs
+  today: the TMR fires (3) and the handoff (4). Unchanged: the fast EXTI (0)
+  already preempts; WDA(6)/ADC(7)/CAN(12).. are LOWER prio; same-prio ISRs
+  never nest (fire-fire, and CC1/CC2 share the TIM5 vector); threads never
+  run mid-ISR.
+- Fires x queue: the TMR2 body does schedule("overdwell") + cancel(spark)
+  + fallback schedule("spark") (spark_logic.cpp L435-458) and the TMR4 body
+  cancels; every one takes its own re-entrant CS. Against the executor's pop
+  CS they are mutually exclusive (one CS primitive, BASEPRI=3); in the
+  unlocked gaps the list is consistent (the unlink is complete).
+  reentrantFlag=true during the batch keeps the fire's schedule() from
+  re-arming CC1; the final scheduleTimerCallback picks up any new head
+  (fresh getNextEventTime). A fire scheduling in the past re-arms CC1 for the
+  past -> immediate fire via the existing CC1G path (same as today's
+  handoff-scheduled-past events).
+- Fires x executor state: no executor callback touches TMR2/3/4 registers;
+  no fire callback touches the MapAverager/knock/PWM state the executor
+  callbacks own. Disjoint.
+- scheduleInjectionCloseHW (injection_close_hw.cpp L128-163) is lock-free on
+  the stated ground 'callers are the TMR3 open ISR (3) or the ALREADY-LOCKED
+  executor (5)'. Under the split the FALSE-build executor caller is unlocked
+  - but the load-bearing fact is CC1/CC2 = ONE TIM5 vector (same prio, never
+  nested), which the CS never affected. Invariant holds; the comment goes
+  stale (update it when implemented).
+- Handoff x executor callbacks: the handoff's queue ops take their own CS
+  (exclusive with the pop CS); its angle-clock arms are not touched by
+  executor callbacks. ONE shared pair: endAveraging (executor) writes
+  injectionMass[c] THEN injectionMassMapBasis[c] (map_averaging.cpp
+  L190-206); the handoff's refreshInjectionMassForCylinder (L223-241, from
+  onTriggerTooth at main_trigger_callback.cpp L162) reads basis + MapFast.
+  The tear window is the 2-instruction gap between the two float stores;
+  the consequence is ONE injection event double-applying the just-closed
+  window (a few % on one event - the exact error class the basis bookkeeping
+  already tolerates at 200 Hz ticks); probability ~ handoff duty x 10-20 ns
+  ~ 1e-7/s. ACCEPTED - no lock at this rate (if it ever matters: a per-cyl
+  sequence counter, or the rescale under a short CS).
+- The C9009 189 us print outlier lives in the TMR2 FIRE
+  (startDwellByTurningSparkPinHigh), not the executor - unaffected. Deferring
+  that print to a flag + thread print is a separate small win (it shortens
+  the fire body itself).
+
+Expected effect (car, lockstats):
+- angclk maxLateUs: ~66-100 us (batch tail) -> the fire then waits only for
+  {fast EXTI 1-3 us} + {a RUNNING same-prio fire body 10-25 us, only if one
+  is executing} + {pop CS ~0.1 us}. Expect single-digit us typical, <= ~25 us
+  worst. Fire latency DECOUPLES from the batch length - the structural fix.
+- schedulerIsr sumUs/visit: unchanged at idle (same callbacks run, now
+  unmasked); at mid/high rpm it STRETCHES by the fire bodies that overlap
+  (overlap prob ~ batch x 16 fires / cycle: ~2% per visit at idle, ~10-20%
+  at 7000 rpm -> +10-25 us on a minority of visits). Per-event executor
+  lateness gains the overlapped fire body for events after the fire in the
+  batch - acceptable: the executor's events are MAP windows / knock / onTdc
+  (us-class precision need; 10-25 us at 7000 rpm = 0.25-0.6 deg inside a
+  50-deg window), and the sched-exec histogram is already 96-98% >= 10 us
+  (threshold artifact).
+- NO change: handoff duration, arm margins, dwell/spark/inj lateArm,
+  immediate, injCC2, the C9009 ==1 decel tickPast class (that is handoff
+  in-ISR latency, not this mask - explicitly out of scope).
+
+Validation plan:
+- Build m74_9 (EFI_ANGLE_CLOCK TRUE and FALSE) + unit tests (the mock
+  executor fires due events at a frozen nowNt; the split is transparent -
+  the spin keeps UNIT_TEST_BUSY_WAIT_CALLBACK, order unchanged; the 12 known
+  failures stay the same 12).
+- Car: lockstats after a drive - angclk maxLateUs single-digit..~25 (was 66);
+  schedulerIsr histogram shifted up only at mid+ rpm; sched per-kind counts
+  unchanged in kind (dwell/spark/inj absent under TRUE); lateArm 0; injCC2
+  exact; no C935x/C9009 regression.
+- Bench: self-stim run, queue consistency + no assert.
+
+### 3. Option B - shallow lock (BASEPRI=4, mask only 4..15): REJECTED
+
+- No ChibiOS API for it (section 1); a raw __set_BASEPRI(0x40) breaks the
+  lock_cnt / isLocked() / restore bookkeeping the re-entrant lockers rely on.
+- Even hand-rolled it is UNSAFE while the fires touch the queue: a fire (3)
+  could preempt the pop CS between 'm_head = current->next' and
+  'current->next = nullptr' - a half-unlinked node - and its schedule()
+  insertTask (which skips its own lock, seeing BASEPRI != 0) walks the list
+  through the torn node -> corruption. The very context that must pass
+  through is the one that mutates the queue. Becomes viable only after
+  Option C removes the queue ops from the fires.
+
+### 4. Option C - fires go queue-free, then a BASEPRI=4 batch lock (MAX, later)
+
+- Move the overdwell rescue out of the TMR2 fire's schedule("overdwell")
+  (spark_logic L435-438) onto a direct hardware one-shot (TIM5 CC3, the
+  CC2-close pattern: armed from the actual charge moment, no queue node);
+  move the fallback schedule("spark") (L456-457) onto the same one-shot;
+  retire the defensive cancel (L450) and the TMR4 body's cancel.
+- Then the fires never mutate the executor queue, and the executor can hold
+  a BASEPRI=4 CS over the WHOLE batch: fires (3) never masked, the batch not
+  stretched by fire bodies (a fire preemts and returns), the handoff (4)
+  still masked -> the endAveraging/basis tear window (section 2) closes too.
+  C keeps the fire-fire serialization (NVIC same-prio, not the lock); it
+  removes the batch stretch and the mask entirely.
+- Cost: one-shot timer machinery + car validation of the rescue semantics
+  (the 2.5x-dwell bound must survive the move). Do A first; C only if A's
+  residual (fire-fire 10-25 us, batch stretch at high rpm) actually matters
+  (multispark, knock-window precision).
+
+### 5. Option D - shrink the batch (secondary, not a cure)
+
+- 13 events/cycle (4x startAveraging + 4x endAveraging + 4x startKnock +
+  1x onTdc, maxDurUs 36/47/24/49) are the variant-A planned events; even
+  with zero callback bodies, 13 x (entry + spin + unlink + re-arm) ~= 20-30 us
+  would still be masked under today's one-big-CS design. Helps only as a
+  companion to A (less time for a CCR match to land mid-mask). The C9009
+  print deferral (section 2) is the only body with real length to give back
+  (189 us), and it is on the fire, not the batch.
+
+### Summary for the driver
+
+- The mask is the kernel lock itself (BASEPRI=0x30, compile-time constant, no
+  shallower API) held over the whole 50-100 us batch - verified to chcore.h.
+- Fix = Option A: pop-under-short-CS + execute-outside-lock. ~60-100 lines in
+  single_timer_executor.cpp + one EventQueue method. All queue invariants
+  kept (atomic unlink, reentrantFlag, 500-guard, re-arm semantics); the
+  stolen-lock check becomes a per-callback lock_cnt balance; one accepted
+  micro-risk (endAveraging/basis 2-instruction tear, ~1e-7/s, bounded by
+  design).
+- Expected: angclk maxLateUs 66-100 us -> single-digit..~25 us (fire-fire
+  serialization + fast EXTI only); cost = the executor batch stretches by
+  overlapping fire bodies at mid/high rpm (the documented, acceptable trade).
+- Option B (shallow BASEPRI) rejected: no API + queue tear while the fires
+  schedule/cancel. Option C (fires queue-free + BASEPRI=4 batch lock) is the
+  end state if A's residual ever matters. Option D (shorten the batch) is a
+  companion, not a cure.
+- Out of scope (unchanged): the C9009 ==1 decel tickPast class (handoff in-
+  ISR latency), the 1 ms decode tails.
+
+Validation: code-verified against the working tree (single_timer_executor.cpp
+L83-143/L148-227, event_queue.cpp L255-336, ch.hpp L389-397, chsys.c
+L423-467, chsys.h L407-478, chcore.h L75-107/L734-853, spark_logic.cpp
+L406-482, fuel_schedule.cpp L19-51, map_averaging.cpp L190-241,
+injection_close_hw.cpp L107-176, angle_clock.cpp L171-227, os_util.h L25).
+No build/tests run - no code touched. Not car-tested (analysis only).
+Committed locally, never pushed.
