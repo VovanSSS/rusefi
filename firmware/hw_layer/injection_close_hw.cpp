@@ -36,8 +36,8 @@ uint32_t getInjectionCC2ScheduledCount() { return s_cc2ScheduledCount; }
 
 // Re-arm CC2 to the earliest pending slot.
 // Caller must hold the kernel critical section: since the 2026-09-23 +1
-// ladder shift the TMR3 injection-OPEN ISR (prio 4) stands ABOVE this
-// prio-5 TIM5 ISR, so without the section it could preempt the slot/CCR
+// ladder shift the TMR3 injection-OPEN ISR (prio 3) stands ABOVE this
+// prio-5 TIM5 CC2 ISR, so without the section it could preempt the slot/CCR
 // update mid-way (the pre-shift 'all callers prio 3, no lock' invariant
 // is gone - see injection_close_hw.h).
 static void rearmCC2() {
@@ -105,9 +105,9 @@ static void dispatchAndRearm() {
 }
 
 void hwInjectionCloseCallback(PWMDriver* /*pwmp*/) {
-    // Kernel critical section FIRST: since the 2026-09-23 +1 ladder shift
-    // the TMR3 injection-OPEN ISR runs at prio 4, ABOVE this prio-5 TIM5
-    // CC2 ISR, and its scheduleInjectionCloseHW() mutates the same
+    	// Kernel critical section FIRST: since the 2026-09-23 +1 ladder shift
+    	// the TMR3 injection-OPEN ISR runs at prio 3, ABOVE this prio-5 TIM5
+    	// CC2 ISR, and its scheduleInjectionCloseHW() mutates the same
     // s_injClose[] slots + CCR2/DIER/EGR (rearmCC2). BASEPRI masks 3..15,
     // so the open ISR cannot preempt the queue update. (Under the pre-shift
     // co-equal priority 3 this was impossible - the old 'no lock needed'
@@ -134,8 +134,8 @@ void scheduleInjectionCloseHW(int cyl, efitick_t nowNt,
     const efitick_t fireAt = sumTickAndFloat(nowNt, static_cast<float>(delayNt));
     s_cc2ScheduledCount++;
 
-    // No lock here: the callers are the TMR3 open ISR (prio 4 - the CC2 ISR
-    // at prio 5 cannot preempt it) and the TIM5 executor dispatch (prio 5,
+    	// No lock here: the callers are the TMR3 open ISR (prio 3 - the CC2 ISR
+    	// at prio 5 cannot preempt it) and the TIM5 executor dispatch (prio 5,
     // already inside its CriticalSectionLocker). The CC2 ISR holds its own
     // critical section, so this writer and the CC2 dispatcher are mutually
     // exclusive.

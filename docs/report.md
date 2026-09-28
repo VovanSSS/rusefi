@@ -15919,3 +15919,107 @@ by the early path would surface as a missing dwell fire / lateArm where it was p
 0.
 
 NOT car-tested. Committed locally, never pushed.
+
+## 2026-09-28 - m74_9: NVIC priority swap - angle-clock TMR fires moved ABOVE the trigger handoff (fires 3 > handoff 4 > executor 5)
+
+User directive (explicit repeat of an earlier-rejected proposal): put the TMR2/3/4
+angle-clock fire ISRs at the TOP kernel priority 3, the trigger handoff one notch
+below at 4, the TIM5 executor at 5. This inverts the 2026-09-23 +1 shift (handoff 3
+> fires 4) and restores the pre-09-23 intent that the fire ISRs are the top kernel
+priority. Unique arrangement - NOT a re-run of 2026-09-22 (handoff 3 co-equal with
+fires 3, executor 4).
+
+Rationale: the fires are the real-time product (dwell start / spark / injection-start
+pin edges). At 3 they execute with only NVIC entry latency (~1-2 us), preempting the
+handoff mid-decode - they never wait for the ~44-250 us decode/trgPostDecode. The
+decode is a producer that tolerates the preemption.
+
+THE TRADE: the handoff pays the fire's run time (~10-25 us) for every collision -
+an arm landing past its tick (the tick-past / lateArm class), worst on scheduling
+teeth where the arming runs in the first ~33 us and a fire can overlap it. Bounded:
+the fires are anchored 'from now' at arm time (dwell->spark interval survives), the
+charge-anchored rescue and angleClockArmSparkFromNow bound any late consequence.
+
+Arm-atomicity under fires-above-handoff (code-verified, full analysis in the
+angle_clock.cpp header):
+- (a) a different-TIMER fire preempting the handoff mid-arm is trivially safe
+  (separate peripherals);
+- (b) a SAME-timer fire touching a different channel writes disjoint DIER/SR bits
+  and a disjoint CCR - no lost RMW on the arm sequence;
+- (c) same-channel re-entry at arm time is impossible - the channel was released by
+  the previous fire and the caller only re-arms it 720 deg later.
+
+Effective defines (at32/interrupt_priority.h): EFI_IRQ_EXTI_HANDOFF_PRIORITY 3->4,
+EFI_IRQ_ANGLE_CLOCK_PRIORITY 4->3. WDA_BURST_BASEPRI (l9779.cpp) stays 5 - it masks
+>=5, so fires (3) and handoff (4) remain unmasked; correct, no change. Fires and
+handoff both stay at >= CORTEX_MAX_KERNEL_PRIORITY (3) so their
+CriticalSectionLocker usage stays valid.
+
+Sources + stale-comment sweep (all priority annotations across the m74_9/AT32 tree
+brought up to the new ladder):
+- at32/interrupt_priority.h: ladder banner + define values + rationale (was the
+  09-23 int entity of the session).
+- at32/cfg/mcuconf.h: IRQ ladder banner (wants 4 for handoff, 3 for fires).
+- board_configuration.cpp: nvic want-string stays 0/4/5/12/12/7 (handoff want 3->4);
+  angclk nvic T2/T4/T3 want-string 4->3; the lockstats per-kind comment about the
+  executor position rewritten for the TRUE/FALSE split; boardConfigOverrides comment
+  already used the EFI_IRQ_* defines (no hardcode).
+- injection_close_hw.cpp/.h: TMR3 open ISR prio 4->3 in comments; the
+  CriticalSectionLocker invariant in hwInjectionCloseCallback stays LOAD-BEARING
+  (TMR3 open 3 > TIM5 CC2 close 5 - the pre-09-23 'all prio-3, no lock' invariant
+  was already gone).
+- single_timer_executor.cpp: schedule()-inline comment now references the 09-28
+  ladder (fires 3 > handoff 4 > executor 5) and rewords the tick-past rationale
+  (the handoff is now BELOW the fires, so inline executor callbacks would lengthen
+  the handoff - the boundary-event tick-past class).
+- l9779.cpp: WDA_BURST_BASEPRI comment (fires 3 / handoff 4 unmasked); two stale
+  TMR7 'priority 5' comments -> 6 (WDA was already 6; the text pre-dated it);
+  wdaTimerCrossMeasure comment executor (3)->(5).
+- m74_9_tooth_diag.cpp: disabled-learner / rawtrg comments 'top-priority handoff' ->
+  prio-4 handoff; the learner ran below the fires; boardTriggerCallback captured-out
+  comment now states fires preempt the handoff (not the reverse).
+- trigger_central.cpp: ISR-duration-histogram header comment -> handoff prio 4 below
+  EXTI 0 and fires 3.
+
+CLAUDE.md: "ISR priority ladder" CURRENT section rewritten to the 2026-09-28
+arrangement (banner + rationale + full ladder table + want-strings 0/4/5/12/12/7
+and angclk want 3); the 09-23 +1-shift rationale preserved as a history block; 09-22
+block re-labelled superseded. Pipeline overviews (TRUE and FALSE builds) and the
+lockstats-reading / maxLateUs / C9009 sections updated to fires 3 > handoff 4 >
+executor 5.
+
+Why the swap is expected to win on the car: the fires are the real-time product, so
+taking decode out of their latency path removes the 09-23 maxLateUs growth to the
+decode duration on scheduling teeth; the residual cost is one fire waiting behind a
+fire on the same timer (~10-25 us), not behind the decode. How to confirm on-car:
+lockstats -> `nvic: exti= handoff= tim5= ... (want 0/4/5/12/12/7)` and `angclk ...
+nvic T2= T4= T3= (want 3)`; expect angclk maxLateUs to stay low (a fire ISR has no
+decode to wait for); watch dwell/inj lateArm/tickPast on scheduling teeth - the
+inverse trade (arm landing past its tick because the fire preempted the handoff).
+
+Change inventory:
+| file | change |
+| --- | --- |
+| firmware/hw_layer/ports/at32/interrupt_priority.h | handoff 3->4, fires 4->3; ladder banner + rationale |
+| firmware/hw_layer/ports/at32/at32f4/cfg/mcuconf.h | ladder banner comment (wants 4/3) |
+| firmware/config/boards/m74_9/board_configuration.cpp | angclk want 4->3; nvic comment wants; lockstats per-kind comment |
+| firmware/hw_layer/injection_close_hw.cpp | TMR3 open prio 4->3 in comments |
+| firmware/hw_layer/injection_close_hw.h | TMR3 open prio 4->3 in comments |
+| firmware/controllers/system/timer/single_timer_executor.cpp | schedule() inline comment -> 09-28 ladder |
+| firmware/hw_layer/drivers/gpio/l9779.cpp | WDA_BASEPRI comment (fires 3 / handoff 4); TMR7 prio 5->6 x2; cross-measure comment |
+| firmware/config/boards/m74_9/m74_9_tooth_diag.cpp | 'top-priority handoff' -> prio-4 handoff x3; fires-preempt wording |
+| firmware/controllers/trigger/trigger_central.cpp | histogram header comment (handoff 4 below EXTI 0 / fires 3) |
+| CLAUDE.md | CURRENT ladder section + want-strings + pipeline/reading annotations -> 09-28 arrangement |
+| docs/report.md | this entry |
+
+Validation: m74_9 ARM build (compile_m74_9.sh) SUCCESSFUL - this compiled and
+link-checked the EFI_ANGLE_CLOCK=TRUE path including the efiPrintf want-string and
+the priority defines. Preprocessor probe with the working include paths confirms
+handoff=4, fires=3, executor=5, WDA=6. Unit tests build with EFI_ANGLE_CLOCK=FALSE
+and do NOT compile angle_clock.cpp or the priority code - they are NOT validation
+for this change (the FALSE path is untouched by design).
+
+NOT car-tested. Committed locally, never pushed. Car follow-up: the lockstats reads
+named above; if tick-past/lateArm on scheduling teeth rises vs the 09-23 build, the
+inverse-trade cost is the explanation and the fallback is to re-tune the arming
+window (LOOKAHEAD) rather than re-swap priorities.

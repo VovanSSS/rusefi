@@ -116,16 +116,16 @@
 /*
  * IRQ system settings.
  *
- * NVIC priority ladder (m74_9, effective 2026-09-23, +1 shift - see
- * at32/interrupt_priority.h for the rationale and the canonical list).
+ * NVIC priority ladder (m74_9, effective 2026-09-28 - fires 3 > handoff 4;
+ * see at32/interrupt_priority.h for the rationale and the canonical list).
  * App build: EXTI9_5 and the handoff are re-programmed by rusEFI code
- * (fast capture 0, handoff 3), the angle clock programs TMR2/3/4 at 4,
- * TMR7 at 6, TIM5 via STM32_PWM_TIM5_IRQ_PRIORITY at 5. Everything below
+ * (fast capture 0, fires 3, handoff 4), the angle clock programs TMR2/3/4 at
+ * 3, TMR7 at 6, TIM5 via STM32_PWM_TIM5_IRQ_PRIORITY at 5. Everything below
  * is consumed from THIS file:
  *
  *   0  EXTI9_5   raw crank-edge capture (fast IRQ)
- *   3  I2C1_EV   trigger decode + angle-clock arming ("handoff")
- *   4  TMR2/4/3  angle-clock fires: dwell / spark / injection start
+ *   3  TMR2/4/3  angle-clock fires: dwell / spark / injection start
+ *   4  I2C1_EV   trigger decode + angle-clock arming ("handoff")
  *   5  TIM5      executor CC1/CC2 (injection close, rescue, MAP/knock,
  *                soft PWM, watchdog buddy)
  *   6  TMR7      L9779 WDA feed

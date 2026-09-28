@@ -15,14 +15,14 @@
  * CCR2 is set to the earliest pending fireAt. The CC2 callback dispatches all
  * due closes and re-arms CC2 for the next pending one.
  *
- * Priority: since the 2026-09-23 +1 ladder shift the TMR3 Open ISR (prio 4)
+ * Priority: since the 2026-09-23 +1 ladder shift the TMR3 Open ISR (prio 3)
  * stands ABOVE the TIM5 CC2 ISR (prio 5) and can preempt it mid-queue-update,
  * so the pre-shift 'all injection ISRs at one priority, no lock' invariant is
  * GONE. Mutual exclusion is now:
  *  - hwInjectionCloseCallback holds CriticalSectionLocker (BASEPRI 3 masks
- *    the prio-4 open ISR) around its slot/CCR updates;
+ *    the prio-3 open ISR) around its slot/CCR updates;
  *  - scheduleInjectionCloseHW needs no lock of its own: its callers are the
- *    prio-4 open ISR (the prio-5 CC2 ISR cannot preempt it) and the TIM5
+ *    prio-3 open ISR (the prio-5 CC2 ISR cannot preempt it) and the TIM5
  *    executor dispatch (prio 5, already inside the executor's critical
  *    section);
  *  - cancelInjectionCloseHW takes its own critical section (any context).
@@ -36,7 +36,7 @@
 #if EFI_PROD_CODE && HAL_USE_PWM
 
 // Schedule injection close for `cyl` at absolute NT time `nowNt + delayNt`.
-// Called from turnInjectionPinHigh (TMR3 open ISR, prio 4, or the TIM5
+// Called from turnInjectionPinHigh (TMR3 open ISR, prio 3, or the TIM5
 // executor dispatch at prio 5 under its critical section).
 // `action` is typically action_s::make<turnInjectionPinLow>(event).
 void scheduleInjectionCloseHW(int cyl, efitick_t nowNt, uint32_t delayNt,

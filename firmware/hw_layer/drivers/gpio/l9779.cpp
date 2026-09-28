@@ -66,7 +66,8 @@
  * cannot miss, and any transient recovers ~5x faster.
  *
  * The feed runs one atomic burst per cycle on the free-running TMR7 timer
- * (priority 5, BELOW the trigger handoff - see EFI_IRQ_L9779_WDA_PRIORITY).
+ * (priority 6, below the trigger handoff - see EFI_IRQ_L9779_WDA_PRIORITY
+ * and the 2026-09-28 ladder in interrupt_priority.h).
  * The delay
  * is adapted ONLY by the REQUHI timing verdicts (+-5 ms per miss, the same
  * policy as the proven executor feed) - there is NO delay walk: the values
@@ -1650,8 +1651,8 @@ static THD_FUNCTION(l9779_driver_thread, p) {
 RUSEFI_STACK_ROOT_EXPLICIT(l9779_driver_thread, 256);
 
 /* ISR-safe polled single-frame exchange: raw LLD calls only - no bus
- * mutex, no blocking. Callable from the TMR7 WDA ISR (priority 5, below
- * the trigger handoff); the thread side calls it only inside
+ * mutex, no blocking. Callable from the TMR7 WDA ISR (priority 6, below
+ * the trigger handoff and the executor); the thread side calls it only inside
  * spi_rw/spi_rw_array with spi_busy set. Mirrors spi_rw() minus the
  * acquire/start/release wrapper. */
 int L9779::spi_frame_isr(uint16_t tx, uint16_t *rx_ptr)
@@ -1790,8 +1791,8 @@ void L9779::wdFeedFromExecutor()
 	 * SPI sequences - purely belt-and-suspenders: the burst is a single
 	 * atomic 4-byte sequence, and a preemption merely pauses the SPI clock
 	 * (the chip has no max tlead/tcsn), so nothing can desync RESP_CNT any
-	 * more. The TMR2/3/4 fires (4), the handoff (3) and the fast EXTI stay
-	 * UNMASKED on purpose: the 2026-09-23 ladder forbids the feed from ever
+	 * more. The TMR2/3/4 fires (3), the handoff (4) and the fast EXTI stay
+	 * UNMASKED on purpose: the 2026-09-28 ladder forbids the feed from ever
 	 * delaying a spark/dwell/injection fire. The debugger halt is
 	 * unmaskable - a torn burst there self-heals: the RESP_CNT resets at
 	 * the next sequencer run and the next atomic burst answers the freshly
@@ -2237,8 +2238,8 @@ brain_pin_diag_e L9779::getDiag(size_t pin)
  * what finally proved the 2x lived in SLEEP: the timer clock was gated off
  * in sleep mode (rccEnableTIM7(false) cleared the AT32 APB1LPENR bit) and
  * only advanced during CPU-awake windows. Fixed with rccEnableTIM7(true).
- * The handoff (4) and executor (3) stay unmasked and do not touch these
- * counters, so the window is car-safe-ish; bench tool.
+	 * The handoff (4) and executor (5) stay unmasked and do not touch these
+	 * counters, so the window is car-safe-ish; bench tool.
  *
  * Measurement B (unmasked, ~100 ms): the ChibiOS virtual tick vs CYCCNT -
  * expect ~100 ms in 100 ms. This validates the kernel tick config; both

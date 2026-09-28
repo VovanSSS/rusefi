@@ -19,16 +19,22 @@
  * Concurrency (same analysis as the single-timer design):
  *  - Handoff ISR arms/refreshes/cancels channels.
  *  - TMR ISRs fire them.
- *  - Since 2026-09-23 the handoff (3) runs ABOVE the TMR ISRs (4), one step
- *    ahead of the 2026-09-22 co-equal arrangement: the TMR ISRs cannot
- *    preempt the handoff mid-arm, so an arm sequence is atomic w.r.t. the
- *    fires by priority alone. The ordered arm sequence is kept (clear stale
- *    CCxIF -> write future CCR -> store action -> enable CCxIE) as
- *    defense-in-depth and for any future priority skew. A fire pending
- *    during a running handoff instead waits for it - the fires execute
- *    right after, bounded by the decode duration (see interrupt_priority.h).
- *    The fires are anchored 'from now' at arm time, so the dwell->spark
- *    interval is preserved regardless of the wait.
+ *  - Since 2026-09-28 the TMR fires (3) run ABOVE the handoff (4) - a fire
+ *    preempts the handoff mid-arm. The arm sequence is still atomic w.r.t.
+ *    the fires: (a) a different-TIMER fire preempting is trivially safe
+ *    (separate peripherals); (b) a SAME-timer fire preempting between the
+ *    SR-clear and the DIER-enable touches a DIFFERENT channel - the two ISRs
+ *    write disjoint bitmasks/SR bits/CCR registers, so the RMW on DIER cannot
+ *    lose an update; (c) same-channel re-entry at arm time is impossible - the
+ *    channel was released (DIER[ch] disabled) by the previous fire and the
+ *    caller only arms for the next cycle 720 deg later. The ordered arm
+ *    sequence (clear stale CCxIF -> write future CCR -> store action -> enable
+ *    CCxIE) is therefore load-bearing correctness, not just defense-in-depth,
+ *    and the fires fire with only NVIC entry latency - they never wait for the
+ *    decode. The handoff instead pays ~10-25 us per fire collision (an arm
+ *    landing past its tick on scheduling teeth is the tick-past / lateArm
+ *    trade, bounded by the 'from now' re-arm and the charge-anchored rescue;
+ *    see interrupt_priority.h).
  *  - Fixed channels: the ISR releases a channel before calling action.execute()
  *    so a re-arm from inside the action is safe.
  */

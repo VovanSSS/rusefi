@@ -103,15 +103,14 @@ TRIGGER_RAM_CODE void SingleTimerExecutor::schedule(const char *msg, scheduling_
 	if (!reentrantFlag) {
 #if EFI_PROD_CODE
 		// In interrupt context (trigger handoff / angle-clock ISRs) do NOT run
-		// due events inline. Since 2026-09-23 the executor (TIM5 CC1) runs at
-		// EFI_IRQ_SCHEDULING_TIMER_PRIORITY BELOW the handoff (3) and the TMR
-		// fires (4), so with the
-		// queue empty the CC1 fire itself re-arms and dispatches in its own
-		// ISR instead of preempting the handoff; the handoff then completes
+		// due events inline. Since 2026-09-28 the ladder is TMR fires
+		// (TMR2/3/4, prio 3) > handoff (prio 4) > executor (TIM5 CC1, prio 5):
+		// with the queue empty the CC1 fire itself re-arms and dispatches in its
+		// own ISR instead of preempting the handoff; the handoff then completes
 		// without running executor callbacks. Inline execution here would
 		// batch callbacks + busy-wait spins into the handoff and make its
-		// duration variable - the exact tick-past arm-failure class the
-		// handoff-priority raise targets.
+		// duration variable - the tick-past arm-failure class (boundary START
+		// targets at rem~0) that a lengthened handoff feeds.
 		bool executeInline = !port_is_isr_context();
 #else
 		// Unit tests and the simulator execute events inline from thread

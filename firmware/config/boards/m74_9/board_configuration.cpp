@@ -273,8 +273,9 @@ static void m74_9_boardConfigOverrides() {
 	 * handoff to 4 - silently downgrading the 2026-09-22 handoff raise (the
 	 * handoff ran co-equal with the executor instead of above it; the nvic:
 	 * lockstats line showed handoff=4 against want 3). Use the ladder defines
-	 * (interrupt_priority.h): EXTI9_5 = 0 fast capture, handoff = 3 top
-	 * kernel priority, above the TMR fires (4) and the TIM5 executor (5). */
+	 * (interrupt_priority.h): EXTI9_5 = 0 fast capture, TMR fires = 3 top
+	 * kernel priority, handoff = 4 (below the fires since 2026-09-28), TIM5
+	 * executor = 5. */
 	nvicEnableVector(EXTI9_5_IRQn, EFI_IRQ_EXTI_PRIORITY);
 	nvicEnableVector(I2C1_EV_IRQn, EFI_IRQ_EXTI_HANDOFF_PRIORITY);
 
@@ -1090,12 +1091,17 @@ void setup_custom_board_overrides() {
 			(unsigned)sched.lateHistogram[3], (unsigned)sched.lateHistogram[4], (unsigned)sched.lateHistogram[5],
 			(unsigned)sched.lateHistogram[6]);
 
-		// Per-command-class breakdown: WHICH commands float. The engine
-		// timing commands (dwell/spark/overdwell/fuel) must show
-		// late>=10us=0 and small maxLateUs - the executor now runs above
-		// the trigger decode and the ADC, so it dispatches with a fixed
-		// ~1-2 us entry latency. 'other' carries the periodic/ADC/TS
-		// events where a few us of jitter does not matter.
+		// Per-command-class breakdown: WHICH commands float. On the angle-clock
+		// (TRUE) build dwell/spark/inj-start fire from TMR2/3/4 (prio 3, NVIC
+		// entry only) and never appear here; the TIM5 executor (prio 5, below
+		// the fires and the handoff) carries injection close, overdwell rescue,
+		// MAP/knock and 'other' periodic events where a few us of jitter is
+		// harmless. In the FALSE build dwell/spark/overdwell/fuel ARE on the
+		// executor and must show late>=10us=0 and small maxLateUs - the executor
+		// is preemptible by the fires (3) and the handoff (4), so a fat >=16us
+		// bucket there means the command timing floats and the engine misfires;
+		// a clean histogram (<4us) means it is deterministic and any misfire
+		// jitter comes from upstream (trigger edge timing).
 		// NOTE: commas outside parentheses split macro arguments, so the
 		// kind name comes from a helper, not an in-lambda array.
 		for (int i = 0; i < (int)ExecEventKind::Count; i++) {
@@ -1109,10 +1115,11 @@ void setup_custom_board_overrides() {
 		// Ground truth for the interrupt-priority ladder: read the NVIC
 		// priority registers directly. IRQ numbers per the Artery CMSIS:
 		// EXTI9_5=23 (raw trigger capture, want 0), I2C1_EV=31 (trigger
-		// handoff, want 3 - top kernel priority since the 2026-09-23 +1
-		// shift), TIM5=50 (executor, want 5), CAN1_TX=19/
-		// CAN1_RX0=20 (want 12), ADC1_2=18 (want 7).
-		efiPrintf("nvic: exti=%u handoff=%u tim5=%u canTx=%u canRx0=%u adc=%u (want 0/3/5/12/12/7)",
+		// handoff, want 4 - below the TMR fires since 2026-09-28), TIM5=50
+		// (executor, want 5), CAN1_TX=19/ CAN1_RX0=20 (want 12),
+		// ADC1_2=18 (want 7). The TMR2/3/4 fires (want 3) are not shown here - they live in the
+		// angclk line (nvic T2=/T4=/T3=).
+		efiPrintf("nvic: exti=%u handoff=%u tim5=%u canTx=%u canRx0=%u adc=%u (want 0/4/5/12/12/7)",
 			(unsigned)((NVIC->IP[23] >> 4) & 0xF), (unsigned)((NVIC->IP[31] >> 4) & 0xF),
 			(unsigned)((NVIC->IP[50] >> 4) & 0xF), (unsigned)((NVIC->IP[19] >> 4) & 0xF),
 			(unsigned)((NVIC->IP[20] >> 4) & 0xF), (unsigned)((NVIC->IP[18] >> 4) & 0xF));
@@ -1139,12 +1146,12 @@ void setup_custom_board_overrides() {
 		// Three-timer angle clock: TMR2=dwell(IRQ28) TMR4=spark(IRQ30) TMR3=inj(IRQ29).
 		// lateArm: target beyond 30 deg lookahead or tick already past (-> TIM5 fallback).
 		// immediate: events found past-due at refresh, fired NOW (matching FALSE build).
-		// All want nvic prio 4 (one notch below the handoff since 2026-09-23).
+		// All want nvic prio 3 (above the handoff since 2026-09-28).
 		efiPrintf("angclk dwell fired=%u lateArm=%u  spark fired=%u lateArm=%u  inj fired=%u lateArm=%u",
 			(unsigned)angleClockFiredDwell(), (unsigned)angleClockLateArmDwell(),
 			(unsigned)angleClockFiredSpark(), (unsigned)angleClockLateArmSpark(),
 			(unsigned)angleClockFiredInj(),   (unsigned)angleClockLateArmInj());
-		efiPrintf("angclk maxLateUs=%u immediate=%u initRate=%u/%u psc=%u nvic T2=%u T4=%u T3=%u (want 4)",
+		efiPrintf("angclk maxLateUs=%u immediate=%u initRate=%u/%u psc=%u nvic T2=%u T4=%u T3=%u (want 3)",
 			(unsigned)(angleClockMaxLateTicks() / (NT_PER_SECOND / 1000000)),
 			(unsigned)angleClockImmediateFireCount(),
 			(unsigned)angleClockInitAcDelta(), (unsigned)angleClockInitNtDelta(),

@@ -574,8 +574,9 @@ TRIGGER_RAM_CODE void hwHandleShaftSignal(int signalIndex, bool isRising, efitic
 	handleShaftSignal(signalIndex, isRising, timestamp);
 }
 
-// ---- trigger ISR duration histogram (m74_9 diagnosis: the trigger ISR runs
-// at the highest priority and can starve the lower-priority periodic SysTick) ----
+// ---- trigger ISR duration histogram (m74_9 diagnosis: the trigger handoff
+// runs at prio 4 - below the EXTI capture at 0 and the TMR fires at 3 - but
+// still above SysTick, so a long decode delays the periodic SysTick) ----
 static IsrDurationHistogram triggerIsrHistogram;
 // sub-phase breakdown of the decoded-edge cost: gates before the decoder,
 // decodeTriggerEvent itself, and the post-decode listeners (rpm callback,

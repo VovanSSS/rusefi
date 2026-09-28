@@ -17,8 +17,8 @@
  *
  * DISABLED 2026-09-23: the per-tooth learner is switched off at runtime
  * (M74_9_TOOTH_PROFILE_LEARNER, see below) - nothing consumes the profile
- * anymore and the capture cost ran in the top-priority trigger handoff on
- * every tooth.
+ * anymore and the capture cost ran in the trigger handoff (prio 4, below the
+ * TMR2/3/4 fires since 2026-09-28) on every tooth.
  */
 
 #include "pch.h"
@@ -33,9 +33,10 @@
  * Per-tooth profile learner runtime switch.
  *
  * 0 (default since 2026-09-23): boardTriggerCallback does nothing at runtime.
- * The learner ran in the trigger handoff ISR (top kernel priority, blocks
- * TMR2/3/4 fires) on EVERY decoded tooth - index math + period plausibility +
- * EMA update + ring write, ~2-4 us - although the profile has no consumer
+ * The learner ran in the trigger handoff ISR (prio 4, below the TMR2/3/4
+ * fires at prio 3 since 2026-09-28) on EVERY decoded tooth - index math +
+ * period plausibility + EMA update + ring write, ~2-4 us - although the
+ * profile has no consumer
  * (triggerGetToothProfileFactor is pinned to 1.0 below) and the MFS
  * load/save housekeeping is unwired (custom_board_periodicSlowCallback =
  * m74_9ToothPeriodic is commented out in board_configuration.cpp). Pure
@@ -51,8 +52,8 @@
 /**
  * Raw trigger edge capture switch (the 'rawtrg' digital oscilloscope).
  *
- * 0 (default): the per-edge capture is compiled OUT of the top-priority
- *   trigger handoff entirely - zero runtime cost, and the ring RAM is not
+ * 0 (default): the per-edge capture is compiled OUT of the trigger handoff
+ * entirely - zero runtime cost, and the ring RAM is not
  *   allocated. The 'rawtrg' console action stays registered and prints a
  *   one-line explanation instead of a capture. The handoff budget at
  *   7000 rpm is ~39% of a tooth, so every removed store keeps pending
@@ -303,7 +304,7 @@ TRIGGER_RAM_CODE void boardRawTriggerEdge(int signalIndex, bool isRising, efitic
 	rawEdgeHead = (rawEdgeHead + 1) % RawEdgeRingSize;
 	rawEdgeCount++;
 #else
-	// Capture compiled out: zero per-tooth cost in the top-priority handoff.
+	// Capture compiled out: zero per-tooth cost in the (prio 4) handoff.
 	(void)signalIndex;
 	(void)isRising;
 	(void)timestamp;
@@ -529,9 +530,10 @@ TRIGGER_RAM_CODE void boardTriggerCallback(efitick_t timestamp, float) {
 	ringTotalWritten++;
 #else
 	// Learner off (M74_9_TOOTH_PROFILE_LEARNER=0): the per-tooth capture moved
-	// out of the top-priority trigger handoff. The handoff must stay as short
-	// as possible - at 7000 rpm a tooth is ~148 us and the handoff blocks
-	// TMR2/3/4 fires for its whole duration.
+	// out of the trigger handoff (prio 4). The handoff must stay as short as
+	// possible - at 7000 rpm a tooth is ~148 us and every fire that preempts it
+	// (the TMR2/3/4 fires stand ABOVE the handoff at prio 3 since 2026-09-28)
+	// adds its run time to the decode.
 	(void)timestamp;
 #endif
 }
