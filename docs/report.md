@@ -15797,3 +15797,79 @@ restore semantics under a storm (noise) edge vs a real edge - the fast IRQ canno
 real from noise; the bitmap must be updated by DECODE-validated arms only, so a noise
 edge must re-zero the counter but leave the bitmap (and thus genuine IEs) alone - the
 2026-08-31 storm invariant applied to the new mechanism. (c) ARR clamp/blend at cranking.
+
+## 2026-09-28 - Analysis: moving error/warning printf out of ISR context (C9009 class and beyond)
+
+User-requested analysis: move error prints (C9009 and others, in fact all printf) into a
+memory queue written from the ISR and flushed to the console by a separate low-priority
+loop, to save ISR time. Verdict: the OUTPUT side already works this way; what remains in
+the ISR is the FORMATTING (chvsnprintf), and C varargs cannot be deferred - so a generic
+"move all printf" is impossible without reworking call sites.
+
+### What already exists (code-verified, util/loggingcentral.cpp)
+
+- efiPrintf -> efiPrintfInternal already takes a free LogLineBuffer (256 B) from a
+  mailbox under a short CriticalSectionLocker, formats, and posts to the filled mailbox;
+  a dedicated LoggingBufferFlusher thread (PRIO_TEXT_LOG = NORMALPRIO+4, loggingcentral.cpp)
+  drains filledBuffers into the double-buffered writeBuffer (m74_9: DL_OUTPUT_BUFFER
+  16384 x2 = 32 KB static, config/boards/m74_9/efifeatures.h L92) and the TS/console side
+  swaps the buffers. So "write to memory, low-prio loop flushes to console" ALREADY exists.
+- If no free buffer (storm) the print is DROPPED (return) - the ISR never blocks. Keep
+  this contract in any new scheme.
+
+### What still runs in the caller's context (the ISR) - the actual cost
+
+1. chvsnprintf (ChibiOS chprintf.c, CHPRINTF_USE_FLOAT TRUE via hw_layer/ports/chconf_common.h
+   L30, pulled in by AT32 chain: at32/cfg/chconf.h -> stm32/cfg/chconf_stm32.h):
+   - %f -> ftoa(): double-to-ASCII with repeated conversion; the documented ISR-cost class.
+   - %d/%u/%x -> long_to_string_with_divisor(): per-digit % radix / / radix - division-bound.
+2. warning() (error_handling.cpp warningVA) is worse than efiPrintf: prefix snprintf +
+   body chvsnprintf + addWarningCode (lock + strcpy) + efiPrintf("WARNING: %s", ...)
+   which FORMATS AGAIN (plus isprint sanitization and 2 more mailbox ops). The C9009 site
+   (engine_cycle/spark_logic.cpp startDwellByTurningSparkPinHigh) is all-integer/%s but
+   still pays double formatting + sanitization per firing.
+3. isprint() sanitization loop over the formatted length (up to 256 iterations) in
+   efiPrintfInternal.
+4. Mailbox critical sections (cheap, ~1-2 us each).
+
+Hot ISR-context sites documented in earlier entries: printGaps %f from the handoff ISR
+(decodeTriggerEvent), C9009 warning + c9009diag efiPrintf from the dwell/spark ISRs
+(handoff + TMR2 chain), overFireSparkAndPrepareNextSchedule "overcharge %f ms" warning
+from the fire ISR.
+
+### The hard constraint: varargs cannot be deferred
+
+va_list points into the caller's stack frame; it is only valid during the call. So a
+(fmt, va_list) pair cannot be queued and replayed from a thread. Any deferral must capture
+ARGUMENTS BY VALUE and keep a render thunk, not the format+va_list.
+
+### Recommended design (not yet implemented)
+
+Keep the existing mailbox pipeline. Add a bounded deferred-log thunk ring for the hot
+ISR-context sites: ISR side captures the args into a fixed-size record (memcpy + enqueue,
+no formatting, no blocking - ~1-5 us), the flusher thread runs a per-record render
+thunk that performs the real efiPrintf/warning formatting. warning() rate-limiting
+(3 s warningPeriod) already bounds re-format.
+
+Risks/constraints:
+- Slot exhaustion must DROP, never block the ISR (same contract as today's no-free-buffer
+  drop).
+- The render thunk runs ON the LoggingBufferFlusher thread; it must not re-enter the
+  filledBuffers mailbox (deadlock/self-consume). Cleanest: render calls
+  priv::efiPrintfInternal directly and the flusher just handles one more hop; verify no
+  recursive mailbox use and that the threshold/overflow path stays drop-not-block.
+- Fixed slot size bounds the captured payload: use per-call-site dedicated slots sized
+  to the specific record.
+- Do not defer configError()/firmwareError()/warningTsReport() - they mutate shared
+  state (configErrorMessageBuffer / criticalErrorMessageBuffer / TS msg) synchronously.
+  Their formatting cost is once (rate-limited / fatal), not a flood.
+
+Suggested first cut: c9009diag line + C9009 warning + printGaps (3 sites), then measure
+trgPostDecode / sched per-kind / cbmaxUs in lockstats before/after to quantify the win.
+
+Validation: none yet - analysis deliverable only. Awaiting go-ahead before coding.
+
+Open follow-ups: exact slot depth vs flood rate (storm bursts > 24 buffers/site?); whether
+%f can be eliminated at the source (integer scaling - already done for c9009diag); collapse
+warning()'s double formatting even in today's synchronous path; whether the flusher thread
+priority (NORMALPRIO+4) ever lets the output buffer starve under sustained load.
