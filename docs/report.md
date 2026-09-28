@@ -16054,3 +16054,56 @@ by tooth/injCC2 counts), delta-reset between calls. The swap is live and healthy
 
 Change inventory: none (already committed 0fbc2f7852b). Validation: on-car lockstats
 above; the remaining open item is the mid-rpm decel band tick-past re-check.
+
+## 2026-09-28 - m74_9: onTriggerEventSparkLogic guard-first dwellStartArmed skip - REWORK of the allDwellArmed early-exit (967eb1c6f40)
+
+User review of the 967eb1c6f40 allDwellArmed early-exit: "судя по логике не могут быть
+все цилиндры вооружены" - the exit assumed all four cylinders can be armed
+simultaneously, but in sequential 4-cyl firing (sparks 180 deg apart) a cylinder is
+armed only for its own ~dwell+lead window (~27 deg @1500rpm/3ms, ~36 deg @6000rpm/2ms)
+starting when its dwell fires and ending when its spark fires, so at ANY instant at
+most ONE cylinder is charging/armed - all four can never be armed together. The
+allDwellArmed whole-loop exit was dead code that on every run did a 4-element scan
+and returned to the caller only in a state that never occurs. Removed.
+
+Reworked into the same idea done correctly: the per-cylinder dwellStartArmed guard
+moved to the TOP of the !isOddCylWastedEvent branch (a single field read BEFORE the
+scheduleEarly/scheduleNow range math and the limiter re-checks), so it is exactly the
+old post-window `continue` for the armed case but skips the window work first. The
+combined condition `if (event->dwellStartArmed || (!scheduleEarly && !scheduleNow))`
+becomes `if (!scheduleEarly && !scheduleNow)` (armed cylinders never reach it now).
+
+Behavior-identical in BOTH builds (the guard is common code, not under
+EFI_ANGLE_CLOCK):
+- Armed cylinder: old code computed scheduleEarly/scheduleNow first, then continued on
+  armed; new code continues on the field read. Same outcome, no window math.
+- Non-armed cylinder: scheduleEarly/scheduleNow computed and the range-test continue as
+  before; in the FALSE build scheduleEarly is always false, so `!scheduleEarly` is a
+  constant and the condition reduces to the old `!scheduleNow` exactly.
+- isOddCylWastedEvent=true (odd-cyl wasted spark): the whole guard is skipped - that
+  branch deliberately re-schedules even armed cylinders via the +360 deg twiddle and
+  MUST NOT see the new guard.
+- angleClockNoteLookaheadDwell counting is untouched (it sits after the range-test
+  continue, so armed cylinders never reached it before either - the 2x double-count
+  fix from report.md 18th stays intact).
+
+The comment block replacing the old exit records the subset invariant that makes the
+early-arm primary and the current-window a T-1-miss fallback (first cycle after
+(re)sync, or isReady=false): the current window [currentPhase, nextPhase) of tooth k+1
+is a subset of the EARLY window [nextPhase, nextNextPhase+LOOKAHEAD) of tooth k.
+
+Change inventory:
+| file | change |
+| --- | --- |
+| firmware/controllers/engine_cycle/spark_logic.cpp | remove dead allDwellArmed scan+return; guard-first dwellStartArmed skip at top of !isOddCylWastedEvent; simplified combine; invariant comment |
+
+Validation: unit tests `./test.sh 'ignition.*'` - 7/7 PASS (ignition.twoCoils,
+trailingSpark, CylinderTimingTrim, negativeAdvance, negativeAdvance2stroke,
+oddCylinderWastedSpark, hardwareLatencyCorrection). These build with
+EFI_ANGLE_CLOCK=FALSE, so they exercise the common-code guard path; them passing
+(esp. oddCylinderWastedSpark) confirms the guard does not leak into the wasted branch.
+The EFI_ANGLE_CLOCK=TRUE branch was compiled via the m74_9 build in the previous commit
+(967eb1c6f40) and is unchanged in structure by this rework. Car follow-up: lockstats
+postDecode flat vs 967eb1c6f40, dwell/spark lateArm=0, immediate ~0.2-0.6% unchanged.
+
+Committed locally, never pushed.

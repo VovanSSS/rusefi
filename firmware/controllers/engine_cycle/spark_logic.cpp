@@ -753,29 +753,19 @@ TRIGGER_RAM_CODE void onTriggerEventSparkLogic(float rpm, efitick_t edgeTimestam
 	}
 
 #if EFI_ANGLE_CLOCK
-	// scheduleDwellEarlyIfDue (start of mainTriggerCallback, before the rpm==0
-	// gate) already armed the dwell start on TMR2 for every cylinder this tooth.
-	// The loop below would then hit the dwellStartArmed guard (continue) on every
-	// element and do nothing - skip that empty sweep to save the per-tooth cost.
+	// Per-tooth invariant: the current-window [currentPhase, nextPhase) of this
+	// tooth is a SUBSET of the previous tooth's EARLY window
+	// [nextPhase, nextNextPhase + ANGLE_CLOCK_LOOKAHEAD_DEG) (scheduleDwellEarlyIfDue),
+	// so in steady state every reachable event was already armed one tooth earlier
+	// and the loop below only needs the current-window for the T-1-miss fallback
+	// (first cycle after a (re)sync, or isReady was false). The per-cylinder
+	// dwellStartArmed guard therefore lives at the TOP of the non-wasted branch -
+	// an armed cylinder is skipped with a single field read, before any window
+	// math or limiter re-checks.
 	//
-	// Safe for the all-armed case because the launch/antilag/rotational-idle and
-	// artificial-misfire skips all live AFTER the dwellStartArmed guard inside the
-	// loop, so they never apply to already-armed cylinders - this exit is
-	// behavior-identical to the loop for that case. The !isReady path is exempt:
-	// prepareIgnitionSchedule() above just reset every dwellStartArmed=false, so
-	// allDwellArmed reads false right after it and the full loop still runs.
-	{
-		bool allDwellArmed = true;
-		for (size_t i = 0; i < engineConfiguration->cylindersCount; i++) {
-			if (!engine->ignitionEvents.elements[i].dwellStartArmed) {
-				allDwellArmed = false;
-				break;
-			}
-		}
-		if (allDwellArmed) {
-			return;
-		}
-	}
+	// (The old allDwellArmed whole-loop exit was dead code: in sequential mode
+	// at most one cylinder is charging at a time, so all four can never be armed
+	// simultaneously.)
 #endif // EFI_ANGLE_CLOCK
 
 	/**
@@ -826,6 +816,17 @@ TRIGGER_RAM_CODE void onTriggerEventSparkLogic(float rpm, efitick_t edgeTimestam
 			}
 
 			if (!isOddCylWastedEvent) {
+				// Skip what's already armed this cycle with a single field read,
+				// BEFORE the window math below - an armed cylinder never needs
+				// the scheduleEarly/scheduleNow range tests or the limiter
+				// re-checks. Behavior-identical to the old post-window `continue`
+				// for the armed case (the early branch of scheduleDwellEarlyIfDue,
+				// or an earlier current-window arm, already scheduled it; the
+				// guard also blocks a same-tooth double schedule).
+				if (event->dwellStartArmed) {
+					continue;
+				}
+
 				// The dwell is scheduled one tooth ahead (EFI_ANGLE_CLOCK): the
 				// early window [nextPhase, nextNextPhase) gives the handoff a
 				// full tooth of slack instead of the old 0-1 tooth lead. The
@@ -852,7 +853,7 @@ TRIGGER_RAM_CODE void onTriggerEventSparkLogic(float rpm, efitick_t edgeTimestam
 				scheduleEarly = nextNextPhase != nextPhase && isPhaseInRange(dwellAngle, nextPhase, nextNextPhase + ANGLE_CLOCK_LOOKAHEAD_DEG);
 #endif // EFI_ANGLE_CLOCK
 				bool scheduleNow = isPhaseInRange(dwellAngle, currentPhase, nextPhase);
-				if (event->dwellStartArmed || (!scheduleEarly && !scheduleNow)) {
+				if (!scheduleEarly && !scheduleNow) {
 					continue;
 				}
 #if EFI_ANGLE_CLOCK
