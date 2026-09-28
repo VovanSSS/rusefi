@@ -381,6 +381,11 @@ IMPLEMENTED design (firmware/hw_layer/angle_clock/angle_clock.{h,cpp}, gate EFI_
 
 ## ISR priority ladder (AT32 m74_9) - CURRENT ARRANGEMENT (2026-09-28): TMR fires 3 > handoff 4 > executor 5
 
+CAR-CONFIRMED 2026-09-28 (idle lockstats): nvic line reads want 0/4/5/12/12/7 exactly,
+angclk nvic T2=3 T4=3 T3=3, injCC2 TIM5=5; angclk maxLateUs 7-66 us with dwell/spark
+lateArm=0 and inj tick-past ~0/s at idle - fires no longer wait for the decode. The
+mid-rpm (1300-3500 rpm) decel band tick-past re-check is still open.
+
 CURRENT (since 2026-09-28, user directive): the TMR2/3/4 angle-clock fires sit
 at the TOP kernel priority 3, the trigger handoff one notch below at 4, and the
 TIM5 executor below both at 5. This is the inverse of the 2026-09-23 +1 shift

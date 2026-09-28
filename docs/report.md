@@ -16023,3 +16023,34 @@ NOT car-tested. Committed locally, never pushed. Car follow-up: the lockstats re
 named above; if tick-past/lateArm on scheduling teeth rises vs the 09-23 build, the
 inverse-trade cost is the explanation and the fallback is to re-tune the arming
 window (LOOKAHEAD) rather than re-swap priorities.
+
+## 2026-09-28 (22:45-22:47) - m74_9: priority swap CAR-CONFIRMED (fires 3 > handoff 4 > executor 5)
+
+Three lockstats snapshots (22:45:53, 22:46:23, 22:47:04), idle/light-ish (~800-1200 rpm
+by tooth/injCC2 counts), delta-reset between calls. The swap is live and healthy:
+
+- nvic ground truth ALL MATCH: `nvic: exti=0 handoff=4 tim5=5 canTx=12 canRx0=12 adc=7
+  (want 0/4/5/12/12/7)`; `angclk ... nvic T2=3 T4=3 T3=3 (want 3)`; `injCC2 ... nvic
+  TIM5=5 (want 5)`.
+- angle-clock fire lateness: maxLateUs = 7 / 66 / 66 us (a fire waits behind a same-timer
+  fire or a locked section at worst - NOT the decode; the 09-23 arrangement's
+  maxLateUs-grows-to-decode-duration is gone). immediate = 2 / 7 / 8 (~0.3% of dwell,
+  the known boundary-event class).
+- Arm health: dwell/spark lateArm = 0/0/0 in all three; inj lateArm = 0/3/0 (the 3 =
+  tickPast=3, the 1:1 boundary TIM5 fallback, sched fuel n=3 matches). No overdwell, no
+  C9xxx in the window.
+- The inverse trade did NOT materialize at idle: tick-past stayed ~0.37/s in snapshot 2
+  (3 events / 41 s window), nothing like the 09-23 mid-rpm decel tick-past class. Cabinet:
+  confirm at 1300-3500 rpm (the decel band) - idle alone cannot fully clear this.
+- Handoff still the ~50 us/tooth fixed tax (pre ~1.6, decode ~10, post ~37-39 us avg over
+  the three snapshots); post 50-100 us bucket ~2-2.5%, rare 100-250 us (10/3/2 events).
+- Executor (TIM5): schedulerIsr ~66 us/visit (the CC2 close + MAP/knock batch), sched
+  exec 92-99% late>=10us with maxLateUs 82-118 us = the documented batch-order reading,
+  NOT a stall. sched dwell/spark/overdwell = 0 everywhere - those moved off TIM5 as
+  designed.
+- injCC2 scheduled==fired exactly in all three (3388/4614/5893). tim2clk healthy
+  (ARR=FFFFFFFF, T2d==NTd both sleep and busy). maxSchedulingPrecisionLoss=0,
+  maxLockedDuration=0, maxTriggerReentrant=0 throughout.
+
+Change inventory: none (already committed 0fbc2f7852b). Validation: on-car lockstats
+above; the remaining open item is the mid-rpm decel band tick-past re-check.
