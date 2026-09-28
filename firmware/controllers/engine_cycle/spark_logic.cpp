@@ -752,6 +752,31 @@ TRIGGER_RAM_CODE void onTriggerEventSparkLogic(float rpm, efitick_t edgeTimestam
 		prepareIgnitionSchedule();
 	}
 
+#if EFI_ANGLE_CLOCK
+	// scheduleDwellEarlyIfDue (start of mainTriggerCallback, before the rpm==0
+	// gate) already armed the dwell start on TMR2 for every cylinder this tooth.
+	// The loop below would then hit the dwellStartArmed guard (continue) on every
+	// element and do nothing - skip that empty sweep to save the per-tooth cost.
+	//
+	// Safe for the all-armed case because the launch/antilag/rotational-idle and
+	// artificial-misfire skips all live AFTER the dwellStartArmed guard inside the
+	// loop, so they never apply to already-armed cylinders - this exit is
+	// behavior-identical to the loop for that case. The !isReady path is exempt:
+	// prepareIgnitionSchedule() above just reset every dwellStartArmed=false, so
+	// allDwellArmed reads false right after it and the full loop still runs.
+	{
+		bool allDwellArmed = true;
+		for (size_t i = 0; i < engineConfiguration->cylindersCount; i++) {
+			if (!engine->ignitionEvents.elements[i].dwellStartArmed) {
+				allDwellArmed = false;
+				break;
+			}
+		}
+		if (allDwellArmed) {
+			return;
+		}
+	}
+#endif // EFI_ANGLE_CLOCK
 
 	/**
 	 * Ignition schedule is defined once per revolution

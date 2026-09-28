@@ -15873,3 +15873,49 @@ Open follow-ups: exact slot depth vs flood rate (storm bursts > 24 buffers/site?
 %f can be eliminated at the source (integer scaling - already done for c9009diag); collapse
 warning()'s double formatting even in today's synchronous path; whether the flusher thread
 priority (NORMALPRIO+4) ever lets the output buffer starve under sustained load.
+
+## 2026-09-28 - m74_9: onTriggerEventSparkLogic allDwellArmed early-exit (EFI_ANGLE_CLOCK) - skip the empty 4-cyl sweep when scheduleDwellEarlyIfDue already armed every dwell
+
+Under the three-timer angle clock, scheduleDwellEarlyIfDue (called at the START of
+mainTriggerCallback, before the rpm==0 gate) arms the dwell start on TMR2 for every
+cylinder. onTriggerEventSparkLogic then runs right after it and its 4-cyl loop hits the
+dwellStartArmed guard (continue) on every element: an empty sweep that still pays the
+per-tooth cost (~10 us class of the postDecode inventory) for doing nothing.
+
+This commit adds an EFI_ANGLE_CLOCK-guarded early exit: loop over cylindersCount once,
+if every dwellStartArmed is true, return immediately from onTriggerEventSparkLogic
+(which also skips its angleClockRefresh/repair tail - the refresh already ran once per
+tooth; the per-cyl armed re-anchoring on TMR2 happened at arm time).
+
+Why it is behavior-identical for the all-armed case (code-verified):
+- The launch (launchControlEnabled+launchActive), antilag, rotational-idle and
+  artificial-misfire skips all live AFTER the dwellStartArmed guard inside the loop
+  body, so they never applied to already-armed cylinders anyway - exiting before them
+  changes nothing for an armed cylinder.
+- The !isReady path is exempt by construction: prepareIgnitionSchedule() (called just
+  above the exit, when !isReady) resets every element's dwellStartArmed=false, so
+  allDwellArmed reads false right after it and the full loop still runs.
+- A cylinder whose dwell the early path did NOT arm (storm-flap teeth, NaN dwell,
+  isReady=false first cycle) leaves allDwellArmed=false and the loop runs exactly as
+  before - the current-window [currentPhase,nextPhase) fallback arm is preserved.
+
+The early exit does NOT remove the duplicate-arm analysis from the 09-23/09-24 sessions:
+whether scheduleDwellEarlyIfDue's early window missed a cylinder for another reason is
+unchanged - only the cost of the all-armed steady-state sweep is removed.
+
+Change inventory:
+| file | change |
+| --- | --- |
+| firmware/controllers/engine_cycle/spark_logic.cpp | #if EFI_ANGLE_CLOCK allDwellArmed scan + return before the 4-cyl loop in onTriggerEventSparkLogic; comment explains the invariant |
+
+Validation: m74_9 ARM build (compile_m74_9.sh) SUCCESSFUL - this compiled and link-checked
+the EFI_ANGLE_CLOCK=TRUE path (only config/boards/m74_9/efifeatures.h sets it TRUE). Unit
+tests (make -j12, 121 spark/ignition/dwell/trigger/overdwell tests run - all PASS) build
+with EFI_ANGLE_CLOCK=FALSE (config/stm32f4ems/efifeatures.h), so they prove only the FALSE
+path is untouched - they do NOT compile the patched branch. Car follow-up (user domain):
+lockstats trgPostDecode/postDecode should be flat vs the pre-patch build with no change to
+angclk fired/lateArm/immediate or sched counters; any cylinder whose dwell was not armed
+by the early path would surface as a missing dwell fire / lateArm where it was previously
+0.
+
+NOT car-tested. Committed locally, never pushed.
