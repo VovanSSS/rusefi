@@ -16107,3 +16107,247 @@ The EFI_ANGLE_CLOCK=TRUE branch was compiled via the m74_9 build in the previous
 postDecode flat vs 967eb1c6f40, dwell/spark lateArm=0, immediate ~0.2-0.6% unchanged.
 
 Committed locally, never pushed.
+
+## 2026-09-28 - m74_9: analysis - how the TMR2/3/4 angle-clock fires really work, why the residual maxLateUs=66 us exists (the executor critical section masks the fires), and the fix path
+
+User thread (in Russian): TMR hardware mechanism -> the queue-in-ISR question ->
+angleClockRefresh 'unnecessary' -> priority table -> 'why 10-25 us body, should be
+1-2 us' -> 'why is anything but on/off in TMR' -> the 60-70 us puzzle -> per-kind
+latency attribution -> how to fix. Deliverable: this analysis only - no code
+change. Everything here is code-verified against the working tree (single_timer_
+executor.cpp / event_queue.cpp / angle_clock.cpp / interrupt_priority.h).
+
+### 1. TMR2/3/4 hardware: armed by TIME, fires via CCxIF -> NVIC (no output pin)
+
+All three angle-clock timers are free-running 4 MHz counters (PSC=71 measured at
+init from TIMCLK1=288 MHz, the same NT domain as TIM5) used as PURE SOFTWARE
+COMPARATORS: OCxM=1, CCxS=0, CCxE=0 - the CC match sets CCxIF but does not touch
+any pin (the pins are GPIO written from the ISR). An event is 'armed' by writing
+the ABSOLUTE 4 MHz tick into CCRx and setting CCxIE. When CNT == CCR the hardware
+sets CCxIF, the NVIC takes the IRQ, and the ISR (dispatch32 for TMR2 / dispatch16
+for TMR3+4) runs the action.
+
+So the answer to 'is time armed in them?': yes - the
+CCR is an absolute counter tick, NOT an angle and NOT a 'compare output' to a
+hardware pin. The hardware only ever does one thing: fire the ISR when CNT hits
+CCR. The pin edge is a software side effect inside the ISR.
+
+### 2. The delay chain and the queue-in-ISR question
+
+Arm -> fire latency = (0..1 tick match detect, the counter runs 4 MHz so the
+compare matches within one tick of the exact instant) + NVIC/OSAL entry (~1-2 us)
++ QUEUE WAIT (the pending NVIC exception only runs when the CPU is not inside a
+higher/equal-priority ISR or a locked (BASEPRI) section) + the fire ISR body
+(~10-25 us).
+
+'Does the ISR in-queue affect execution time?' - answer: yes, but not the
+executor's event queue: the angle-clock
+events do NOT enter the TIM5 event queue at all (they live in the TMR channels).
+What delays a fire is a RUNNING ISR at prio <= 3 (another fire on the same timer,
+~10-25 us) or a BASEPRI-masked section - and THAT is the point of the 2026-09-28
+priority swap: with the fires at 3 the only grader is (a) a same-timer fire and
+(b) the executor's critical section (section 5). They do NOT wait for the decode
+(prio 4), which is the whole point of the swap.
+
+### 3. angleClockRefresh is NOT a queue - and it is already skip-write cheap
+
+'angleClockRefresh is a redundant function' - the claim that
+refresh is a redundant re-arm because 'everything is armed by time and waits for
+a free ISR'. Two-part answer:
+- It is not a queue and does not add to a queue: refresh re-computes the armed
+  CCR from the FRESH angle->time basis so a hard accel/decel event does not fire
+  from the stale basis armed one tooth ago. It does NOT move anything into the
+  ISR queue - it only rewrites a CCR in the future (or marks an already-past event
+  for immediate fire, counter s_immediate). It cannot delay CONSUMPTION of an
+  already-matched CCxIF; a pending fire (flag set) fires as soon as the CPU is free.
+- It is already cheap in the steady state: the skip-write gate (report.md 2026-09-
+  25) returns BEFORE the SR read + CCR write when the anchor is unchanged and far
+  enough out (ARM_MARGIN_TICKS). The 2026-09-28 car windows confirm: skip/write/
+  jitter/pending = 3705/782/350/0, 6286/484/415/2, 5769/1183/604/0 per 12 ch/tooth
+  per window - skip dominates (steady rpm = no-op), write > 0 only when the basis
+  really moved, jitter = sub-2 us pulls absorbed into the deadband, pending = the
+  TMR ISRs about to fire (0-2). disposed/tooth was measured rock-stable 0.135
+  (2026-09-25) - the real per-tooth refresh cost is a few us, invisible in
+  trgPostDecode.
+
+### 4. Priority ladder (fires 3 > handoff 4 > executor 5) - verified in the binary by the lockstats nvic reads
+
+Full ladder is in at32/interrupt_priority.h (fires 3 / handoff 4 / executor 5 /
+WDA 6 / ADC 7...). The 'verify the binary has all the priority changes in place'
+request is answered by lockstats, which reads the PROGRAMMED NVIC priorities at
+runtime - the ground truth for the flashed image:
+
+  nvic: exti=0 handoff=4 tim5=5 canTx=12 canRx0=12 adc=7 (want 0/4/5/12/12/7)
+  angclk ... nvic T2=3 T4=3 T3=3 (want 3)
+  injCC2 ... nvic TIM5=5 (want 5)
+
+all match in every snapshot the user pasted (22:45:53 / 22:46:23 / 22:47:04) -
+the swap IS in the flashed binary.
+
+### 5. THE 60-70 us VERDICT: the executor's critical section masks the fires for the WHOLE BATCH, even though fires are a higher priority
+
+'The key source of 60-70 us is the executor's critical section masking the
+fires' - code-verified exact mechanism:
+
+- SingleTimerExecutor::onTimerCallback() (single_timer_executor.cpp L136-143)
+  holds chibios_rt::CriticalSectionLocker csl (L139) around executeAllPendingActions()
+  (L141) + scheduleTimerCallback() (L142) - the WHOLE batch, including every
+  action.execute().
+- CriticalSectionLocker = chSysGetStatusAndLockX() = BASEPRI = CORTEX_BASEPRI_
+  KERNEL = 3 on this port (documented in CLAUDE.md: CORTEX_FAST_PRIORITIES=2,
+  MAX_KERNEL=3, SIMPLIFIED=FALSE). BASEPRI=3 masks NVIC priorities 3..15 - i.e.
+  INCLUDING the angle-clock fires at prio 3. Only the fast EXTI (prio 0, 1-2 us)
+  is unmasked.
+- executeAllPendingActions() loops queue.executeOne() (event_queue.cpp L255-335):
+  it spin-waits up to m_lateDelay=US2NT(8) for events within the 8 us window
+  (L285), UNLINKS the head (L302) and RUNS action.execute() (L324) - all under
+  the lock. A fire whose CCR matched mid-batch has its CCxIF set and its NVIC
+  pending, but the NVIC cannot take it (BASEPRI=3) until the CS drops at the END
+  of the batch.
+- The batch duration is NOT 1-2 us: schedulerIsr shows a 50-100 us MODE per visit
+  in the 22:45-22:47 windows (sumUs 176057/261885/280047 over 2466/3267/3823
+  visits - i.e. ~71-80 us/visit avg, modal bucket 50-100 us). A fire matching
+  mid-batch waits out the rest of that batch before it can enter, and its
+  maxLateUs therefore lands in the batch-duration range - the observed
+  7 / 66 / 66 us max.
+- dispatch32/16 measure late = CNT - ccr at ISR entry just before act.execute()
+  (angle_clock.cpp L189-193 / L218-222) - so maxLateUs is ENTRY-BLOCKING (time
+  spent waiting to enter the ISR), pooled across dwell/spark/inj, NOT the body
+  and NOT attributable per kind (the standing PLANNED-not-implemented gap).
+
+So the swap (fires above handoff) removed the DECODE from the fire latency path
+(maxLateUs no longer grows to the 44-250 us decode), but a fire can STILL wait
+behind the executor's BASEPRI-locked batch - the swap does not touch that, and
+the residual ~66 us is its signature.
+
+### 6. Fix options (analysis; NOT implemented - awaiting go-ahead)
+
+1. RECOMMENDED (pop-under-lock, execute-outside-lock): split executeOne into a
+   pop (unlink head + snapshot moment/action under a SHORT CS, sub-us) and an
+   execute outside the lock. onTimerCallback then loops: short CS {pop} -> spin
+   on the snapshot outside the lock -> action.execute() outside the lock ->
+   telemetry (classify head under the short CS as today) -> end-of-batch short CS
+   {scheduleTimerCallback()}. The lock covers only the unlink and the re-arm - a
+   fire can then preempt the executor during a callback body. Invariants kept:
+   'the handoff cannot interrupt the executor mid-pop' (the unlink is still
+   atomic), reentrantFlag, executeCounter==500 guard (CUSTOM_ERR_LOCK_ISSUE),
+   'Someone has stolen my lock' check, m_lateDelay=US2NT(8) spin semantics,
+   executeInline logic. CriticalSectionLocker is RE-ENTRANT (ch.hpp L387-397),
+   so acquiring/dropping it in pieces is safe.
+2. MAX (future, combines with 1): remove scheduler.schedule/cancel from the
+   fire-ISR bodies (overdwell arm in TMR2, rescue cancel in TMR4). Then the fires
+   never mutate the executor queue and need not be masked at all (or the CS can be
+   shallower). The rescue cancel is safe when late (sparkFiredSinceCharge makes an
+   overFire a no-op); the rescue re-arm happens on the next tooth (2.5x-dwell
+   margin ~5 ms vs tooth <150 us). Larger refactor.
+3. Shrink the batch itself (move MAP/knock off TIM5) - helps but does not cure.
+
+Explicitly NOT safe: raising the fires to the fast 0-2 zone (they use kernel
+primitives via schedule/cancel) and lowering BASEPRI below 3 while the fire ISRs
+still schedule/cancel (queue race). The pop-then-execute split (1) is the reason
+fires do not need to be masked through a callback body.
+
+### 7. Why the fire ISR body is 10-25 us and not 1-2 us (and what dominates)
+
+'Why is anything but on/off executed in the TMRs?' / 'where does 10-25 us come
+from, it should be 1-2 us': the 1-2 us is only the NVIC/OSAL ENTRY. The body does
+the pin edge PLUS re-planning/re-arming that must happen at the exact physical
+moment (that is WHY they are in a top-priority ISR - by the time a lower context
+ran, the edge would be late). Table of what each fire ISR executes (cost-ranking,
+measured callbacks where available):
+
+| ISR | body | dominant cost notes |
+| --- | --- | --- |
+| TMR2 (dwell) | turnSparkPinHighStartCharging: coil GPIO ON + angleClockArmSparkFromNow (re-arm TMR4 from the ACTUAL charge moment) + overdwell rescue schedule on TIM5 + C9009 prevSparkName checks + spark queue bookkeeping | the TMR4 re-arm + TIM5 schedule + C9009 path are the multi-us part; the C9009 warning-print path is the documented cbmax ~189 us outlier (deferral analysis in report.md 09-28) |
+| TMR4 (spark) | fireSparkAndPrepareNextSchedule: coil GPIO OFF + prepareCylinderIgnitionSchedule (recompute next-cycle angles, reset dwellStartArmed) + spark queue flush/pending | prepareCylinderIgnitionSchedule is the biggest single block (recomputes angles for the next cycle while the current fire is physically happening) |
+| TMR3 (inj open) | turnInjectionPinHigh: injector GPIO OPEN + scheduleInjectionCloseHW (arm TIM5 CC2 on the 4-slot close mini-queue from the real open moment) | the CC2 arm is short; the close mini-queue re-arm (rearmCC2) is the rest |
+
+'Then where does the 60-70 us max on the TMR come from?' - the max is NOT the
+body (section 5) - it is the ENTRY wait behind the executor BASEPRI batch. The
+bodies stay ~10-25 us.
+
+### 8. fired-count deltas: +/-1 is the pipeline snapshot, x10 (17:34) is the KNOWN inj>dwell class - not a new bug
+
+'How can all the logs differ by one?': the three 2026-09-28 windows
+show 807/807/806, 1217/1217/1217, 1273/1272/1272 between dwell/spark/inj fired.
+These counters are the CONVEYOR at a random snapshot instant: dwell (TMR2) may
+have already fired while the coil charges (spark TMR4 not yet, or vice versa) and
+the injection open (TMR3) is independent; the +/-1 is the natural phase of the
+pipeline at the instant lockstats reads them - NOT a lost event. Cross-check:
+in every window spark lateArm=0 and injCC2 scheduled==fired EXACTLY (3388/4614/
+5893), so nothing was lost.
+
+The x10 case ('a log with a difference by tens', 17:34:54: dwell fired=10514
+spark fired=10514, inj fired=10615 WITH inj lateArm=85) is the KNOWN open class
+from CLAUDE.md (09-23/09-24): the double-window armedAt-passed next-cycle
+re-schedule - an injection fired ~0.7-2.7% more often than dwell because the
+early-window arm that passed its armedAt got a match on the NEXT cycle before
+update() recomputed the angle (injectionStartArmed + armedAt guard). lateArm=85
+= the 1:1 TIM5-time fallback for those extra events (sched fuel n should equal
+it). It is a separate, already-tracked item - NOT fixed here, NOT a regression.
+
+### 9. immediate=N is a COUNTER, not an average
+
+'Is immediate an average?' - no. s_immediate is incremented once each time
+angleClockRefresh finds an armed channel whose tick has ALREADY passed and
+re-arms it at cnt+ARM_MARGIN_TICKS for an IMMEDIATE fire (the due-now branch of
+refreshChannel32/16). So immediate = number of events that the refresh had to
+catch because the arm prediction went stale (basis lag / boundary event at rem~0)
+and fire 'now' instead of at the predicted angle. immediate at idle: 2 / 7 / 8
+(~0.3% of dwell fired at 22:47). The average you might be thinking of is
+maxLateUs (a max) or the executor's sched exec histogram.
+
+### 10. 'Compute dwell/fuel only when needed, not every tooth' - what already exists
+
+'What if prio 3/4 tie to the angle and compute dwell/fuel only right before
+these calculations are needed, not every tooth?' - this is exactly what the
+events-per-window arming + the guard-first skip already do:
+- scheduleDwellEarlyIfDue (start of mainTriggerCallback, ~30 us) does the
+  four-cyl TWO-WINDOW isPhaseInRange check and arms ONLY the cylinder(s) whose
+  dwell window is current - the OTHER cylinders are one field read each
+  (dwellStartArmed / range miss), no math. This is the single arm pass the user
+  explicitly wants kept ('leave scheduleDwellEarlyIfDue').
+- onTriggerEventSparkLogic, after the e0acec3e06d guard-first rework, is a
+  per-cylinder early-out on dwellStartArmed BEFORE the window math - so an armed
+  cylinder costs ONE field read. It is NOT a full 4-cyl per-tooth re-compute.
+- dwell and injection duration tables are evaluated in the slow 200 Hz loop
+  (getDwell_ms / injection duration from the MAP-averaged basis), NOT per tooth;
+  the tooth callback only converts the pre-computed duration to a tick via the
+  basis - the 'compute only before it is needed' is architecturally satisfied.
+- Misfire/MAP window work is ALREADY OUT of the handoff (report.md 2026-09-24,
+  variant A) - the handoff postDecode is ~37-39 us/tooth, made of the arm-critical
+  pieces only. The remaining per-tooth cost is the documented refresh (section 3)
+  plus the (already cheap) window checks.
+
+The 'not all cylinders can be armed at once' point (which produced the
+allDwellArmed removal and the guard-first rework e0acec3e06d) stands: in
+sequential 4-cyl firing at most ONE cylinder is in its charge window at any
+instant, so a whole-loop 'all armed' exit was dead code - the per-cylinder
+guard-first skip is the correct, minimal version of 'skip what is already armed'.
+
+### Summary for the driver
+
+- The fires are armed by absolute 4 MHz ticks; the hardware only raises CCxIF at
+  CNT==CCR; the pin edge is a software side effect in the ISR.
+- Queue-in-ISR: a fire waits only behind a same-prio fire (~10-25 us) or a
+  BASEPRI-masked section - since the swap, NOT behind the decode.
+- The residual maxLateUs ~66 us = the executor batch (BASEPRI=3 CS masks prio 3..15
+  for the whole executeAllPendingActions). Verdict confirmed by schedulerIsr 50-100
+  us modal (avg ~71-80 us) sitting right at the observed maxLateUs.
+- Fix path (not implemented): split executeOne into pop-under-short-CS +
+  execute-outside-lock so a fire preempts the executor during a callback body; the
+  deeper step is moving schedule/cancel out of the fire ISR bodies so the fires
+  need no masking at all.
+- +/-1 between dwell/spark/inj fired = pipeline snapshot (healthy; injCC2
+  scheduled==fired exact). x10 (17:34 inj fired=10615 lateArm=85) = the known
+  double-window armedAt-passed class, already tracked, separate.
+- immediate=N = a counter of past-due events the refresh re-armed for immediate
+  fire (not an average).
+- 'only when needed' dwell/fuel: already satisfied by event-window arming,
+  guard-first skips, 200 Hz duration tables, and the MAP/misfire eviction from
+  the handoff (variant A).
+
+Validation: code-verified against the working tree (single_timer_executor.cpp
+L136-143/L148-206, event_queue.cpp executeOne L255-335, angle_clock.cpp dispatch
+L171-227, interrupt_priority.h ladder). No build/tests run - no code touched.
+Not car-tested (analysis only). Committed locally, never pushed.
