@@ -115,6 +115,11 @@ build BUILD SUCCESSFUL (EFI_ANGLE_CLOCK=TRUE compiles both parts); nm-verified:
 angleClockTickForNt absent, angleClockOnTooth/from-now arms take uint32,
 EventQueue::popDue + the executor functions present. The unit-test build is
 clang (macOS); the Linux-GCC CI leg is not run locally. NOT bench- or
+car-tested. The full m74_9 bundle deliverable also builds cleanly
+(artifacts/rusefi_bundle_m74_9.zip: merged rusefi_development_260929 bin +
+update srec + rusefi_m74_9.ini + console jar + stamped 21129.msq + OpenBLT
+images; the zip was rebuilt after removing the stale snapshot dir so it holds
+ONLY the 260929 entries - the zip -r stale-entry gotcha). NOT bench- or
 car-tested - the first lockstats on the car should show: angclk maxLateUs
 dropping out of the tens-of-us band (the fire mask is gone), dwell/spark/open/
 close lateArm unchanged (the arms are numerically identical), tim2clk exact,
