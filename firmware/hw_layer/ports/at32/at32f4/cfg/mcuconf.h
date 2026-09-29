@@ -119,15 +119,15 @@
  * NVIC priority ladder (m74_9, effective 2026-09-28 - fires 3 > handoff 4;
  * see at32/interrupt_priority.h for the rationale and the canonical list).
  * App build: EXTI9_5 and the handoff are re-programmed by rusEFI code
- * (fast capture 0, fires 3, handoff 4), the angle clock programs TMR2/3/4 at
+ * (fast capture 0, fires 3, handoff 4), the angle clock programs TMR2 at
  * 3, TMR7 at 6, TIM5 via STM32_PWM_TIM5_IRQ_PRIORITY at 5. Everything below
  * is consumed from THIS file:
  *
  *   0  EXTI9_5   raw crank-edge capture (fast IRQ)
- *   3  TMR2/4/3  angle-clock fires: dwell / spark / injection start
+ *   3  TMR2      angle-clock fires: dwell / spark / injection open+close
  *   4  I2C1_EV   trigger decode + angle-clock arming ("handoff")
- *   5  TIM5      executor CC1/CC2 (injection close, rescue, MAP/knock,
- *                soft PWM, watchdog buddy)
+ *   5  TIM5      executor CC1 (rescue, MAP/knock, soft PWM, watchdog buddy;
+ *                CC2 is unused on the angle-clock build)
  *   6  TMR7      L9779 WDA feed
  *   7  ADC1/2/3  slow ADC + ADC DMA streams
  *   8  TIM6      fast-ADC trigger (GPT)
@@ -308,11 +308,11 @@
 #define STM32_ICU_USE_TIM1                  FALSE
 #define STM32_ICU_USE_TIM2                  FALSE
 #define STM32_ICU_USE_TIM3                  FALSE
-/* TMR4 is taken by the hardware angle clock (spark fires, VectorB8, IRQ 30)
- * as a pure software comparator timer. The ICU driver keeps TIM4 enabled so
- * the LLD compiles (it needs at least one assigned TIM), but SENT support is
+/* TIM4 is unused by the angle clock (single-timer consolidation 2026-09-29:
+ * everything lives on TMR2). The ICU driver keeps TIM4 enabled so the LLD
+ * compiles (it needs at least one assigned TIM), but SENT support is
  * disabled so icuStart(&ICUD4) is never called. STM32_TIM4_SUPPRESS_ISR
- * prevents the ICU LLD from claiming VectorB8 so the angle clock can own it. */
+ * prevents the ICU LLD from claiming VectorB8. */
 #define STM32_ICU_USE_TIM4                  TRUE
 #define STM32_TIM4_SUPPRESS_ISR             TRUE
 #define STM32_ICU_USE_TIM5                  FALSE
@@ -339,8 +339,7 @@
  */
 #define STM32_PWM_USE_TIM1                  FALSE
 #define STM32_PWM_USE_TIM2                  FALSE
-/* TMR3 is taken by the hardware angle clock (injection starts, VectorB4, IRQ 29)
- * as a pure software comparator timer - do not start the PWM driver on it. */
+/* TIM3 is unused by the angle clock (single-timer consolidation 2026-09-29). */
 #define STM32_PWM_USE_TIM3                  FALSE
 #define STM32_TIM3_SUPPRESS_ISR             TRUE
 #define STM32_PWM_USE_TIM4                  FALSE

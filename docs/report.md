@@ -16777,3 +16777,207 @@ Validation:
 Open follow-ups:
 - rawMapFast MLG oscillation measurement (idle / 2000 / 4000) - the go / no-go of the pure single-sample design vs plenum vibration; if A_osc / MAP > ~3 kPa, add a one-line time-based EMA (tau 2-5 ms) at the arm sample point.
 - A fixed engine-phase sample hits the plenum oscillation at a fixed point -> a constant trimmable offset at idle by design, not a bug.
+
+## 2026-09-29 (15:07-15:08, ~900 rpm idle) - m74_9: variant B CAR-VERIFIED - executor 13.1 -> 5.1 events/cycle, MAP window events gone, no delay regression
+
+Three lockstats windows (~2.3 min / 22.7 s / 50.4 s, all ~900-901 rpm idle) after flashing the variant B build (860e08f9a87). Executor othercb resolved by addr2line against the flashed build's ELF: 4/cycle = startKnockSampling, 1/cycle = onTdcCallback, 1/s = watchDogBuddyCallback. startAveraging / endAveraging are GONE from the executor - exactly the 8 window events per cycle that variant B removes; the remaining 5.13/cycle = 4 knock + 1 onTdc + 1/s WDA, matching the design. onTdc still runs 1/cycle because the TDC event is requested by the sniffer or the misfire planner (no segment callbacks in the table -> misfire off or inactive); the MAP term is off as designed.
+
+Delays (all in the known ~900 rpm idle bands, cf. 09-23/09-25 baselines):
+- Handoff: avg 49.0/50.2/49.7 us (pre 0.85, decode 9.6-9.7, post 36.9-37.9); post 50-100 us = 2.7-2.8% = the scheduling teeth (4/116 = 3.4% theoretical); triggerIsr 50-100 us = 42-49% is the known bin-crossing at the ~49 us total (every phase <50 us on 97-98% of teeth); 100-250 us = 0.35-0.47%; triggerMaxDuration 114-119 us (0.62-0.64 deg).
+- Executor: visits avg 56-59 us; late>=10us 92-93% is the THRESHOLD ARTIFACT (92-96% of events sit in the normal 4-16 us entry+batch bin); maxLateUs 90/30/74 us = 0.16-0.49 deg @900; cbmax 24-26 us (onTdc) in the stable windows; the 46 us (benchOff) is W1-only.
+- Angle clock: dwell/spark/inj lateArm 0 in the stable windows; W1-only: 2 inj tickPast = 2 TIM5 fuel fallbacks (1:1 with sched fuel n=2), immediate=29 (0.69%), maxPullUs=83 (0.45 deg) - all the startup/self-stim transient (benchOn/benchOff n=3 in W1). Stable W2/W3: immediate 0 and 4 (0-0.26%, inside the quiet-idle band), maxPullUs 15-16 (jitter class), refresh disposed/tooth 0.203-0.205 rock-stable, maxLateUs 11-14 us.
+- injCC2 scheduled==fired in every window; window deltas = opens + 6 (0.9%, the known double-window armedAt-passed class, unquantified). tim2clk exact (ARR=FFFFFFFF, T2d~NTd both sleep and busy). nvic all want-matches.
+
+Variant B itself (MapFast publish / arm refresh) has no lockstats counter - car check = clean idle, no C6899 / MAP warnings, no C9009. The MLG rawMapFast oscillation measurement (idle/2000/4000) remains the open go/no-go for the pure single-sample design.
+
+## 2026-09-29 - m74_9: angle-clock consolidation ANALYSIS (single 32-bit timer, 4 channels by event type; TIM5 CC2 mini-queue removal) - NOT implemented
+
+User request: remove the TIM5 CC2 injection-close mini-queue and make it
+independent; the 4-channel-per-timer (12 channels total) layout is overkill
+because there are only 4 event types (dwell / spark / injector open / close)
+that run per cylinder in a round-robin and never overlap in time; is it
+possible to move all four into ONE 32-bit timer; the design must minimize
+planner (handoff) time and ISR execution time.
+
+### Event timeline on this tune (derived from 21129.msq, the decisive fact)
+
+firingOrder 1-3-4-2 -> TDC offsets 0/180/360/540. injectionTimingMode = "End
+of injection" + injectionPhase = -400 deg -> the injection CLOSE is the fixed
+angle: close(N) = TDC(N) - 400 -> close(1)=320, close(3)=500, close(4)=680,
+close(2)=140. open(N) = close(N) - PW_angle, where PW_angle floats with load
+(idle ~2-3 ms = 10-14 deg; 6000 rpm ~4.2 ms = ~150 deg). Dwell start = TDC -
+advance - dwellAngle (idle advance 18-35 deg, dwell ~3-4 ms = ~14-19 deg).
+
+So the four event types form a TIGHT CLUSTER every 180 deg (idle, advance
+25 / dwell 16 / PW 12): [open(N) ~T-52, dwell(N+2 in firing order) ~T-41,
+close(N) = T-40, spark(N+2) ~T-25] relative to TDC(N). Two structural facts:
+(1) close(N) and dwell(N+2) are ~1 deg apart - the tune deliberately ends
+injection right when the next coil starts charging; (2) open(N) and
+dwell(N+2) are ~10 deg apart = ONE tooth (6.2 deg/tooth on 60-2), and at
+6000 rpm the open drifts ~150 deg earlier, breaking the cluster apart.
+
+The user's "events never overlap, there is a gap" is TRUE, but the gaps are
+SMALLER than the arming horizon (1-2 teeth early window + 6 deg LOOKAHEAD),
+so at any instant 2+ events are armed and pending. This is the decisive
+argument: a single-channel chain cannot serve this tune.
+
+### Verdicts
+
+- One channel "chain" (each event arms its successor) - REJECTED. Two
+  counterexamples: (A) idle: dwell(4)@319 fires and arms spark@335, but
+  open(1)@308 / close(1)@320 (armed by the handoff one tooth ahead, a
+  DIFFERENT cylinder's events) fire in between - the chain is busy, every
+  injection falls back to TIM5; (B) high load: open(1)@170 arms close(1)@320
+  (150 deg of pending), the handoff wants dwell(4)@319 before close fires -
+  chain busy -> dwell to TIM5 in the highest-load regime. Fixing this needs a
+  software "deferred" slot + min(spark, nextAngle) logic = 2 slots of state
+  in software with races; two HARDWARE channels do it for free.
+- Recommended: ONE timer (TMR2, 32-bit, PMEN, prio 3), 4 channels BY EVENT
+  TYPE: CC1 = dwell start (angle, handoff-armed, refreshed), CC2 = spark
+  (from-now at dwell fire), CC3 = injection open (angle, handoff-armed,
+  refreshed), CC4 = injection close (from-now at open fire, nowNt + PW).
+  TMR3 and TMR4 are freed entirely; injection_close_hw.{h,cpp} (4-slot queue,
+  rearmCC2 linear search, CriticalSectionLocker) is DELETED. Max simultaneous
+  pending in sequential mode = 2 (one angle event + one time chain); the
+  per-type busy-check routes wasted-spark / batch / multispark / trailing /
+  simultaneous / stage-2 to the TIM5 fallback (never hits on m74_9).
+
+### Why this meets the "minimal planner / execution time" goal
+
+- Refresh: 12 channels -> 4 (2 real: dwell+open are angle-domain; spark and
+  close carry the 780 deg from-now sentinel and are skipped); a one-bit
+  armedMask early-out makes the refresh free on the ~93% of teeth that have
+  nothing armed (vs 12 `!action` checks today).
+- Execution: the close ISR drops the queue dispatch + rearmCC2 search + the
+  critical section; the open ISR writes CCR4 directly instead of inserting
+  into the queue. The 2026-09-23 +1-shift race (open prio 3 preempting the
+  close dispatcher prio 5) disappears: all four types share ONE vector at
+  prio 3 and cannot preempt each other; the close rises from prio 5 (the
+  most blocked path, behind handoff + TMR fires) to prio 3.
+- Bonus: the 16-bit PW > 8 ms limit is gone (the reason close was exiled to
+  TIM5 CC2 on 2026-09-01); TMR3/TMR4 < 200 rpm degradation gone; the close
+  GAINS a TIM5 fallback it never had (today a CC2 failure = injector stuck
+  open).
+- Honest floor: the dominant remaining handoff costs are the window scans
+  (scheduleDwellEarlyIfDue / handleFuel / onTriggerEventSparkLogic,
+  ~15-20 us) and the injector model + wallFuel on hit teeth (~20 us) - they
+  are "which cylinder is due" logic, not angle-clock overhead, and cannot be
+  removed by this refactor.
+
+### Risks / invariants carried over
+
+- Single point of failure: if TMR2's clock degrades again (2026-09-20 class),
+  all four types fall back to TIM5 at once (today only dwell does). The TIM5
+  fallbacks + charge-anchored rescue are proven; tim2clk diagnostic stays.
+- One long ISR body (e.g. the C9009 print in dwell, ~189 us) blocks all four
+  types - no regression vs today (same prio 3 blocked spark/open already, and
+  close waited behind everything at prio 5).
+- Load-bearing invariants preserved: ordered arm sequence (SR clear -> CCR ->
+  action -> IE enable), channel released BEFORE action.execute(), 780 deg
+  sentinel so refresh never touches from-now channels, NO cancel on
+  rpm-flap/firmwareError, rescue anchored at actual charge (2.5x dwell),
+  rccEnableTIM2(true) + PMEN, never pre-schedule a TIM5 event whose action is
+  re-armed from inside a TMR ISR.
+- Cancel becomes by-type instead of by-cylinder (at most one pending event
+  per type in sequential mode); AngleBasedEvent.cylinderIndex can be dropped.
+
+### Implementation plan (~350 lines touched)
+
+angle_clock.{h,cpp} (one timer, s_ch[4] by type, armCloseFromNow, armedMask
+refresh, delete TMR3/4 + 16-bit math), delete injection_close_hw.{h,cpp}
+(close arms via angleClockArmCloseFromNow + TIM5 fallback in
+turnInjectionPinHigh; timerConfig CC2 back to nullptr), spark_logic.cpp
+(from-now spark arm without cylinder index), trigger_scheduler.cpp
+(cancel-by-type, drop cylinderIndex), lockstats new format (angclk
+dwell/spark/open/close fired/lateArm, no injCC2), unit tests
+(test_angle_clock.cpp + scheduler tests), bench self-stim, then car.
+
+Validation: analysis only - no code touched, no build/tests run. Evidence
+code-verified against the working tree (angle_clock.cpp, injection_close_hw.cpp,
+fuel_schedule.cpp, spark_logic.cpp, main_trigger_callback.cpp,
+trigger_scheduler.cpp) and the 21129.msq constants above. Committed locally,
+never pushed.
+
+Open follow-up: decide between implementing the full 4-channel-by-type
+refactor or the minimal "close off TIM5 only" first step (CC4 on TMR2, the
+other three timers untouched) as a lower-risk intermediate.
+
+## 2026-09-29 - m74_9: single-timer angle clock IMPLEMENTED - one TMR2, 4 channels by event type, TIM5 CC2 mini-queue gone from the image
+
+The 2026-09-29 consolidation analysis (previous entry) is implemented: the
+three-timer angle clock (TMR2 dwell / TMR4 spark / TMR3 injection + TIM5 CC2
+injection-close mini-queue) collapses onto ONE 32-bit timer (TMR2, PMEN,
+VectorB0, prio 3), one channel per event TYPE:
+  CC1 = dwell start        (angle-domain, armed by the handoff, refreshed)
+  CC2 = spark fire         (from-now at dwell fire, nowNt + dwell)
+  CC3 = injection open     (angle-domain, armed by the handoff, refreshed)
+  CC4 = injection close    (from-now at open fire, nowNt + PW)
+
+Change inventory:
+
+| File | Change |
+| --- | --- |
+| firmware/hw_layer/angle_clock/angle_clock.h/.cpp | rewritten: s_ch[4] by event type (AngleClockChannel), single TMR2 driver, dispatch() on one ISR, armedMask, per-type fired/lateArm/busy counters, DwellArmRefusal without cyl (branch 3 = busy added), tim2clk diag kept, 16-bit machinery / TMR3 / TMR4 / dispatch16 deleted |
+| firmware/hw_layer/injection_close_hw.h/.cpp | gated to !EFI_ANGLE_CLOCK (m74_9 image has NO CC2-queue symbols, nm-verified); non-angle-clock boards keep the mini-queue bit-for-bit |
+| firmware/hw_layer/ports/stm32/microsecond_timer_stm32.cpp | CC2 callback + CCMR1 OC2M behind !EFI_ANGLE_CLOCK (CC2 unused on the angle-clock build) |
+| firmware/controllers/engine_cycle/fuel_schedule.cpp/.h | turnInjectionPinHigh arms close via angleClockArmInjectionCloseFromNow + TIM5 executor fallback; #else keeps scheduleInjectionCloseHW |
+| firmware/controllers/engine_cycle/spark_logic.cpp | from-now spark arm + cancel without cylinder index; overFireSparkAndPrepareNextSchedule cancels the spark channel directly |
+| firmware/controllers/system/timer/trigger_scheduler.cpp | cancel() back to queue-only (no angleClockCancelSpark funnel); angle_clock.h include dropped |
+| firmware/controllers/algo/event_registry.h | AngleBasedEvent.cylinderIndex REMOVED (was the O(1) cancel tag; per-type cancel needs no tag) |
+| firmware/controllers/engine_cycle/main_trigger_callback.cpp | armInjection / lookahead-open without cylinder index |
+| firmware/config/boards/m74_9/board_configuration.cpp | lockstats new format: per-type angclk lines (fired/lateArm/busy), nvic T2 only, injCC2 line removed; m74_9AngclkChannelName helper |
+| firmware/hw_layer/ports/at32/{interrupt_priority.h,at32f4/cfg/mcuconf.h} | ladder comments -> TMR2 only; TIM3/TIM4 no longer claimed by the angle clock |
+
+Design points carried into the code:
+- Busy-check in every arm (dwell/open by angle, spark/close from-now): a
+  channel that still holds a pending event of the same type fails the arm ->
+  TIM5 fallback (wasted spark / batch / storm over-arm; never hits in
+  sequential + individual-coils mode).
+- The close channel finally gets a TIM5 fallback it never had (a CC2 failure
+  today = injector stuck open).
+- 32-bit from-now arms remove the PW > 8 ms limit that exiled the close to
+  TIM5 CC2 on 2026-09-01.
+- armedMask early-out makes angleClockRefresh a single bit test on the ~93%
+  of teeth that arm nothing; only the 2 angle channels (dwell, open) are
+  refreshable - spark/close carry the 780 deg from-now sentinel.
+- All load-bearing invariants preserved: ordered arm sequence (SR clear ->
+  CCR -> action -> IE), two-pass dispatch - all due channels released before
+  any action executes, so a re-arm from inside an action (dwell arms spark,
+  open arms close - all on one vector) can never hit a busy channel, even in
+  the exactly-100%-duty corner where the previous close and the next open
+  match in the same ISR entry - NO cancel on rpm-flap / firmwareError,
+  charge-anchored 2.5x-dwell rescue on TIM5, rccEnableTIM2(true) + PMEN
+  before the ARR write, never pre-schedule a TIM5 event whose action is
+  re-armed from a TMR ISR (the 2026-09-01 double-fire rule - the close fallback
+  is armed from the open ISR, so onTriggerTooth still does NOT pre-schedule the
+  close for sequential mode).
+
+Validation:
+- compile_m74_9.sh BUILD SUCCESSFUL. nm: VectorB0 strong (TMR2 ISR),
+  VectorB4/B8 weak default stubs, NO hwInjectionCloseCallback /
+  scheduleInjectionCloseHW / getInjectionCC2* symbols in the image; the new
+  angleClockArmInjectionCloseFromNow / per-type arms are present.
+- unit tests: GCC 1181 tests -> 1169 passed / 12 failed = exactly the
+  documented pre-existing list (injection/trigger scheduling area), nothing
+  new. clang (make clean && make CC=clang -j12): identical 1169 / 12.
+  AngleClock suite: 4/4 passed.
+- NOT bench/car-tested. The car verdict is the next session: lockstats must
+  show angclk dwell/spark/open/close fired 1:1:1:1 in sequential running,
+  lateArm=0 for dwell/spark/open in stable rpm, no injCC2 line, tim2clk
+  healthy (ARR=FFFFFFFF, both T2d ~ NTd), no C9009/C935x/C9002.
+
+Build gotcha hit while validating (pre-existing, recorded in CLAUDE.md):
+the m74_9 board build and the unit_tests build SHARE
+firmware/controllers/generated/ - the board build regenerates
+page_4_generated.h with the 30-column VE_RPM_COUNT/IGN_RPM_COUNT layout and
+the unit_tests build then skips regen (file newer than inputs) and fails the
+page4_s static_assert (1268 vs 2220) because the unit tests compile with the
+default 16-column defines. Recover with `touch firmware/integration/
+rusefi_config.txt` + `config_page_4.txt` before the unit_tests make. Never
+commit the generated files.
+
+Open follow-ups:
+- Bench self-stim + car validation of the new build (the checklist above).
+- Optional later cleanup now unlocked: the FALSE-build-only
+  sparkFiredNoOpBeforeDwell / angle-queue spark remnants, the now-unused
+  angleClockCancelDwell/Injection/Close wrappers (kept for symmetry).

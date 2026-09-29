@@ -66,14 +66,18 @@ public:
 
 	// Injection close delay in NT ticks (= US2NT(durationUsStage1)), stored
 	// by onTriggerTooth for use in turnInjectionPinHigh which arms the close
-	// on TIM5 CC2 (hardware 32-bit compare) at the ACTUAL open moment.
+	// at the ACTUAL open moment: on the TMR2 angle clock CC4 (EFI_ANGLE_CLOCK,
+	// 32-bit hardware compare) or the TIM5 CC2 mini-queue (time-based builds).
 	uint32_t injectionEndDelayNt = 0;
 };
 
-// Schedule injection close on TIM5 CC2 mini-queue.
+#if !EFI_ANGLE_CLOCK
+// Schedule injection close on TIM5 CC2 mini-queue (time-based builds only;
+// the angle-clock build arms the close on TMR2 CC4).
 // Called from turnInjectionPinHigh after output->open(). cyl = cylinder 0..3.
 void scheduleInjectionCloseHW(int cyl, efitick_t nowNt, uint32_t delayNt, action_s action);
 void cancelInjectionCloseHW(int cyl);
+#endif // !EFI_ANGLE_CLOCK
 
 void turnInjectionPinHigh(scheduler_arg_t arg);
 void turnInjectionPinLow(InjectionEvent *event);

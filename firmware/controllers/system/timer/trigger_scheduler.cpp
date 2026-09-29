@@ -1,7 +1,6 @@
 #include "pch.h"
 
 #include "event_queue.h"
-#include "angle_clock.h"
 #include "trigger_central.h"
 
 bool TriggerScheduler::assertNotInList(AngleBasedEvent *head, AngleBasedEvent *element) {
@@ -93,15 +92,6 @@ void TriggerScheduler::cancel(AngleBasedEvent* event) {
 	chibios_rt::CriticalSectionLocker csl;
 
 	LL_DELETE2(m_angleBasedEventsHead, event, nextToothEvent);
-
-#if EFI_ANGLE_CLOCK
-	// The event may already be armed on the hardware angle clock (armed one
-	// tooth ahead and removed from this queue). Kill the TMR4 spark channel
-	// directly by cylinder index - O(1) and no action-pointer search needed.
-	if (event->cylinderIndex >= 0) {
-		angleClockCancelSpark(event->cylinderIndex);
-	}
-#endif // EFI_ANGLE_CLOCK
 }
 
 TRIGGER_RAM_CODE void TriggerScheduler::scheduleEventsUntilNextTriggerTooth(float rpm,

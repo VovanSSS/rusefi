@@ -131,7 +131,7 @@ TRIGGER_RAM_CODE void InjectionEvent::onTriggerTooth(efitick_t nowNt, float curr
 	// accurate.
 	bool scheduleEarly = nextNextPhase != nextPhase && isPhaseInRange(eventAngle, nextPhase, nextNextPhase + ANGLE_CLOCK_LOOKAHEAD_DEG);
 	if (scheduleEarly) {
-		angleClockNoteLookaheadInj(eventAngle, nextNextPhase);
+		angleClockNoteLookaheadOpen(eventAngle, nextNextPhase);
 	}
 #else
 	bool scheduleEarly = false;
@@ -284,9 +284,9 @@ TRIGGER_RAM_CODE void InjectionEvent::onTriggerTooth(efitick_t nowNt, float curr
 	efitick_t startTime = sumTickAndFloat(nowNt, USF2NT(delayUs));
 
 #if EFI_ANGLE_CLOCK
-	if (angleClockArmInjection(this->cylinderNumber, eventAngle, startAction, currentPhase, nextPhase)) {
-		// armed on TMR3 (injection timer) - the ends below still follow in
-		// the time domain, computed from the intended start moment.
+	if (angleClockArmInjection(eventAngle, startAction, currentPhase, nextPhase)) {
+		// armed on TMR2 CC3 (injection-open channel) - the close follows from
+		// turnInjectionPinHigh at the actual open moment.
 	} else
 #endif // EFI_ANGLE_CLOCK
 	{

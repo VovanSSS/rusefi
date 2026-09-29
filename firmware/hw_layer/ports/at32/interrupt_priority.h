@@ -12,10 +12,10 @@
  * primitives (CriticalSectionLocker etc.) must stay at >= 3.
  *
  *   0  EXTI9_5   raw crank-edge capture (fast IRQ, ~2-3 us)
- *   3  TMR2/4/3  angle-clock fires: dwell start / spark / injection start
+ *   3  TMR2      angle-clock fires: dwell start / spark / injection open+close
  *   4  I2C1_EV   trigger decode + angle-clock arming ("handoff")
- *   5  TIM5      executor CC1/CC2: injection close, overdwell rescue,
- *                MAP/knock windows, soft PWM, watchdog buddy
+ *   5  TIM5      executor CC1: overdwell rescue, MAP/knock windows,
+ *                soft PWM, watchdog buddy (CC2 unused on the angle-clock build)
  *   6  TMR7      L9779 WDA feed (~100 us SPI burst every ~28 ms)
  *   7  ADC1/2/3  slow ADC (CLT/IAT/lambda/VBATT)
  *   8  TIM6      fast-ADC trigger (GPT)
@@ -41,7 +41,7 @@
 #define EFI_IRQ_EXTI_PRIORITY             CORTEX_MAXIMUM_PRIORITY
 #endif
 
-// Trigger decode + angle-clock arming (handoff). BELOW the TMR2/3/4 fires
+// Trigger decode + angle-clock arming (handoff). BELOW the TMR2 fires
 // (prio 3) since 2026-09-28 - a fire preempts the handoff mid-decode, so the
 // fire itself fires with only the ~1-2 us NVIC entry latency, never waiting
 // for the decode (the fires are the real-time product: dwell/spark/injection
@@ -57,29 +57,27 @@
 // move into the fast 0-2 levels.
 #define EFI_IRQ_EXTI_HANDOFF_PRIORITY     4
 
-// The scheduling timer (TIM5 CC1/CC2) - event executor for everything that is
-// NOT on the angle clock: injection close (CC2), overdwell rescue, MAP widows,
-// knock windows, soft PWM, watchdog buddy. BELOW the handoff AND below the
-// TMR fires: the fires preempt its run-to-completion batches, so a fire's
-// lateness is never the executor's queuing problem, and the executor can no
-// longer stall the decode. What remains on TIM5 tolerates a delay bound by
-// one fire + one handoff: close PW error is bound on 2-20 ms PWs, the
-// 2.5x-dwell rescue and MAP/knock windows carry millisecond margins.
+// The scheduling timer (TIM5 CC1) - event executor for everything that is NOT
+// on the angle clock: overdwell rescue, MAP widows, knock windows, soft PWM,
+// watchdog buddy. BELOW the handoff AND below the TMR2 fires: the fires
+// preempt its run-to-completion batches, so a fire's lateness is never the
+// executor's queuing problem, and the executor can no longer stall the decode.
+// What remains on TIM5 tolerates a delay bound by one fire + one handoff:
+// the 2.5x-dwell rescue and MAP/knock windows carry millisecond margins.
 // Historical: the AT32 mcuconf defines no STM32_PWM_TIM5_IRQ_PRIORITY, so the
 // TIMv1 LLD defaults it to 7 - the define here is what keeps it a kernel
 // priority at all.
 #define EFI_IRQ_SCHEDULING_TIMER_PRIORITY 5
 #define STM32_PWM_TIM5_IRQ_PRIORITY       EFI_IRQ_SCHEDULING_TIMER_PRIORITY
 
-// Three hardware angle-clock timers, at the TOP kernel priority (3), ABOVE
-// the trigger handoff (4) since 2026-09-28: their ISRs execute
-// dwell/spark/injection actions directly and must fire with only NVIC entry
-// latency - they never wait for the decode (the 2026-09-23 +1 shift put the
-// fires at 4 below the handoff; a fire then waited for a running decode and
-// maxLateUs grew to the decode duration).
-//   TMR2 (32-bit, VectorB0, IRQ 28) -> dwell starts
-//   TMR4 (16-bit, VectorB8, IRQ 30) -> spark fires
-//   TMR3 (16-bit, VectorB4, IRQ 29) -> injection starts
+// The hardware angle-clock timer, at the TOP kernel priority (3), ABOVE
+// the trigger handoff (4) since 2026-09-28: its ISR executes dwell/spark/
+// injection actions directly and must fire with only NVIC entry latency -
+// it never waits for the decode (the 2026-09-23 +1 shift put the fires at 4
+// below the handoff; a fire then waited for a running decode and maxLateUs
+// grew to the decode duration).
+//   TMR2 (32-bit, VectorB0, IRQ 28) -> dwell CC1 / spark CC2 / injection
+//   open CC3 / injection close CC4 (single-timer consolidation 2026-09-29).
 #define EFI_IRQ_ANGLE_CLOCK_PRIORITY      3
 
 // The L9779 WDA feed (free-running auto-reload TMR7): BELOW the executor. Its

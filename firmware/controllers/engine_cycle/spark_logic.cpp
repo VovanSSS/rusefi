@@ -217,9 +217,11 @@ TRIGGER_RAM_CODE void overFireSparkAndPrepareNextSchedule(IgnitionEvent *event) 
 	engine->module<TriggerScheduler>()->cancel(&event->sparkEvent);
 
 #if EFI_ANGLE_CLOCK
-	// Also kill a time-based fallback fire (armed when the TMR2 arm failed):
-	// it would fire after this rescue and double-fire an already-low coil
-	// (the bench C9012 out-of-order coil off).
+	// Also kill the TMR2-armed from-now spark (the channel holds the fire this
+	// rescue is about to replace) and a time-based fallback fire (armed when
+	// the TMR2 arm failed): either would fire after this rescue and double-fire
+	// an already-low coil (the bench C9012 out-of-order coil off).
+	angleClockCancelSpark();
 	engine->scheduler.cancel(&event->sparkEvent.eventScheduling);
 #endif // EFI_ANGLE_CLOCK
 
@@ -444,15 +446,15 @@ TRIGGER_RAM_CODE void turnSparkPinHighStartCharging(IgnitionEvent *event) {
 	// no-op -> dwell fired -> TIM5 re-arm. The fix: always arm the spark HERE
 	// (after TMR2 has fired the dwell), with delay = sparkDwell from nowNt.
 	// This guarantees the coil is always charged before the spark fires.
-	// Cancel any stale angle-queue TMR4 arm first (it may carry the wrong basis);
+	// Cancel any stale spark arm first (it may carry the wrong basis);
 	// if it already fired as a no-op the channel is already free.
-	angleClockCancelSpark(event->cylinderIndex);
+	angleClockCancelSpark();
 	engine->scheduler.cancel(&event->sparkEvent.eventScheduling);
 	{
 		const uint32_t delayNt = static_cast<uint32_t>(MSF2NT(event->sparkDwell));
 		const efitick_t sparkTime = sumTickAndFloat(nowNt, static_cast<float>(delayNt));
-		if (!angleClockArmSparkFromNow(event->cylinderIndex, nowNt, delayNt,
-									  action_s::make<fireSparkAndPrepareNextSchedule>(event))) {
+		if (!angleClockArmSparkFromNow(nowNt, delayNt,
+										  action_s::make<fireSparkAndPrepareNextSchedule>(event))) {
 			engine->scheduler.schedule("spark", &event->sparkEvent.eventScheduling,
 									   sparkTime, action_s::make<fireSparkAndPrepareNextSchedule>(event));
 		}
@@ -598,7 +600,7 @@ TRIGGER_RAM_CODE void scheduleSparkEvent(bool limitedSpark, IgnitionEvent *event
 #endif // EFI_ANGLE_CLOCK
 
 #if EFI_ANGLE_CLOCK
-		if (!angleClockArmDwell(event->cylinderIndex, dwellAngle, action_s::make<turnSparkPinHighStartCharging>( event ), currentPhase, nextPhase, earlyWindow))
+		if (!angleClockArmDwell(dwellAngle, action_s::make<turnSparkPinHighStartCharging>( event ), currentPhase, nextPhase, earlyWindow))
 #endif // EFI_ANGLE_CLOCK
 		{
 			engine->scheduler.schedule("dwell", &event->dwellStartTimer, chargeTime, action_s::make<turnSparkPinHighStartCharging>( event ));
@@ -643,8 +645,6 @@ TRIGGER_RAM_CODE void scheduleSparkEvent(bool limitedSpark, IgnitionEvent *event
 		// FALSE build: the spark is queued in the angle queue and fired when the
 		// tooth arrives. An overdwell rescue protects the coil if the tooth never
 		// comes.
-		event->sparkEvent.cylinderIndex = event->cylinderIndex;
-
 		bool isTimeScheduled = engine->module<TriggerScheduler>()->scheduleOrQueue(
 			"spark",
 			&event->sparkEvent, edgeTimestamp, sparkAngle,

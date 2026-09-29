@@ -10,9 +10,6 @@
 #include "m74_9_vr_model.h"
 #include "m74_9_lin.h"
 #include "runtime_state.h"
-#if EFI_PROD_CODE && HAL_USE_PWM
-#include "injection_close_hw.h"
-#endif
 #include "digital_input_exti.h"
 #include "pwm_generator_logic.h"
 #include "ignition_controller.h"
@@ -857,6 +854,25 @@ static const char* m74_9ExecKindName(int kind) {
 	}
 }
 
+#if EFI_ANGLE_CLOCK
+// Printable name of an angle-clock channel (event type). Same helper pattern
+// as m74_9ExecKindName (macros vs commas, see above).
+static const char* m74_9AngclkChannelName(int ch) {
+	switch (ch) {
+	case ANGLE_CLOCK_CH_DWELL:
+		return "dwell";
+	case ANGLE_CLOCK_CH_SPARK:
+		return "spark";
+	case ANGLE_CLOCK_CH_OPEN:
+		return "open";
+	case ANGLE_CLOCK_CH_CLOSE:
+		return "close";
+	default:
+		return "?";
+	}
+}
+#endif // EFI_ANGLE_CLOCK
+
 void setup_custom_board_overrides() {
 	custom_board_InitHardware = m74_9_boardInitHardware;
 	custom_board_DefaultConfiguration = m74_9_boardDefaultConfiguration;
@@ -1152,24 +1168,26 @@ void setup_custom_board_overrides() {
 		printPwmStats();
 
 #if EFI_ANGLE_CLOCK
-		// Three-timer angle clock: TMR2=dwell(IRQ28) TMR4=spark(IRQ30) TMR3=inj(IRQ29).
-		// lateArm: target beyond 30 deg lookahead or tick already past (-> TIM5 fallback).
-		// immediate: events found past-due at refresh, fired NOW (matching FALSE build).
-		// All want nvic prio 3 (above the handoff since 2026-09-28).
-		efiPrintf("angclk dwell fired=%u lateArm=%u  spark fired=%u lateArm=%u  inj fired=%u lateArm=%u",
-			(unsigned)angleClockFiredDwell(), (unsigned)angleClockLateArmDwell(),
-			(unsigned)angleClockFiredSpark(), (unsigned)angleClockLateArmSpark(),
-			(unsigned)angleClockFiredInj(),   (unsigned)angleClockLateArmInj());
-		efiPrintf("angclk maxLateUs=%u immediate=%u initRate=%u/%u psc=%u nvic T2=%u T4=%u T3=%u (want 3)",
+		// Single-timer angle clock (TMR2, 32-bit, prio 3): CC1=dwell CC2=spark
+		// CC3=injection open CC4=injection close. lateArm: the arm failed and the
+		// caller fell back to TIM5 (1:1 with the sched dwell/fuel fallback counts);
+		// busy: the channel still held a pending event of the same type (wasted
+		// spark / batch / storm over-arm - never hits in sequential mode).
+		for (int ch = 0; ch < 4; ch++) {
+			efiPrintf("angclk %s fired=%u lateArm=%u busy=%u",
+				m74_9AngclkChannelName(ch),
+				(unsigned)angleClockFiredCount(ch),
+				(unsigned)angleClockLateArmCount(ch),
+				(unsigned)angleClockBusyCount(ch));
+		}
+		efiPrintf("angclk maxLateUs=%u immediate=%u initRate=%u/%u psc=%u nvic T2=%u (want 3)",
 			(unsigned)(angleClockMaxLateTicks() / (NT_PER_SECOND / 1000000)),
 			(unsigned)angleClockImmediateFireCount(),
 			(unsigned)angleClockInitAcDelta(), (unsigned)angleClockInitNtDelta(),
 			(unsigned)angleClockInitPsc(),
-			(unsigned)((NVIC->IP[28] >> 4) & 0xF),
-			(unsigned)((NVIC->IP[30] >> 4) & 0xF),
-			(unsigned)((NVIC->IP[29] >> 4) & 0xF));
+			(unsigned)((NVIC->IP[28] >> 4) & 0xF));
 		// Refresh write-split telemetry (2026-09-26): skip = armed CCR already
-		// optimal (steady no-op, ~12 x teeth); write = re-anchors that pulled the
+		// optimal (steady no-op, ~2 x teeth); write = re-anchors that pulled the
 		// event EARLIER by more than the deadband - only real accel/decel
 		// corrections, since sub-deadband pulls are per-tooth basis jitter and are
 		// absorbed into jitter=; jitter = the absorbed sub-2us pulls (the "armed
@@ -1179,7 +1197,7 @@ void setup_custom_board_overrides() {
 		// large while write stays high the ARM basis is genuinely stale (next
 		// lever is the arm side, not refresh); if jitter dominates and maxPullUs
 		// is a few us the old write count was just basis jitter.
-		efiPrintf("angclk refresh skip=%u write=%u jitter=%u pending=%u maxPullUs=%u (12ch/tooth; skip=steady no-op)",
+		efiPrintf("angclk refresh skip=%u write=%u jitter=%u pending=%u maxPullUs=%u (2 angle ch/tooth; skip=steady no-op)",
 			(unsigned)angleClockRefreshSkip(), (unsigned)angleClockRefreshReanchored(),
 			(unsigned)angleClockRefreshJitter(),
 			(unsigned)angleClockRefreshPending(),
@@ -1189,24 +1207,24 @@ void setup_custom_board_overrides() {
 		// events that used to fall to the current-window arm at rem ~ 0 and fire
 		// past-due (immediate). Engaged when > 0; compare against immediate= in
 		// the maxLateUs line (expect immediate ~ 0 over a drive when engaged).
-		efiPrintf("angclk lookahead dwell=%u inj=%u (boundary targets armed 1 tooth early)",
-			(unsigned)angleClockLookaheadDwell(), (unsigned)angleClockLookaheadInj());
+		efiPrintf("angclk lookahead dwell=%u open=%u (boundary targets armed 1 tooth early)",
+			(unsigned)angleClockLookaheadDwell(), (unsigned)angleClockLookaheadOpen());
 		// Dwell refusal split: which arm-failure branch fires, plus the
 		// last-refusal phase snapshot to measure the caller-vs-angle-clock
 		// phase divergence directly.
 		efiPrintf("angclk dwell lateArm split: guard=%u tickPast=%u",
 			(unsigned)angleClockLateArmDwellGuard(),
 			(unsigned)angleClockLateArmDwellTickPast());
-		// Injection split (guard = phase/basis refusal, tickPast = handoff
-		// stall). The growing angclk inj lateArm is one of these two.
-		efiPrintf("angclk inj lateArm split: guard=%u tickPast=%u",
-			(unsigned)angleClockLateArmInjGuard(),
-			(unsigned)angleClockLateArmInjTickPast());
+		// Injection-open split (guard = phase/basis refusal, tickPast = handoff
+		// stall). The growing angclk open lateArm is one of these two.
+		efiPrintf("angclk open lateArm split: guard=%u tickPast=%u",
+			(unsigned)angleClockLateArmOpenGuard(),
+			(unsigned)angleClockLateArmOpenTickPast());
 		{
 			const DwellArmRefusal& r = angleClockDwellRefusal();
 			if (r.branch != 0xFF) {
-				efiPrintf("angclk dwell refusal branch=%u win=%u cyl=%u target=%.1f callerPh=%.1f/%.1f curPh=%.1f cycle=%.1f tpd=%.1f rem=%.1f atTick=%u cnt=%u tot=%u",
-					(unsigned)r.branch, (unsigned)r.window, (unsigned)r.cyl,
+				efiPrintf("angclk dwell refusal branch=%u win=%u target=%.1f callerPh=%.1f/%.1f curPh=%.1f cycle=%.1f tpd=%.1f rem=%.1f atTick=%u cnt=%u tot=%u",
+					(unsigned)r.branch, (unsigned)r.window,
 					r.targetAngle, r.callerPhase, r.callerNextPhase,
 					r.currentPhase, r.cycleDeg, r.ticksPerDegree, r.remaining,
 					(unsigned)r.atTick, (unsigned)r.ccrCnt, (unsigned)r.lateArmTotal);
@@ -1214,12 +1232,6 @@ void setup_custom_board_overrides() {
 				efiPrintf("angclk dwell refusal: none this window");
 			}
 		}
-		// TIM5 CC2 injection close: cc2fired must track inj_open_TMR3.
-		// cc2fired=0 means injectors never close (CC2 not firing).
-		efiPrintf("injCC2 scheduled=%u fired=%u nvic TIM5=%u (want 5)",
-			(unsigned)getInjectionCC2ScheduledCount(),
-			(unsigned)getInjectionCC2FiredCount(),
-			(unsigned)((NVIC->IP[50] >> 4) & 0xF));
 		// TMR2 runtime clock sanity (the 2026-09-20 dwell lateArm root cause).
 		angleClockTimerDiag();
 		angleClockResetStats();
