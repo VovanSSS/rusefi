@@ -16574,3 +16574,177 @@ L406-482, fuel_schedule.cpp L19-51, map_averaging.cpp L190-241,
 injection_close_hw.cpp L107-176, angle_clock.cpp L171-227, os_util.h L25).
 No build/tests run - no code touched. Not car-tested (analysis only).
 Committed locally, never pushed.
+
+## 2026-09-29 - m74_9: analysis - moving MAP sampling to free-running (and the per-cylinder instant-value variant): ISR cost inventory, angle-window vs free-running, variant A vs B latency
+
+User thread: 'an analysis of moving MAP sampling into free-running so it
+does not occupy ISR time', follow-ups: 'what if, instead of sampling MAP, we
+take the current value once, per cylinder, at mixture-formation time' and
+'which of A/B is cheaper in latency'. Deliverable: analysis only - no code
+change. Every claim code-verified against the working tree.
+
+### 1. Where MAP currently costs ISR time (3 places, quantified)
+
+- (a) Fast ADC ISR (~6 kHz, prio 8): onFastAdcComplete (hardware.cpp:112-130)
+  -> mapAveragingAdcCallback -> MapAverager::submit (map_averaging.cpp:92):
+  m_function->convert() on EVERY sample - paid even with
+  isMapAveragingEnabled=no at runtime, because MODULE_MAP_AVERAGING is a
+  compile flag and the convert is unconditional; when the window is open
+  (50 deg out of 180 deg per cyl region = ~28% of the time):
+  CriticalSectionLocker + counter/sum - a CS lock (BASEPRI) inside a 6 kHz
+  ISR. ~0.3-0.8 us x 6000 = 2-5% of CPU, always.
+- (b) TIM5 executor (prio 5): 9 events per cycle (car-validated 09-24
+  lockstats: 4x startAveraging ~36 us + 4x endAveraging ~34-47 us +
+  1x onTdcCallback ~28-49 us doing 4x cancel + 4x scheduleByAngle = 8 queue
+  ops) = ~315-330 us per cycle. 1.5% CPU @ 2350 rpm (matches the measured
+  executor 1.52%) -> ~3.3% @ 6000 rpm - scales with rpm. The same events
+  give the 50-100 us schedulerIsr batch mode + the 16-256 us late tail;
+  historically (09-22, executor at prio 3) they were the preemption stall.
+- (c) Handoff (prio 4): tdcMarkCallback 1 scheduleByAngle insert per cycle
+  + gate (~1-2 us/cycle); refreshInjectionMassForCylinder (main_trigger_
+  callback.cpp:154) 1 multiply - kept in every design below.
+- Conclusion: the dominant article is NOT the per-sample 'sampling' but the
+  WINDOW EVENTS (8/cycle + planner), and they scale with rpm; the per-sample
+  ADC cost is second.
+
+### 2. The core incompatibility: angle window vs free-running
+
+- The 50 deg window at a fixed crank angle requires the angle at open/close
+  by definition -> either executor events (today) or the per-tooth handoff
+  scan (pre-09-23, worse). Free-running = abandoning the angle semantics:
+  the window becomes a time constant (tau), not a phase region.
+- On the SHARED PLENUM (21129) the angle semantics is physically not
+  needed: the pressure is one global slow variable, all 4 windows measure
+  the same pressure (recorded in CLAUDE.md), and the per-cyl attribution
+  (fill-by-previous-cylinder, successor rescale) is a virtual construct for
+  ITB genericness. Phase selectivity (the 100-130 deg 'stable region')
+  matters only on ITB, where each cyl sees its own runner pressure.
+
+### 3. Design candidates
+
+- D1 - free-running EMA at 200 Hz: MapAveragingModule::onFastCallback
+  ALREADY runs at 200 Hz in the main loop (engine.cpp:603 apply_all, NOT an
+  ISR) - today it only computes mapAveragingStart[]. Move there: v =
+  convert(rawMapFast) (the convert leaves the ADC ISR); mapEma +=
+  (1 - exp(-dt/tau)) x (v - mapEma), dt = 5 ms, tau =
+  mapAveragingDuration x oneDegreeMs (reproduces the window time constant:
+  125 ms @ 800 rpm, 5 ms @ 6000); min ring averagedMapRunningBuffer with
+  N = 4 x cycle_time/5ms clamp [4,64] (preserves 'min over the last cycle'
+  - today's min spans 4 window closes = 1 cycle); MapFast := min(ring),
+  mapPerCylinder[0..3] := the same. Because MapFast now changes only at
+  200 Hz, in sync with the mass write (engine2.cpp:242-270), the basis
+  mechanism is structurally a no-op: the handoff fraction
+  MapFast/basis[c] = 1 (kept as a no-op for non-SD + safety). Ordering
+  note: apply_all(onFastCallback) runs AFTER engineState.
+  periodicFastCallback() (engine.cpp:603) - the mass uses the previous
+  tick's EMA (5 ms
+  lag = the standard one-step-ahead pipeline, same shape as today's
+  one-window-ahead); do not reorder (affects other modules).
+- D2a (variant A) - single instantaneous value at 200 Hz for all cylinders:
+  referenceMap = convert(rawMapFast) at the tick; the handoff multiply is
+  removed entirely. Simplest code. The 200 Hz tick is not phase-locked to
+  the engine - see section 5.
+- D2b (variant B, recommended for m74_9) - per-cylinder instantaneous at arm
+  time in the handoff: the existing fraction at arm reads convert(rawMapFast)
+  NOW instead of the last closed window: mass[c] = mass200 x instant(at arm
+  c) / referenceMap. Phase-locked per cylinder (arm c is angle-locked, 1-2
+  teeth before the actual injection start).
+- What the D2 variants delete (one more step beyond D1): the tau/alpha
+  min-ring machinery as well; the basis per-cyl array dies (a single
+  referenceMap scalar suffices - there is no executor rescale left to
+  desync it). Both D2 variants are the MINIMAL possible pipeline: the ADC
+  ISR = the raw latch that already exists (hardware.cpp:126), zero events,
+  zero planner, zero TDC event (when misfire is off), zero averager, zero
+  pin pulses.
+- What ALL designs delete (vs today): 8 executor events per cycle + the MAP
+  part of onTdc (4 cancel + 4 insert); the TDC event + the tdc-insert in
+  the handoff when misfire/sniffer are off; the convert + CS lock + submit
+  from the 6 kHz ADC ISR; the mapSampler[4] scheduling_s machinery; the
+  mapAveragingPin sniffer pulses (display artifact anyway); and the whole
+  PLANNER HAZARD CLASS: cancel-before-rearm double-insert under accel
+  re-planning, the off-by-tdcPosition bug class (the 09-24 bug), and the
+  option-B prediction drift (windows are planned up to a full cycle ahead -
+  54 ms @ 800 rpm, 7 ms @ 6000 - on the current oneDegreeUs; EMA/instant
+  values are not predictions, they are always 'now').
+
+### 4. The deciding risk (and the decision data that already exists)
+
+- The raw instantaneous value carries what the 50 deg window filtered:
+  plenum pressure oscillation (valve pumping; est 1-3 kPa at ~25 kPa idle -
+  ESTIMATE, not measured) + sensor vibration noise. Per-cycle fuel ripple =
+  A_osc/MAP: est 4-12% at idle, 3-7% at mid/high rpm (MAP 40-70 kPa,
+  relative oscillation damps). STFT corrects only the MEAN (the systematic
+  phase offset of an asymmetric oscillation), not the ripple.
+- GO/NO-GO DATA ALREADY EXISTS: rawMapFast is a live-data channel latched
+  in the ADC ISR (hardware.cpp:126) and recorded in MLG. ONE MLG at
+  idle/2000/4000 rpm measures the oscillation amplitude. Thresholds:
+  <= 0.5-1 kPa -> D2b clean; 1-3 kPa -> D2b + ONE-LINE fallback: a light
+  EMA (tau 2-5 ms, time-based alpha, 1 mul-add) over the sample at the arm
+  point - the ladder window -> EMA(fixed tau) -> instant collapses to a
+  knob; > 3 kPa -> keep the window/EMA.
+- Consequence details: D2b's per-cyl differences between the instant values
+  are an artificial imbalance (shared plenum - the charge is physically the
+  same), bounded by A_osc x phase-sensitivity / MAP, trimmable per-cyl.
+  Cranking: teeth present (200-300 rpm), MAP ~ ambient, oscillation small -
+  equivalent to today; cranking mass is fixed anyway. isMapValid/C6899 move
+  to 200 Hz (rate-limited) - no worse than the 6 kHz spam. Calibration
+  compatibility: samplingAngle/samplingWindow/mapMinBufferLength stay in
+  the config as unused (no field deletion); one optional flag (e.g.
+  mapInstantAtInjection) or a board override gates the mode - ITB boards
+  MUST keep the window/angle semantics (the shared-plenum conclusion does
+  not generalize). Unit tests: the window/planner tests
+  (MapAveragingModule_scheduleWindowsWithNonzeroTdcOffset,
+  allWindowsCloseAcrossCycleBoundary, endAveraging rescale) get rewritten
+  to the EMA/instant design; the misfire planner is untouched.
+
+### 5. Latency: variant B is cheaper (follow-up question)
+
+- B (handoff instant): sample -> real injection start = 0-167 us ADC age
+  (1/6 kHz) + 0-2 teeth arm lead (early/current window) = 0.3-2.6 ms total
+  over 800-6000 rpm (2 teeth = 2.5 ms @ 800, 0.7 ms @ 3000, 0.3 ms @ 6000).
+- A (200 Hz): adds the 0-5 ms tick phase (avg 2.5) between the tick and the
+  arming -> avg ~3 ms, worst ~7.5 ms @ 800 rpm.
+- B is cheaper by EXACTLY the 200 Hz quantization: avg 2.5 ms, worst 5 ms,
+  rpm-independent.
+- Significance: small against the plenum time constant (tens of ms) and the
+  inherent one-cycle-ahead (720 deg) SD pipeline - not the deciding factor
+  by itself.
+- BONUS (weighed heavier than latency): cycle-to-cycle smoothness. B
+  samples at a FIXED engine phase (arm c is angle-locked) -> the
+  oscillation at that phase is a deterministic constant -> ZERO per-cycle
+  fuel wobble (a constant trimmable offset). A's tick phase wanders
+  relative to the engine (200 Hz time-based vs angle-based beat) -> the
+  per-cycle fuel wobbles by A_osc/MAP, common-mode over ALL cylinders ->
+  visible lambda / drivability wobble. B wins on both metrics; A's only
+  edge is ~1 us/cycle of handoff (convert x 4 + the multiply itself) and
+  shorter code.
+
+### 6. Quantified win (m74_9, misfire off, any of D1/D2b)
+
+- Executor: 13.1 events/cycle -> 4 (knock x 4) = -70%: 1.52% -> ~0.5% CPU
+  @ 2350 rpm; ~3.3% -> ~1.1% @ 6000 rpm; the 50-100 us batch shortens, the
+  16-256 us late tail shrinks.
+- Fast ADC ISR: -2-5% CPU; before/after readable directly via the existing
+  ScopePerf PE::AdcCallbackFast counter.
+- Handoff: -1 tdc insert per cycle (minor).
+- Code: -~250 lines (planner/sampler/averager machinery); -2 hazard classes
+  (cancel-before-rearm, off-by-tdcPosition); -1 prediction. RAM net neutral
+  (-mapSampler[4], +~256 B min ring in D1 only).
+
+### 7. Open follow-ups
+
+- MLG rawMapFast oscillation measurement (idle/2000/4000) - the go/no-go
+  for D2b vs the one-line EMA fallback. No .mlg in the repo to analyze
+  pre-emptively (checked: none tracked).
+- Then implement (D2b default if the oscillation is small): rewrite
+  map_averaging.{h,cpp} internals, the rpm_calculator.cpp tdc gate (MAP no
+  longer requests the TDC event), tests, report entry; car validation =
+  lockstats (start/endAveraging gone from othercb, executor ~4/cycle,
+  AdcCallbackFast perf down) + fuel at fixed points unchanged (trim diff
+  within noise).
+
+Validation: code-verified against the working tree (map_averaging.cpp
+L62-144/L153-180/L190-241/L284-340, hardware.cpp L112-130,
+rpm_calculator.cpp L440-512, main_trigger_callback.cpp L154-165,
+engine2.cpp L242-270, engine.cpp L599-609). No build/tests run - no code
+touched. Not car-tested (analysis only). Committed locally, never pushed.
