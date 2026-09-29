@@ -45,10 +45,12 @@ void turnInjectionPinHigh(scheduler_arg_t const arg) {
 #if EFI_ANGLE_CLOCK
 		// Angle-clock build: TMR2 CC4 (32-bit hardware compare) fires the close
 		// directly - no TIM5 CC2 mini-queue, no 8-ms overflow, no race
-		// condition. Falls back to the TIM5 executor if the arm fails (delay
-		// too small or the close channel still holds a pending close).
+		// condition. The anchor is TMR2's OWN counter (angleClockNow() - the
+		// same counter this open ISR just fired from, no TIM5 read); the TIM5
+		// executor below is the fallback. Falls back when the delay is too
+		// small or the close channel still holds a pending close.
 		if (!angleClockArmInjectionCloseFromNow(
-				nowNt, event->injectionEndDelayNt,
+				angleClockNow(), event->injectionEndDelayNt,
 				action_s::make<turnInjectionPinLow>(event))) {
 			getScheduler()->schedule("inj close", nullptr,
 				sumTickAndFloat(nowNt, static_cast<float>(event->injectionEndDelayNt)),

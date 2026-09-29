@@ -114,7 +114,8 @@ void WaveReader::onFallEvent() {
 	periodEventTimeUs = nowUs;
 }
 
-void logicAnalyzerCallback(void* arg, efitick_t /*stamp*/, bool level) {
+void logicAnalyzerCallback(void* arg, efitick_t /*stamp*/, uint32_t acTimestamp, bool level) {
+	UNUSED(acTimestamp);
 	WaveReader* instance = reinterpret_cast<WaveReader*>(arg);
 
 	bool rise = level;

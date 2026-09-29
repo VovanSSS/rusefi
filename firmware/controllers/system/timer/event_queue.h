@@ -39,6 +39,18 @@ public:
 	 */
 	bool executeOne(efitick_t now, efitick_t* executedMomentNt = nullptr, efitick_t* executedAtNt = nullptr, efitick_t* executedDurationNt = nullptr);
 
+	/**
+	 * Pop the head event WITHOUT executing it: due-check + busy-wait + unlink,
+	 * the action is moved out into `outAction`. Used by the firmware executor
+	 * (single_timer_executor.cpp) so the queue edits (the unlink) can run under
+	 * a SHORT critical section while the callback body executes OUTSIDE the
+	 * lock - the prio-3 angle-clock fires and the prio-4 trigger handoff are
+	 * not masked by the prio-5 executor batch (the 2026-09-29 "fire mask" fix).
+	 * Must be called under the caller's critical section; returns false when
+	 * the head is absent or farther than m_lateDelay into the future.
+	 */
+	bool popDue(efitick_t now, action_s& outAction, efitick_t* executedMomentNt = nullptr, efitick_t* executedAtNt = nullptr);
+
 	expected<efitick_t> getNextEventTime(efitick_t nowUs) const;
 	void clear();
 	int size() const;

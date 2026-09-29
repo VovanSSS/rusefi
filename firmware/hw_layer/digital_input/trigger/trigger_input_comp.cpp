@@ -14,6 +14,7 @@
 #include "hal_comp.h"
 
 #include "trigger_input.h"
+#include "angle_clock.h"
 
 static volatile int centeredDacValue = 127;
 static volatile int toothCnt = 0;
@@ -53,13 +54,13 @@ static void comp_shaft_callback(COMPDriver *comp) {
 	int isPrimary = (comp == EFI_COMP_PRIMARY_DEVICE);
 
 	if (status & COMP_IRQ_RISING) {
-		hwHandleShaftSignal(isPrimary ? 0 : 1, true, stamp);
+		hwHandleShaftSignal(isPrimary ? 0 : 1, true, stamp, angleClockSyntheticEdgeTick());
 		// shift the threshold down a little bit to avoid false-triggering (threshold hysteresis)
 		setHysteresis(comp, -1);
 	}
 
 	if (status & COMP_IRQ_FALLING) {
-		hwHandleShaftSignal(isPrimary ? 0 : 1, false, stamp);
+		hwHandleShaftSignal(isPrimary ? 0 : 1, false, stamp, angleClockSyntheticEdgeTick());
 		// shift the threshold up a little bit to avoid false-triggering (threshold hysteresis)
 		setHysteresis(comp, 1);
 	}

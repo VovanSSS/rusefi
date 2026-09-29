@@ -96,10 +96,17 @@ TRIGGER_RAM_CODE void SingleTimerExecutor::schedule(const char *msg, scheduling_
 
 	scheduleCounter++;
 
-	// Lock for queue insertion - we may already be locked, but that's ok
-	chibios_rt::CriticalSectionLocker csl;
-
-	bool needToResetTimer = queue.insertTask(scheduling, nt, action);
+	// Lock for queue insertion only. The critical section deliberately does
+	// NOT extend over the executeAllPendingActions/scheduleTimerCallback calls
+	// below (2026-09-29 "fire mask" fix): the prio-3 angle-clock fires must not
+	// be masked by a prio-5 or thread-context batch. The queue edits themselves
+	// stay atomic - both sides (insert here, pop in the executor) take their
+	// own short critical sections.
+	bool needToResetTimer;
+	{
+		chibios_rt::CriticalSectionLocker csl;
+		needToResetTimer = queue.insertTask(scheduling, nt, action);
+	}
 	if (!reentrantFlag) {
 #if EFI_PROD_CODE
 		// In interrupt context (trigger handoff / angle-clock ISRs) do NOT run
@@ -136,14 +143,24 @@ TRIGGER_RAM_CODE void SingleTimerExecutor::cancel(scheduling_s* scheduling) {
 void SingleTimerExecutor::onTimerCallback() {
 	timerCallbackCounter++;
 
-	chibios_rt::CriticalSectionLocker csl;
-
+	// 2026-09-29 "fire mask" fix: the executor no longer holds the kernel
+	// critical section across the whole batch. The queue edits (pop in
+	// executeAllPendingActions, the re-arm in scheduleTimerCallback) each take
+	// their own SHORT critical section; callback bodies run with the lock
+	// RELEASED, so the prio-3 angle-clock fires (dwell/spark/open/close) and
+	// the prio-4 trigger handoff are no longer masked by this prio-5 batch
+	// (measured 60-70 us mask before this change - the documented
+	// `angclk maxLateUs` class).
 	executeAllPendingActions();
 	scheduleTimerCallback();
 }
 
 /*
- * this private method is executed under lock
+ * this private method executes callback bodies OUTSIDE any lock; only the
+ * queue unlink runs under a short critical section (see popDue in
+ * event_queue.cpp). The 'stolen lock' check of the old batch-under-CS design
+ * is gone with it: nothing is held across a callback, so there is nothing to
+ * steal - the lock discipline is the scoped lockers themselves.
  */
 void SingleTimerExecutor::executeAllPendingActions() {
 	ScopePerf perf(PE::SingleTimerExecutorDoExecute);
@@ -172,19 +189,28 @@ void SingleTimerExecutor::executeAllPendingActions() {
 		efitick_t executedAtNt = 0;
 		efitick_t cbDurationNt = 0;
 
-		// Classify the head event BEFORE execution: executeOne unlinks it,
-		// so this is the only place the action is still reachable.
+		// Pop the due head under a SHORT critical section: the unlink must be
+		// atomic against schedule()/cancel() from higher-priority contexts
+		// (the prio-3 angle-clock ISRs, the prio-4 handoff). The action is
+		// classified here because popDue unlinks it. The callback body below
+		// executes OUTSIDE the lock - the unmasking is the whole point.
 		uint8_t kind = (uint8_t)ExecEventKind::Other;
 		uint32_t cbAddr = 0;
-		scheduling_s* head = queue.getHead();
-		if (head) {
-			kind = (uint8_t)classifyAction(head->action);
-			cbAddr = (uint32_t)(uintptr_t)head->action.getCallback();
+		action_s action;
+		{
+			chibios_rt::CriticalSectionLocker csl;
+			didExecute = queue.popDue(nowNt, action, &momentNt, &executedAtNt);
+			if (didExecute) {
+				kind = (uint8_t)classifyAction(action);
+				cbAddr = (uint32_t)(uintptr_t)action.getCallback();
+			}
 		}
 
-		didExecute = queue.executeOne(nowNt, &momentNt, &executedAtNt, &cbDurationNt);
-
 		if (didExecute) {
+			efitick_t cbStart = getTimeNowLowerNt();
+			action.execute();
+			cbDurationNt = getTimeNowLowerNt() - cbStart;
+
 			// Dispatch lateness telemetry: how late the command went out.
 			recordExecutionLateness(kind, cbAddr, executedAtNt - momentNt, cbDurationNt);
 		}
@@ -197,19 +223,20 @@ void SingleTimerExecutor::executeAllPendingActions() {
 	} while (didExecute);
 
 	maxExecuteCounter = maxI(maxExecuteCounter, executeCounter);
-
-	if (!isLocked()) {
-		firmwareError(ObdCode::CUSTOM_ERR_LOCK_ISSUE, "Someone has stolen my lock");
-		return;
-	}
 	reentrantFlag = false;
 }
 
 /**
- * This method is always invoked under a lock
+ * This method takes its own short critical section: reading the queue head and
+ * re-arming the hardware compare must be atomic against a concurrent
+ * insertTask from a higher-priority context, otherwise an earlier event
+ * inserted mid-arm would wait for the later compare (bounded extra latency,
+ * self-healed by the next re-arm, but avoided for free by the lock).
  */
 void SingleTimerExecutor::scheduleTimerCallback() {
 	ScopePerf perf(PE::SingleTimerExecutorScheduleTimerCallback);
+
+	chibios_rt::CriticalSectionLocker csl;
 
 	/**
 	 * Let's grab fresh time value

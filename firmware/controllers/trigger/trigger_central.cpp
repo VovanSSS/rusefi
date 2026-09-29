@@ -555,7 +555,7 @@ uint32_t triggerMaxDuration = 0;
  *  - Hardware triggers
  *  - Trigger replay from CSV (unit tests)
  */
-TRIGGER_RAM_CODE void hwHandleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp) {
+TRIGGER_RAM_CODE void hwHandleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp, uint32_t acTimestamp) {
   // Raw board-level edge capture BEFORE any filtering: boards diagnose the
   // input noise with this (m74_9 'rawtrg' console command).
   boardRawTriggerEdge(signalIndex, isRising, timestamp);
@@ -571,7 +571,7 @@ TRIGGER_RAM_CODE void hwHandleShaftSignal(int signalIndex, bool isRising, efitic
 		return;
 	}
 
-	handleShaftSignal(signalIndex, isRising, timestamp);
+	handleShaftSignal(signalIndex, isRising, timestamp, acTimestamp);
 }
 
 // ---- trigger ISR duration histogram (m74_9 diagnosis: the trigger handoff
@@ -598,7 +598,7 @@ void printTriggerIsrHistogram() {
 }
 
 // Handle all shaft signals - hardware or emulated both
-TRIGGER_RAM_CODE void handleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp) {
+TRIGGER_RAM_CODE void handleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp, uint32_t acTimestamp) {
 	bool isPrimary = signalIndex == 0;
 	if (!isPrimary && !TRIGGER_WAVEFORM(needSecondTriggerInput)) {
 		return;
@@ -655,7 +655,7 @@ TRIGGER_RAM_CODE void handleShaftSignal(int signalIndex, bool isRising, efitick_
 		maxTriggerReentrant = triggerReentrant;
 	triggerReentrant++;
 
-	getTriggerCentral()->handleShaftSignal(signal, timestamp);
+	getTriggerCentral()->handleShaftSignal(signal, timestamp, acTimestamp);
 
 	triggerReentrant--;
 	triggerDuration = getTimeNowLowerNt() - triggerHandlerEntryTime;
@@ -927,7 +927,7 @@ TRIGGER_RAM_CODE angle_t TriggerCentral::findNextTriggerToothAngle(int p_current
 /**
  * This method is NOT invoked for VR falls.
  */
-TRIGGER_RAM_CODE void TriggerCentral::handleShaftSignal(trigger_event_e signal, efitick_t timestamp) {
+TRIGGER_RAM_CODE void TriggerCentral::handleShaftSignal(trigger_event_e signal, efitick_t timestamp, uint32_t acTimestamp) {
 	uint32_t t0 = getTimeNowLowerNt();
 	// Board opt-in input debounce (m74_9): VR comparator ringing and starter
 	// noise arrive as edge bursts far below the real tooth period. Dropping
@@ -1100,7 +1100,7 @@ TRIGGER_RAM_CODE void TriggerCentral::handleShaftSignal(trigger_event_e signal, 
 #else
 				angle_t correctedNextNextPhase = correctedNextPhase;
 #endif // EFI_ANGLE_CLOCK
-				mainTriggerCallback(triggerIndexForListeners, timestamp, correctedPhase, correctedNextPhase, correctedNextNextPhase);
+				mainTriggerCallback(triggerIndexForListeners, timestamp, acTimestamp, correctedPhase, correctedNextPhase, correctedNextNextPhase);
 			}
 #endif // EFI_ENGINE_CONTROL
 

@@ -295,9 +295,11 @@ void initHardwareNoConfig() {
 #endif // EFI_PROD_CODE && EFI_SIGNAL_EXECUTOR_ONE_TIMER
 
 #if EFI_ANGLE_CLOCK
-	// The TMR2 angle clock converts NT timestamps to angle-clock ticks with a
-	// constant offset measured against the just-started TIM5 - init it right
-	// after the executor, before any trigger processing.
+	// The TMR2 angle clock is its own free-running time base: it is started here
+	// (right after the executor, before any trigger processing) and measured
+	// once against TIM5 at boot - that measurement is the ONLY TIM5 touch in the
+	// angle clock. At runtime the fast EXTI IRQ captures TMR2->CNT alongside the
+	// NT timestamp, and all arming is done in pure TMR2 ticks.
 	initAngleClock();
 #endif // EFI_ANGLE_CLOCK
 

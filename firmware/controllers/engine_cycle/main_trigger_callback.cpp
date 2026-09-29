@@ -364,7 +364,7 @@ TRIGGER_RAM_CODE static void handleFuel(efitick_t nowNt, float currentPhase, flo
  * This is the main trigger event handler.
  * Both injection and ignition are controlled from this method.
  */
-TRIGGER_RAM_CODE void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edgeTimestamp, angle_t currentPhase, angle_t nextPhase, angle_t nextNextPhase) {
+TRIGGER_RAM_CODE void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edgeTimestamp, uint32_t edgeAcTimestamp, angle_t currentPhase, angle_t nextPhase, angle_t nextNextPhase) {
 	ScopePerf perf(PE::MainTriggerCallback);
 
 	if (hasFirmwareError()) {
@@ -414,7 +414,7 @@ TRIGGER_RAM_CODE void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edge
 		// the 90-degree basis is back everywhere, the per-tooth refresh still
 		// re-anchors each armed channel from it every tooth, so the prediction
 		// error stays bounded to one tooth of acceleration.)
-		angleClockOnTooth(edgeTimestamp, currentPhase, engine->engineState.engineCycle,
+		angleClockOnTooth(edgeAcTimestamp, currentPhase, engine->engineState.engineCycle,
 		                  US2NT(engine->rpmCalculator.oneDegreeUs));
 	}
 	// Dwell arm runs on ALL teeth including rpm==0 storm-flap teeth (see above).

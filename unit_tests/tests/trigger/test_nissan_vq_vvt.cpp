@@ -27,7 +27,7 @@ static void func(TriggerCallback *callback) {
 	if (callback->isVvt) {
 		hwHandleVvtCamSignal(value, nowNt, callback->vvtBankIndex * CAMS_PER_BANK);
 	} else {
-		handleShaftSignal(0, value == TriggerValue::RISE, nowNt);
+		handleShaftSignal(0, value == TriggerValue::RISE, nowNt, /*acTimestamp*/0);
 	}
 }
 

@@ -439,13 +439,16 @@ TRIGGER_RAM_CODE void turnSparkPinHighStartCharging(IgnitionEvent *event) {
 		engine->scheduler.schedule("overdwell", &event->dwellStartTimer, fireTime, action_s::make<overFireSparkAndPrepareNextSchedule>( event ));
 	}
 
-	// Arm the spark from the ACTUAL charge moment on TMR4 (or TIM5 fallback).
+	// Arm the spark from the ACTUAL charge moment on TMR2 (or TIM5 fallback).
 	// Root cause of wasNoOp cycles: during rapid acceleration the spark was
 	// armed at tooth T+k with a high-rpm basis while the dwell CCR was set at
-	// tooth T-1 with a low-rpm basis. TMR4 fired first (coil uncharged) ->
+	// tooth T-1 with a low-rpm basis. TMR2 fired first (coil uncharged) ->
 	// no-op -> dwell fired -> TIM5 re-arm. The fix: always arm the spark HERE
-	// (after TMR2 has fired the dwell), with delay = sparkDwell from nowNt.
+	// (after TMR2 has fired the dwell), with delay = sparkDwell from now.
 	// This guarantees the coil is always charged before the spark fires.
+	// The anchor is TMR2's OWN counter (angleClockNow() - the same counter
+	// this dwell ISR just fired from, no TIM5 read); the TIM5 fallback below
+	// stays NT-based by design (it is the fallback, not the primary path).
 	// Cancel any stale spark arm first (it may carry the wrong basis);
 	// if it already fired as a no-op the channel is already free.
 	angleClockCancelSpark();
@@ -453,7 +456,7 @@ TRIGGER_RAM_CODE void turnSparkPinHighStartCharging(IgnitionEvent *event) {
 	{
 		const uint32_t delayNt = static_cast<uint32_t>(MSF2NT(event->sparkDwell));
 		const efitick_t sparkTime = sumTickAndFloat(nowNt, static_cast<float>(delayNt));
-		if (!angleClockArmSparkFromNow(nowNt, delayNt,
+		if (!angleClockArmSparkFromNow(angleClockNow(), delayNt,
 										  action_s::make<fireSparkAndPrepareNextSchedule>(event))) {
 			engine->scheduler.schedule("spark", &event->sparkEvent.eventScheduling,
 									   sparkTime, action_s::make<fireSparkAndPrepareNextSchedule>(event));

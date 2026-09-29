@@ -106,20 +106,21 @@ static constexpr float ANGLE_CLOCK_LOOKAHEAD_DEG = 6.0f;
 static constexpr uint32_t ANGLE_CLOCK_REANCHOR_DEADBAND_TICKS = US2NT(2);
 
 // Configure TMR2, measure rate, enable NVIC. Call once at boot, after the
-// TIM5 executor is running.
+// TIM5 executor is running (the init-time rate measurement uses the NT domain
+// as the reference - see the initAngleClock() comment in angle_clock.cpp).
 void initAngleClock();
 
-// Convert an NT timestamp to an absolute 32-bit angle-clock tick (TMR2 domain).
-uint32_t angleClockTickForNt(efitick_t nt);
-
-// Current TMR2 free-running counter value (for diagnostics).
+// Current TMR2 free-running counter value (the angle clock's OWN time base -
+// captured in the fast EXTI IRQ and read by the from-now arms).
 uint32_t angleClockNow();
 
 // Feed the per-tooth state used by the angle channels. Call once per tooth
 // (including rpm==0 storm-flap teeth - the refresh must track true speed).
-// A not-positive ticksPerDegree (NaN on rpm==0 flap) keeps the last good
-// basis without touching the phase or timestamp.
-void angleClockOnTooth(efitick_t edgeTimestamp, float currentPhase,
+// edgeAcTick is the TMR2-domain edge timestamp captured by the fast EXTI IRQ
+// at this tooth's edge (NOT an NT timestamp - the angle clock never reads
+// TIM5). A not-positive ticksPerDegree (NaN on rpm==0 flap) keeps the last
+// good basis without touching the phase or timestamp.
+void angleClockOnTooth(uint32_t edgeAcTick, float currentPhase,
                         float cycleDeg, float ticksPerDegree);
 
 // Diagnostic snapshot of the most recent failed dwell arm.
@@ -156,22 +157,25 @@ bool angleClockArmDwell(float targetAngle, action_s action,
 bool angleClockArmInjection(float targetAngle, action_s action,
                             float callerPhase, float callerNextPhase);
 
-// Arm the spark-fire channel (CC2) directly from an NT timestamp + delay.
-// Used by turnSparkPinHighStartCharging to guarantee the spark fires AFTER
-// the coil is charged, regardless of the rpm basis used when the dwell was
-// armed. The targetAngle sentinel (780 deg) makes the per-tooth refresh skip
-// this channel (780 > cycleDeg + MAX_LEAD_DEG). Returns false (caller falls
-// back to TIM5) when the delay is too small or the channel is busy.
-bool angleClockArmSparkFromNow(efitick_t nowNt, uint32_t delayNt, action_s action);
+// Arm the spark-fire channel (CC2) directly from a TMR2-domain timestamp +
+// delay (nowAc = angleClockNow() read in the dwell-fire ISR - the same
+// counter the ISR itself fired from, no NT conversion). Used by
+// turnSparkPinHighStartCharging to guarantee the spark fires AFTER the coil
+// is charged, regardless of the rpm basis used when the dwell was armed.
+// The targetAngle sentinel (780 deg) makes the per-tooth refresh skip this
+// channel (780 > cycleDeg + MAX_LEAD_DEG). Returns false (caller falls back
+// to TIM5) when the delay is too small or the channel is busy.
+bool angleClockArmSparkFromNow(uint32_t nowAc, uint32_t delayNt, action_s action);
 
-// Arm the injection-close channel (CC4) directly from an NT timestamp +
-// delay. Called from turnInjectionPinHigh (the actual injector-open callback)
-// to anchor the closing pulse to the REAL opening moment, regardless of any
-// TIM5/TMR2 START timing uncertainty. Analogue of angleClockArmSparkFromNow
-// for injection close; 32-bit now, so PW up to ~65 ms is fine (the 16-bit
-// PW > 8 ms limit of the old TMR3 arm is gone). Returns false (caller falls
-// back to TIM5) when the delay is too small or the channel is busy.
-bool angleClockArmInjectionCloseFromNow(efitick_t nowNt, uint32_t delayNt, action_s action);
+// Arm the injection-close channel (CC4) directly from a TMR2-domain timestamp
+// + delay. Called from turnInjectionPinHigh (the actual injector-open
+// callback) to anchor the closing pulse to the REAL opening moment,
+// regardless of any TIM5/TMR2 START timing uncertainty. Analogue of
+// angleClockArmSparkFromNow for injection close; 32-bit now, so PW up to
+// ~65 ms is fine (the 16-bit PW > 8 ms limit of the old TMR3 arm is gone).
+// Returns false (caller falls back to TIM5) when the delay is too small or
+// the channel is busy.
+bool angleClockArmInjectionCloseFromNow(uint32_t nowAc, uint32_t delayNt, action_s action);
 
 // Re-anchor the armed ANGLE channels (dwell, open) from the freshest tooth
 // data. Due events (angle already passed) are armed for immediate ISR
@@ -265,3 +269,17 @@ void angleClockResetStats();
 void angleClockTimerDiag();
 
 #endif // EFI_ANGLE_CLOCK
+
+// TMR2-domain "now" for callers that synthesize trigger edges WITHOUT the
+// fast-EXTI timestamp capture (trigger emulator self-stim, comparator/ADC
+// trigger inputs, unit tests). On the angle-clock build this reads TMR2's own
+// free-running counter - the SAME counter the hardware compare fires from, so
+// the synthesized edge time needs no NT<->TMR2 conversion and no TIM5 read.
+// Elsewhere the angle clock is compiled out and this returns 0 (unused).
+static inline uint32_t angleClockSyntheticEdgeTick() {
+#if EFI_ANGLE_CLOCK
+    return angleClockNow();
+#else
+    return 0;
+#endif
+}

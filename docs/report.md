@@ -1,5 +1,132 @@
 # Work Report
 
+## 2026-09-29 - m74_9: TMR2 free-running in its own time domain (zero TIM5 in the angle-clock path) + executor "fire mask" removed
+
+Two changes implementing the user directive "tmr2 must not depend on tim5 in
+any way": the angle clock now arms purely in TMR2 ticks (no NT timestamp, no
+NT->TMR2 offset conversion, no live TIM5 read anywhere in the runtime path),
+and the TIM5 executor no longer holds the kernel critical section across its
+batch, so its callbacks no longer mask the prio-3 TMR2 fires.
+
+### Part A - TMR2 own time base (freerunning)
+
+Before this change the angle clock was free-running but NT-CENTRIC: the fast
+EXTI IRQ captured only the NT timestamp (TIM5->CNT), every arm converted it
+via angleClockTickForNt() = NT + s_timerOff (an init-measured offset), and the
+from-now arms (spark at dwell fire, injection close at open fire) read
+TIM5->CNT LIVE inside the TMR2 ISR. The offset conversion was correct by
+construction (both timers share TIMCLK1 and the PSC is calibrated at boot) but
+it was still a TIM5 dependency in every arm and every TMR2 ISR action.
+
+Now the TMR2-domain edge timestamp is captured in the SAME fast-IRQ pass as
+the NT timestamp (one extra APB1 register read, ~100 ns on the ~2-3 us
+fast-IRQ budget; the queue entry had padding so RAM cost is zero) and threads
+through the whole chain: ExtiQueueEntry -> ExtiCallback -> shaft_callback ->
+hwHandleShaftSignal -> handleShaftSignal -> TriggerCentral::handleShaftSignal ->
+mainTriggerCallback -> angleClockOnTooth. The arms and the per-tooth refresh
+compute atTick = s_edgeAcTick + delay directly. The from-now arms take
+uint32_t nowAc = angleClockNow() (TMR2's own counter, read in the ISR that
+just fired from it - the exact charge/open anchor, no cross-timer read).
+angleClockTickForNt() and s_timerOff are DELETED (nm-verified: no symbol in
+the m74_9 image; angleClockOnTooth/armFromNow manglings now take uint32 'm'
+instead of int64 'x').
+
+Synthetic edge sources (trigger emulator self-stim, comparator/ADC trigger
+inputs, unit tests) pass angleClockSyntheticEdgeTick() - a tiny header inline
+that reads TMR2->CNT on the angle-clock build and returns 0 (unused) elsewhere.
+The emulator path matters: it is the bench self-stimulation path on m74_9, and
+it now feeds real TMR2-domain edges.
+
+The ONE deliberate TIM5 touch that remains is the boot-time, one-shot PSC
+measurement in initAngleClock() (the 10 ms busy-wait against NT). It is
+load-bearing (the 2026-08-30 fuse incident) and is exactly what makes the
+numeric identity '1 tick per degree in NT == 1 tick per degree in TMR2' hold,
+so the NT-computed basis can be added to TMR2-domain timestamps without
+conversion. It is not a runtime dependency. angleClockTimerDiag() (lockstats
+tim2clk) also keeps its NT cross-check - diagnostics only.
+
+The TIM5 fallback on arm failure stays by design (overdwell rescue, inj-close
+fallback, spark fallback): it is a safety net, not a dependency of TMR2
+execution.
+
+### Part B - executor no longer masks the TMR2 fires
+
+SingleTimerExecutor::onTimerCallback used to hold a CriticalSectionLocker
+(BASEPRI = 3 on this port) across executeAllPendingActions() +
+scheduleTimerCallback(). That masks priorities 3..15 for the WHOLE 50-100 us
+batch: a TMR2 dwell/spark/open/close fire landing during an executor batch
+(MAP windows, knock, soft PWM, watchdog buddy, rescue) waits for the batch to
+finish - the measured 60-70 us 'fire mask' and the `angclk maxLateUs` 66-128 us
+car readings. This was the concrete 'TIM5 delays TMR2 execution' mechanism.
+
+Fix (pop-under-short-CS, per the 2026-09-29 analysis): EventQueue gained
+popDue() - due-check + busy-wait + unlink + action-out WITHOUT executing the
+action (executeOne is now refactored on top of it, behavior-preserving for
+unit tests). The executor pops the head under a SHORT critical section
+(~100 ns) and executes the callback body OUTSIDE the lock; scheduleTimerCallback
+takes its own short CS (head read + CCR re-arm atomic vs concurrent insert);
+schedule() scopes its CS to insertTask only. The 'stolen lock' isLocked()
+check is gone with the batch-wide lock - the discipline is the scoped lockers.
+
+Concurrency reasoning (code-verified): queue edits stay atomic on both sides
+(insert/remove under CS in schedule/cancel, pop under CS in the executor);
+callbacks that schedule take their own CS; reentrantFlag semantics unchanged
+(a schedule from a prio-3/4 ISR during a callback skips inline execution and
+the batch-end re-arm picks the event up); a concurrent insert between the
+executor's final pop and its re-arm self-heals (the inserter's own
+scheduleTimerCallback arms the earlier target, and portSetHardwareSchedulerTimer's
+EGR CC1G catches past-due targets); cancel() of the in-flight element
+early-returns on its cleared action (same as before - the element is unlinked
+and its action moved out). Accepted costs: callback bodies are now preemptable
+(the batch wall stretches slightly at mid/high rpm - executor events are prio
+5, engine-async, tens of us tolerable) and the popDue spin holds the CS for up
+to m_lateDelay (8 us) per event in the lookahead window (typically 0 - co-due
+events exit the spin immediately). Residual TMR2 mask sources after this
+change: the handoff's own short CS sections (m_lastToothTimer, queue inserts,
+~us) and the fast EXTI (prio 0, ~2-3 us) - both bounded and pre-existing.
+
+Change inventory:
+| file | change |
+| --- | --- |
+| firmware/hw_layer/angle_clock/angle_clock.h | angleClockTickForNt removed; angleClockOnTooth takes uint32 edgeAcTick; from-now arms take uint32 nowAc; angleClockSyntheticEdgeTick() inline added (outside the EFI_ANGLE_CLOCK guard) |
+| firmware/hw_layer/angle_clock/angle_clock.cpp | s_timerOff + the offset measurement removed; s_edgeAcTick (TMR2 domain) replaces s_edgeTimestamp; arms/refresh compute s_edgeAcTick + delay; armFromNow takes nowAc; init keeps the PSC measurement (comment updated) |
+| firmware/hw_layer/digital_input/digital_input_exti.h/.cpp | ExtiCallback gains uint32 acTimestamp; ExtiQueueEntry gains AcTimestamp; the fast EXTI IRQ captures angleClockNow() back-to-back with getTimeNowNt() (EFI_ANGLE_CLOCK guard); handoff passes it through |
+| firmware/controllers/trigger/trigger_central.h/.cpp | hwHandleShaftSignal / handleShaftSignal / TriggerCentral::handleShaftSignal gain uint32 acTimestamp; threaded to mainTriggerCallback |
+| firmware/controllers/engine_cycle/main_trigger_callback.h/.cpp | mainTriggerCallback gains edgeAcTimestamp; feeds angleClockOnTooth with it |
+| firmware/controllers/engine_cycle/spark_logic.cpp | turnSparkPinHighStartCharging arms spark from angleClockNow() (TIM5 fallback stays NT) |
+| firmware/controllers/engine_cycle/fuel_schedule.cpp | turnInjectionPinHigh arms close from angleClockNow() (TIM5 fallback stays NT) |
+| firmware/controllers/trigger/trigger_emulator_algo.cpp | emulator edge passes angleClockSyntheticEdgeTick() |
+| firmware/hw_layer/digital_input/trigger/trigger_input_exti.cpp | shaft_callback threads acTimestamp; cam_callback signature |
+| firmware/hw_layer/digital_input/trigger/trigger_input_adc.cpp | callbacks + onTriggerChanged pass angleClockSyntheticEdgeTick() |
+| firmware/hw_layer/digital_input/trigger/trigger_input_comp.cpp | comp edges pass angleClockSyntheticEdgeTick() |
+| firmware/hw_layer/hardware.cpp | initAngleClock comment updated (no more NT conversion claim) |
+| hellen_board_id.cpp, frequency_sensor.cpp, hella_oil_level.cpp, logic_analyzer.cpp, wifi_bsp.cpp, cdm_ion_sense.cpp, mc33810.cpp, init_flex.cpp | ExtiCallback implementations updated (param UNUSED where irrelevant) |
+| unit_tests/* (8 files) | handleShaftSignal / hwHandleShaftSignal / TriggerCentral::handleShaftSignal call sites pass 0 |
+| firmware/controllers/system/timer/event_queue.h/.cpp | EventQueue::popDue added; executeOne refactored on top (behavior-preserving) |
+| firmware/controllers/system/timer/single_timer_executor.cpp | onTimerCallback drops the batch-wide CS; executeAllPendingActions pops under a short CS and executes callbacks unlocked; scheduleTimerCallback takes its own CS; schedule() scopes its CS to insertTask; isLocked() check removed |
+
+Validation: unit tests 1169 pass / 12 fail - EXACTLY the documented pre-existing
+12 (miscRpmCalculator, engine.testPlainCrankingWithoutAdvancedFeatures,
+big.testFuelSchedulerBug299 x2, cranking.testFasterEngineSpinningUp,
+injectionScheduling x4, fuelControl.transitionIssue1592, OddFireRunningMode.hd,
+test_utils.assertEventExistsAtEnginePhase) - no new failures; the 193
+trigger-related tests all green (the changed signature paths). m74_9 board
+build BUILD SUCCESSFUL (EFI_ANGLE_CLOCK=TRUE compiles both parts); nm-verified:
+angleClockTickForNt absent, angleClockOnTooth/from-now arms take uint32,
+EventQueue::popDue + the executor functions present. The unit-test build is
+clang (macOS); the Linux-GCC CI leg is not run locally. NOT bench- or
+car-tested - the first lockstats on the car should show: angclk maxLateUs
+dropping out of the tens-of-us band (the fire mask is gone), dwell/spark/open/
+close lateArm unchanged (the arms are numerically identical), tim2clk exact,
+and the sched executor 'late>=10us' reading shifting only by the batch-order
+component (the executor now yields to prio-3 fires mid-batch, so co-due
+executor events may measure slightly more 'late' - expected, they are prio 5).
+Known ping-pong reminder (hit again while validating): the m74_9 board build
+regenerates the shared firmware/controllers/generated/ page_4_generated.h with
+the 30-column layout; a subsequent unit_tests build skips regen and fails the
+page4_s static_assert - recover with touch firmware/integration/rusefi_config.txt
++ config_page_4.txt before that make.
+
 ## 2026-09-26 - microsecond_timer_stm32: drop the 4 us compare clamp - events fire exactly at setTimeNt, overdue events fire immediately (EGR CC1G)
 
 portSetHardwareSchedulerTimer() (TIM5 single-timer executor, shared by all STM32

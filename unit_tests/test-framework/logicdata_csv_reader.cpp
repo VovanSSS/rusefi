@@ -174,7 +174,7 @@ void CsvReader::processLine(EngineTestHelper *eth) {
 
 		efitick_t nowNt = getTimeNowNt();
 		bool state = newTriggerState[index] ^ flipOnRead;
-		hwHandleShaftSignal(index, state, nowNt);
+		hwHandleShaftSignal(index, state, nowNt, /*acTimestamp*/0);
 
 		currentState[index] = newTriggerState[index];
 	}

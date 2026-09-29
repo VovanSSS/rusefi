@@ -97,16 +97,19 @@ struct AngleClockChannel {
 static AngleClockChannel s_ch[4];  // dwell / spark / open / close
 static uint8_t s_armedMask = 0;    // bit per channel holding a pending action
 
-// ── NT <-> timer tick offset ──────────────────────────────────────────────
-// TMR2 and TIM5 run at the same 4 MHz APB1 clock; the offset is constant.
-// s_timerOff = (uint32_t)(TMR2->CNT - NT_lower32)
-static uint32_t s_timerOff;
-
 // ── Per-tooth state (shared, written only by handoff prio 4) ─────────────
-static efitick_t s_edgeTimestamp  = 0;
-static float     s_currentPhase   = 0.0f;
-static float     s_cycleDeg       = 720.0f;
-static float     s_ticksPerDegree = 0.0f;
+// s_edgeAcTick is the TMR2-DOMAIN edge timestamp captured by the fast EXTI
+// IRQ at this tooth's edge (see digital_input_exti.cpp). TMR2 is its own time
+// base: the arms never convert from NT and never read TIM5 - the offset
+// conversion (angleClockTickForNt + s_timerOff) that lived here until
+// 2026-09-29 is gone. The ticksPerDegree basis fed by angleClockOnTooth is
+// numerically identical in both domains (the boot-time PSC measurement makes
+// TMR2 tick at exactly the NT 4 MHz rate), so a delay computed in ticks from
+// the angle is directly a TMR2 tick count.
+static uint32_t s_edgeAcTick    = 0;
+static float    s_currentPhase   = 0.0f;
+static float    s_cycleDeg       = 720.0f;
+static float    s_ticksPerDegree = 0.0f;
 
 // ── Telemetry ─────────────────────────────────────────────────────────────
 static uint32_t s_fired[4]       = {0, 0, 0, 0};
@@ -148,10 +151,6 @@ static volatile uint32_t* ccrReg(TIM_TypeDef* tmr, int ch) {
 }
 
 // ── Tick conversions ──────────────────────────────────────────────────────
-TRIGGER_RAM_CODE uint32_t angleClockTickForNt(efitick_t nt) {
-    return static_cast<uint32_t>(nt) + s_timerOff;
-}
-
 TRIGGER_RAM_CODE static float remainingAngle(float targetAngle) {
     float r = targetAngle - s_currentPhase;
     if (r < 0.0f) r += s_cycleDeg;
@@ -253,6 +252,12 @@ void initAngleClock() {
 
     // Measure the real TMR2 rate against NT (TIM5). This is load-bearing: a
     // 2x-wrong PSC doubled every dwell and blew the 15A fuse on 2026-08-30.
+    // NOTE: this is the ONE deliberate TIM5 touch in the whole angle clock - a
+    // boot-time, one-shot measurement. It is what makes the ticksPerDegree
+    // basis (computed by the trigger decode in NT units) numerically identical
+    // to TMR2 ticks, so the angle-domain arms can add tick delays directly to
+    // the TMR2-domain edge timestamp with no runtime conversion and no runtime
+    // TIM5 dependency whatsoever.
     const uint32_t ac0 = ANGLE_TIMER->CNT;
     const uint32_t nt0 = getTimeNowLowerNt();
     do { } while (getTimeNowLowerNt() - nt0 < US2NT(10000));  // 10 ms
@@ -279,10 +284,6 @@ void initAngleClock() {
     ANGLE_TIMER->SR  = 0;
     ANGLE_TIMER->CR1 = STM32_TIM_CR1_CEN | STM32_TIM_CR1_PMEN;
 
-    // Measure the NT <-> TMR2 offset AFTER the PSC re-programming.
-    // Both run at exactly 4 MHz (same TIMCLK1), so the offset is constant.
-    s_timerOff = ANGLE_TIMER->CNT - getTimeNowLowerNt();
-
     nvicEnableVector(STM32_TIM2_NUMBER, EFI_IRQ_ANGLE_CLOCK_PRIORITY);
 
     // "No refusal since boot" sentinel - a zero-initialized branch=0 would
@@ -300,11 +301,11 @@ void initAngleClock() {
 }
 
 // ── Per-tooth state update ────────────────────────────────────────────────
-TRIGGER_RAM_CODE void angleClockOnTooth(efitick_t edgeTimestamp,
+TRIGGER_RAM_CODE void angleClockOnTooth(uint32_t edgeAcTick,
                                          float currentPhase,
                                          float cycleDeg,
                                          float ticksPerDegree) {
-    s_edgeTimestamp = edgeTimestamp;
+    s_edgeAcTick    = edgeAcTick;
     s_currentPhase  = currentPhase;
     s_cycleDeg      = cycleDeg;
 
@@ -395,7 +396,7 @@ TRIGGER_RAM_CODE bool angleClockArmDwell(float targetAngle, action_s action,
     }
 
     const uint32_t delay  = angleClockDelayTicks(remaining, s_ticksPerDegree);
-    const uint32_t atTick = angleClockTickForNt(s_edgeTimestamp) + delay;
+    const uint32_t atTick = s_edgeAcTick + delay;
     const uint32_t cnt    = ANGLE_TIMER->CNT;
 
     if (static_cast<int32_t>(atTick - cnt) <
@@ -434,7 +435,7 @@ TRIGGER_RAM_CODE bool angleClockArmInjection(float targetAngle, action_s action,
         return false;
     }
 
-    const uint32_t atTick = angleClockTickForNt(s_edgeTimestamp) + delay;
+    const uint32_t atTick = s_edgeAcTick + delay;
     const uint32_t cnt    = ANGLE_TIMER->CNT;
 
     if (static_cast<int32_t>(atTick - cnt) <
@@ -455,7 +456,9 @@ TRIGGER_RAM_CODE bool angleClockArmInjection(float targetAngle, action_s action,
 }
 
 // ── From-now arms (time domain, refresh-skipped via the sentinel) ────────
-TRIGGER_RAM_CODE static bool armFromNow(int ch, efitick_t nowNt, uint32_t delayNt,
+// nowAc is a TMR2-domain timestamp (angleClockNow() read by the caller in the
+// TMR2 ISR that just fired) - the delay is added directly, no NT conversion.
+TRIGGER_RAM_CODE static bool armFromNow(int ch, uint32_t nowAc, uint32_t delayNt,
                                         action_s action) {
     auto& c = s_ch[ch];
     if (c.action) {
@@ -464,7 +467,7 @@ TRIGGER_RAM_CODE static bool armFromNow(int ch, efitick_t nowNt, uint32_t delayN
         return false;
     }
 
-    const uint32_t atTick = angleClockTickForNt(nowNt) + delayNt;
+    const uint32_t atTick = nowAc + delayNt;
     const uint32_t cnt    = ANGLE_TIMER->CNT;
 
     if (static_cast<int32_t>(atTick - cnt) <
@@ -477,14 +480,14 @@ TRIGGER_RAM_CODE static bool armFromNow(int ch, efitick_t nowNt, uint32_t delayN
     return true;
 }
 
-TRIGGER_RAM_CODE bool angleClockArmSparkFromNow(efitick_t nowNt,
+TRIGGER_RAM_CODE bool angleClockArmSparkFromNow(uint32_t nowAc,
                                                  uint32_t delayNt, action_s action) {
-    return armFromNow(ANGLE_CLOCK_CH_SPARK, nowNt, delayNt, action);
+    return armFromNow(ANGLE_CLOCK_CH_SPARK, nowAc, delayNt, action);
 }
 
-TRIGGER_RAM_CODE bool angleClockArmInjectionCloseFromNow(efitick_t nowNt,
+TRIGGER_RAM_CODE bool angleClockArmInjectionCloseFromNow(uint32_t nowAc,
                                                           uint32_t delayNt, action_s action) {
-    return armFromNow(ANGLE_CLOCK_CH_CLOSE, nowNt, delayNt, action);
+    return armFromNow(ANGLE_CLOCK_CH_CLOSE, nowAc, delayNt, action);
 }
 
 // ── Refresh ───────────────────────────────────────────────────────────────
@@ -499,7 +502,7 @@ TRIGGER_RAM_CODE static void refreshChannel(int ch) {
     if (remaining > MAX_LEAD_DEG) return;
 
     const uint32_t oldCcr = c.ccr;
-    const uint32_t newTick = angleClockTickForNt(s_edgeTimestamp) +
+    const uint32_t newTick = s_edgeAcTick +
         angleClockDelayTicks(remaining, s_ticksPerDegree);
 
     // Only re-anchor EARLIER: the armed tick is the best prediction from the

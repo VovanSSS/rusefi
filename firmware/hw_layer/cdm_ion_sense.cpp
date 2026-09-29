@@ -64,8 +64,9 @@ void ionPostState(output_channels_s *tsOutputChannels) {
 }
 #endif /* EFI_TUNER_STUDIO */
 
-static void extIonCallback(void *arg, efitick_t, bool) {
+static void extIonCallback(void *arg, efitick_t, uint32_t acTimestamp, bool) {
         UNUSED(arg);
+        UNUSED(acTimestamp);
         instance.totalCdmEvents++;
 
         int currentRevolution = engine->triggerCentral.triggerState.getSynchronizationCounter();

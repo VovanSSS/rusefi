@@ -252,9 +252,9 @@ int EventQueue::executeAll(efitick_t now) {
 	return executionCounter;
 }
 
-bool EventQueue::executeOne(efitick_t now, efitick_t* executedMomentNt, efitick_t* executedAtNt, efitick_t* executedDurationNt) {
+bool EventQueue::popDue(efitick_t now, action_s& outAction, efitick_t* executedMomentNt, efitick_t* executedAtNt) {
 	// Read the head every time - a previously executed event could
-	// have inserted something new at the head
+	// have inserted something new at the head.
 	scheduling_s* current = m_head;
 
 	// Queue is empty - bail
@@ -272,16 +272,11 @@ bool EventQueue::executeOne(efitick_t now, efitick_t* executedMomentNt, efitick_
 		return false;
 	}
 
-#if EFI_UNIT_TEST
-//	efitick_t spinDuration = current->getMomentNt() - getTimeNowNt();
-//	if (spinDuration > 0) {
-//		throw std::runtime_error("Time Spin in unit test");
-//	}
-#endif
-
 	// near future - spin wait for the event to happen and avoid the
 	// overhead of rescheduling the timer.
-	// yes, that's a busy wait but that's what we need here
+	// yes, that's a busy wait but that's what we need here.
+	// The caller holds its critical section over this call, so the spin is
+	// bounded by m_lateDelay and does not extend the unmasked window.
 	while (current->getMomentNt() > getTimeNowNt()) {
 		UNIT_TEST_BUSY_WAIT_CALLBACK();
 	}
@@ -303,13 +298,23 @@ bool EventQueue::executeOne(efitick_t now, efitick_t* executedMomentNt, efitick_
 	current->next = nullptr;
 
 	// Grab the action but clear it in the event so we can reschedule from the action's execution
-	auto const action{ std::move(current->action) };
+	outAction = std::move(current->action);
 
 	tryReturnScheduling(current);
 	current = nullptr;
 
+	assertListIsSorted();
+	return true;
+}
+
+bool EventQueue::executeOne(efitick_t now, efitick_t* executedMomentNt, efitick_t* executedAtNt, efitick_t* executedDurationNt) {
+	action_s action;
+	if (!popDue(now, action, executedMomentNt, executedAtNt)) {
+		return false;
+	}
+
 #if EFI_DETAILED_LOGGING
-	printf("QUEUE: execute current=%d param=%d\r\n", reinterpret_cast<uintptr_t>(current), action.getArgumentRaw());
+	printf("QUEUE: execute param=%d\r\n", action.getArgumentRaw());
 #endif
 
 	// Execute the current element
