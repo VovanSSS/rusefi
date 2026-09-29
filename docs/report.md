@@ -16981,3 +16981,44 @@ Open follow-ups:
 - Optional later cleanup now unlocked: the FALSE-build-only
   sparkFiredNoOpBeforeDwell / angle-queue spark remnants, the now-unused
   angleClockCancelDwell/Injection/Close wrappers (kept for symmetry).
+
+## 2026-09-29 (21:56-21:59, bench self-stim) - m74_9: single-timer angle clock BENCH-VALIDATED - 1:1:1:1 firing, zero lateArm in stable windows; cosmetic refusal-sentinel fix
+
+Three lockstats windows on the bench self-stim after flashing the single-timer
+build (2122dfabdd6). Verdict: the design works.
+
+- Firing 1:1:1:1: W2 angclk dwell/spark/open/close fired = 3738/3738/3738/3738,
+  W3 = 2149 x4 - all four event types fire on TMR2 in perfect round-robin.
+  lateArm=0 busy=0 for all four in W2/W3 (W1 = startup window, see below).
+- sched dwell/spark/overdwell/fuel = 0 in W2/W3 - nothing engine-timing left
+  on the TIM5 executor; the executor carries only knock/onTdc/WDA (othercb
+  080481C5 n==dwell count = startKnockSampling, 08049D71 n~=dwell/4 = onTdc,
+  08071DB1 ~1/s = WDA - the unchanged pre-refactor composition).
+- tim2clk exact in all three: ARR=FFFFFFFF (PMEN 32-bit holds), sleep T2d ~=
+  NTd ~= 399-400k/100ms, PSC=71; nvic ladder all want-matches, T2=3.
+- Healthy bands: maxLateUs 44-47 us (fire blocked behind a running handoff/
+  fire - the normal 7-66 us band), immediate 11/34/0 (0-0.9% of dwell, the
+  known boundary class), refresh maxPullUs 401 (W1 startup) -> 19 us steady,
+  lookahead dwell/open == fired (1:1 engaged), zero C9009/C935x/C9002,
+  maxLockedDuration=0.
+- W1 startup transient, the known double-window class surfacing as close
+  busy: close fired=496 vs open=501, lateArm=5 busy=5, and sched fuel n=5
+  exactly 1:1 - five opens whose close arm found the close channel still
+  holding the PREVIOUS close (the armedAt-passed next-cycle re-schedule of
+  the same cylinder). The CC2 mini-queue used to absorb this via pendingCount;
+  the new design falls back to the TIM5 executor close instead - identical
+  net effect, overlappingCounter closes the injector correctly (the 5 TIM5
+  fuel events are turnInjectionPinLow fallbacks, all fired, maxLateUs 50 us).
+  Converges to 0 busy in W2/W3.
+- Cosmetic bug found + fixed: the FIRST lockstats after boot printed a bogus
+  `angclk dwell refusal branch=0 win=0 target=0.0 cycle=0.0 ... tot=0`
+  all-zero line - the zero-initialized DwellArmRefusal struct (branch=0) is
+  indistinguishable from a real no-basis refusal until the first
+  angleClockResetStats() sets the 0xFF sentinel. Fix: s_dwellRefusal.branch =
+  0xFF in initAngleClock() (no aggregate initializer - -Wmissing-field-
+  initializers is Werror). Rebuilt, BUILD SUCCESSFUL. Diagnostic line only,
+  no engine effect.
+
+Still open: the CAR verdict (real crank signal, catch storm, decel bands) -
+the bench validates the mechanics, not the trigger storm / VRS path.
+

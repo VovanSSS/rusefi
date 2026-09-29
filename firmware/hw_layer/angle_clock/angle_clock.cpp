@@ -127,6 +127,10 @@ static uint32_t s_lookaheadDwell      = 0;  // early-window dwell arm in [nextNe
 static uint32_t s_lookaheadOpen       = 0;  // early-window open arm in [nextNext, nextNext+K)
 
 // Most recent failed dwell arm (diagnostic snapshot, read by lockstats).
+// branch = 0xFF is the "no refusal since last reset" sentinel, set in
+// initAngleClock() - the struct must NOT carry a non-trivial aggregate
+// initializer (the zero-initialized branch=0 would print a bogus all-zero
+// refusal line on the FIRST lockstats after boot).
 static DwellArmRefusal s_dwellRefusal;
 
 static uint32_t s_initAcDelta = 0;
@@ -280,6 +284,10 @@ void initAngleClock() {
     s_timerOff = ANGLE_TIMER->CNT - getTimeNowLowerNt();
 
     nvicEnableVector(STM32_TIM2_NUMBER, EFI_IRQ_ANGLE_CLOCK_PRIORITY);
+
+    // "No refusal since boot" sentinel - a zero-initialized branch=0 would
+    // print a bogus all-zero refusal line on the first lockstats.
+    s_dwellRefusal.branch = 0xFF;
 
     s_initAcDelta = acDelta;
     s_initNtDelta = ntDelta;
