@@ -283,6 +283,19 @@ extern std::optional<setup_custom_get_float_type> custom_board_vrGapShiftPitch;
 // strict C9003 desync at running rpm.
 extern std::optional<setup_custom_bool_type> custom_board_syncAcceptToothLoss;
 
+// When set and returning true (and isMapAveragingEnabled), MAP averaging
+// switches to the instant-at-arm variant (B, see map_averaging.h): the angle
+// windows are abandoned, MapFast is published once per 200 Hz tick as the
+// instant conversion of the raw fast-ADC latch, and each cylinder's injection
+// mass is rescaled by the raw latch converted at ITS OWN arm time in the
+// handoff (phase-locked, no window, no planner/executor events). For
+// shared-plenum engines where all four windows measure the same global
+// pressure, so the window buys nothing and only costs 8 executor events per
+// cycle. The tune gate (isMapAveragingEnabled) still applies. Default false:
+// other boards keep the window semantics (mandatory for ITB, where the
+// per-cylinder phase selectivity is the point).
+extern std::optional<setup_custom_bool_type> custom_board_mapInstantAtArm;
+
 // When set and returning a positive angle (degrees), the cam/VVT position is
 // cross-checked on every cam event: a fixed cam must report the same phase
 // every cam revolution. A crank-sync basis error (false sync) shifts the

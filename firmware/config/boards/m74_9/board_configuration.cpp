@@ -961,6 +961,15 @@ void setup_custom_board_overrides() {
 	custom_board_vrGapShiftPitch = []() {
 		return vrExpectedShiftPitchForRpm(Sensor::getOrZero(SensorType::Rpm));
 	};
+	// Instant-at-arm MAP (variant B, 2026-09-29): this engine has a shared
+	// plenum - the four angle windows all measure the same global pressure, so
+	// the window buys nothing and only costs 8 executor events per cycle (4x
+	// startAveraging + 4x endAveraging at TIM5 prio 5) + the fast-ADC ISR
+	// convert at 6 kHz. Publish MapFast as the instant fast-ADC conversion at
+	// the 200 Hz tick and rescale each cylinder's mass by the raw latch
+	// converted at ITS OWN injection arm (phase-locked, ~100-200 ns each).
+	// ITB boards keep the angle windows - their phase selectivity is the point.
+	custom_board_mapInstantAtArm = []() { return true; };
 	// Storage writes must be deferred while the engine runs: the MFS lives on
 	// the AT32 internal flash (bank 2) and a sector erase stalls the whole CPU
 	// (no read-while-erase on this silicon). The periodic LTFT save hitting an

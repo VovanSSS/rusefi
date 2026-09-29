@@ -478,7 +478,9 @@ TRIGGER_RAM_CODE void tdcMarkCallback(
 	// preserved exactly (no extra executor insert in the handoff).
 	bool needEngineCyclePlanning = false;
 #if EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
-	needEngineCyclePlanning = needEngineCyclePlanning || engineConfiguration->isMapAveragingEnabled;
+	// The window planner is off in the instant-at-arm (variant B) mode - it has
+	// no windows to plan, MapFast is published at the 200 Hz tick.
+	needEngineCyclePlanning = needEngineCyclePlanning || (engineConfiguration->isMapAveragingEnabled && !isMapInstantAtArm());
 #endif
 #if EFI_MISFIRE_DETECTION
 	needEngineCyclePlanning = needEngineCyclePlanning || engineConfiguration->misfireDetectionEnabled;

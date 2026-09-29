@@ -152,13 +152,14 @@ TRIGGER_RAM_CODE void InjectionEvent::onTriggerTooth(efitick_t nowNt, float curr
 	auto injectionMassGrams = getEngineState()->injectionMass[this->cylinderNumber];
 
 #if EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
-	// Variant A (2026-09-23): refresh the mass with the freshest closed window -
-	// ONE multiply. injectionMass[cyl] is stored in reference units by the 200 Hz
-	// pipeline; injectionMassMapBasis[cyl] is the MAP it was last based on
-	// (referenceMap after the 200 Hz refresh, the just-closed window value after
-	// endAveraging rescaled the firing-order successor). Single-window semantics:
-	// MapFast holds the previous cylinder's average per the 180-degree chain, and
-	// the next cycle's first cylinder picks up the last window of the previous cycle.
+	// Per-cylinder MAP refresh at arm time - ONE multiply, ~100-200 ns.
+	// Variant A (windows, 2026-09-23): mass *= MapFast / injectionMassMapBasis[cyl]
+	// with the freshest closed window; composable with the 200 Hz tick via the
+	// basis bookkeeping.
+	// Variant B (instant-at-arm, 2026-09-29, shared-plenum boards like m74_9):
+	// mass *= convert(rawMapFast) / referenceMap - the instant raw-latch
+	// conversion at THIS cylinder's phase (arm time ~ its intake phase), no
+	// window, no phase wandering.
 	injectionMassGrams = refreshInjectionMassForCylinder(this->cylinderNumber, injectionMassGrams);
 #endif // EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
 

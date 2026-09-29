@@ -239,7 +239,10 @@ void EngineState::periodicFastCallback() {
 		engine->engineState.stftCorrection[bankIndex] = clResult.banks[bankIndex];
 	}
 
-	// Reference MAP used by getInjectionMass() above (the single window via SensorType::Map -> MapFast)
+	// Reference MAP used by getInjectionMass() above (via SensorType::Map -> MapFast:
+	// the freshest closed window in variant A, the previous tick's instant
+	// fast-ADC conversion in variant B - the 200 Hz tick reads what the PREVIOUS
+	// tick published, so mass and referenceMap always share one value)
 	const float mapReference = Sensor::getOrZero(SensorType::Map);
 
 	// Variant A (2026-09-23): remember the MAP the mass pipeline was computed

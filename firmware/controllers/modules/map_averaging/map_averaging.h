@@ -58,6 +58,22 @@ public:
 
 	SensorResult submit(float sensorVolts);
 
+	/**
+	 * Variant B: read-only conversion of the raw fast-ADC latch - no stored
+	 * state is written, so this is safe to call from the handoff (the handoff
+	 * must never publish into MapFast: the 200 Hz tick owns that).
+	 */
+	SensorResult convertRaw(float volts) const {
+		return m_function ? m_function->convert(volts) : unexpected;
+	}
+
+	/**
+	 * Variant B: convert the raw fast-ADC latch and publish it as the current
+	 * MapFast value (no angle window). On a failed conversion the previous
+	 * published value is kept (it expires via the sensor timeout).
+	 */
+	SensorResult publishInstant(float volts);
+
 	void setFunction(SensorConverter& func) {
 		m_function = &func;
 	}
@@ -105,14 +121,31 @@ public:
 };
 
 #if EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
-// Variant A single-multiply mass refresh, consumed at injection scheduling time
-// in the handoff: mass *= MapFast / injectionMassMapBasis[cyl]. MapFast holds
-// the freshest closed window value; the basis equals referenceMap after the
-// 200 Hz pipeline refresh and the just-closed window value after endAveraging
-// rescaled the firing-order successor - so the multiply stays composable and
-// MAP can never enter the mass twice. Returns `mass` unchanged for non-SD modes.
+// Variant B (instant-at-arm) selector: the tune gate AND the board hook
+// (custom_board_mapInstantAtArm, m74_9 - shared plenum) both hold. True means:
+// MapFast is published once per 200 Hz tick as the instant conversion of the
+// raw fast-ADC latch (no angle windows, no planner/executor events), and the
+// mass refresh below rescales each cylinder by the raw latch converted at its
+// own arm time: mass *= convert(rawMapFast) / referenceMap.
+bool isMapInstantAtArm();
+
+// Per-cylinder mass refresh, consumed at injection scheduling time in the
+// handoff.
+// Variant A (windows): mass *= MapFast / injectionMassMapBasis[cyl]. MapFast
+// holds the freshest closed window value; the basis equals referenceMap after
+// the 200 Hz pipeline refresh and the just-closed window value after
+// endAveraging rescaled the firing-order successor - so the multiply stays
+// composable and MAP can never enter the mass twice.
+// Variant B (instant-at-arm): mass *= convert(rawMapFast now) /
+// referenceMap - phase-locked, one converter call + one multiply, composable
+// with the 200 Hz tick because mass and referenceMap share the value
+// published by the PREVIOUS tick.
+// Returns `mass` unchanged for non-SD modes.
 float refreshInjectionMassForCylinder(uint8_t cylinderNumber, float mass);
 #else
+static inline bool isMapInstantAtArm() {
+	return false;
+}
 static inline float refreshInjectionMassForCylinder(uint8_t, float mass) {
 	return mass;
 }

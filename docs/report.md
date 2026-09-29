@@ -16748,3 +16748,32 @@ L62-144/L153-180/L190-241/L284-340, hardware.cpp L112-130,
 rpm_calculator.cpp L440-512, main_trigger_callback.cpp L154-165,
 engine2.cpp L242-270, engine.cpp L599-609). No build/tests run - no code
 touched. Not car-tested (analysis only). Committed locally, never pushed.
+
+## 2026-09-29 - m74_9: variant B (D2b) IMPLEMENTED - per-cylinder instant MAP at arm time, angle windows off for this board
+
+The 2026-09-29 "MAP ISR cost quantified + free-running / instant designs" analysis (previous entry) led to implementing D2b = variant B: phase-locked instant MAP at injection arm time, gated by the new board hook `custom_board_mapInstantAtArm` (setup_custom_bool_type in board_overrides.h). Default nullopt -> false, so every other board keeps the variant A angle windows untouched (ITB needs the per-cylinder phase selectivity); m74_9 sets it to true (shared plenum: all four windows measure the same global pressure, so the window buys nothing and only costs 8 executor events per cycle + the 6 kHz ISR convert). The tune gate `isMapAveragingEnabled` still applies to both variants - no config format change, no ini field, 21129.msq keeps isMapAveragingEnabled=enabled (calibration compat).
+
+Mechanics (all inside the EFI_MAP_AVERAGING && MODULE_MAP_AVERAGING guard):
+- `isMapInstantAtArm()` = isMapAveragingEnabled && hook, in map_averaging.cpp; declared in map_averaging.h with a false stub in the #else branch.
+- 6 kHz fast-ADC ISR (mapAveragingAdcCallback): early return - rawMapFast is already latched by the ISR itself (onFastAdcComplete in hardware.cpp). The LinearFunc convert leaves the ISR entirely.
+- MapAveragingModule::onFastCallback (200 Hz): variant B branch first - `getMapAvg(0).publishInstant(rawMapFast)` = convert + setValidValue into MapFast. Publishes regardless of rpm (it is the only publisher now). Also: isMapValid, instantMAPValue (TS), mapPerCylinder[0..MAX-1] = one global value, hasEverDecodedMap / C6899 logic ported and 200 Hz rate-limited. Window angle math skipped.
+- scheduleNextCycleWindows: early return (no planner, no startAveraging / endAveraging events at all).
+- tdcMarkCallback (rpm_calculator.cpp): the MAP term is now `(isMapAveragingEnabled && !isMapInstantAtArm())` - the once-per-cycle TDC executor event is scheduled only for sniffer / misfire.
+- refreshInjectionMassForCylinder (called at injection arm in main_trigger_callback.cpp, the call site unchanged): variant B branch `mass *= convertRaw(rawMapFast) / referenceMap`. New read-only MapAverager::convertRaw - the handoff NEVER publishes into MapFast (invariant: the 200 Hz tick owns that).
+- Staleness cancels: Engine::periodicFastCallback runs engineState.periodicFastCallback() (engine2.cpp: mapReference = getOrZero(Map) -> referenceMap, injectionMass[] computed) BEFORE engineModules.apply_all(onFastCallback) (the new MapFast publish). So mass N and referenceMap N share the value published by tick N-1, and the arm-time rescale moves the mass to the arm instant: at most one tick of MAP age enters the pipeline and it is corrected at arm time.
+- Surfaces kept live: isMapValid (now 200 Hz), C6899 (hasEverDecodedMap suppression), instantMAPValue, mapPerCylinder (all slots = one value), MapFast 200 ms sensor timeout (a failed convert keeps the stale value until expiry -> the Map combiner falls back to MapSlow).
+- init() prints the mode at boot: "initMapAveraging... mode=instant-at-arm (variant B)" vs "mode=windows (variant A)" - the car boot-log verification aid.
+
+Cost fix (user question "почему 10-20 us?"): the earlier quote was ~100x off. One LinearFunc convert + one FPU multiply on cortex-m4f @ 288 MHz (hard FPU) is ~100-200 ns per cylinder, ~1 us for all four. 10-20 us would only apply if the refresh went through the full sensor pipeline (registry lookup, rate-limit, CS lock) - variant B deliberately avoids all of that (raw latch + direct function-pointer call, no Sensor::getOrZero in the hot path).
+
+Files: hw_layer/board_overrides.h (hook + doc), hw_layer/hardware.cpp (global), controllers/modules/map_averaging/map_averaging.{h,cpp} (convertRaw, publishInstant, isMapInstantAtArm, onFastCallback B branch, adcCallback early return, refresh B branch, planner guard, init print), controllers/engine_cycle/rpm_calculator.cpp (TDC term), controllers/engine_cycle/main_trigger_callback.cpp (comment), controllers/algo/engine2.cpp (comment), config/boards/m74_9/board_configuration.cpp (hook = true), unit_tests/tests/controllers/modules/map_averaging/test_map_instant_arm.cpp (new, 6 tests), unit_tests/tests/tests.mk. 21129.msq carries the 20260929 build stamp only.
+
+Validation:
+- unit tests GCC (make -j12): 1181 tests, 1169 passed, 12 failed = exactly the known pre-existing list (injection / trigger scheduling area, see CLAUDE.md), nothing new.
+- unit tests clang (make clean && make CC=clang -j12): identical 1169 / 12.
+- m74_9 build: compile_m74_9.sh BUILD SUCCESSFUL; the "mode=instant-at-arm (variant B)" boot string is present in the ELF .rodata (isMapInstantAtArm has no nm symbol - LTO inlined it; verify via the string, not nm).
+- NOT car-tested. Expected on the car: lockstats othercb loses startAveraging / endAveraging, executor ~4 events/cycle (was 13.1), AdcCallbackFast ScopePerf down, isMapAveraging stays 0; fuel at fixed points unchanged (trim within noise).
+
+Open follow-ups:
+- rawMapFast MLG oscillation measurement (idle / 2000 / 4000) - the go / no-go of the pure single-sample design vs plenum vibration; if A_osc / MAP > ~3 kPa, add a one-line time-based EMA (tau 2-5 ms) at the arm sample point.
+- A fixed engine-phase sample hits the plenum oscillation at a fixed point -> a constant trimmable offset at idle by design, not a bug.
