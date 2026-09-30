@@ -1,5 +1,47 @@
 # Work Report
 
+## 2026-09-30 - m74_9 oneDegreeUs vs instantRpm: oneDegreeUs returns 0/NAN on a desync; instantRpm is the sticky 90-degree basis
+
+KEY FACT: oneDegreeUs (RpmCalculator field) can return 0/NAN. assignRpmValue
+sets BOTH cachedRpmValue (= SensorType::Rpm) and oneDegreeUs from the SAME
+floatRpmValue, so they are the same information (reciprocal). On a trigger
+desync OnTriggerSynchronizationLost -> setStopSpinning -> assignRpmValue(0) ->
+cachedRpmValue = 0 AND oneDegreeUs = NAN. So oneDegreeUs flaps to NAN/0 exactly
+like the rpm sensor does - it is NOT a smoothed basis.
+
+- oneDegreeUs in RUNNING = the full-cycle average (60*mult/periodSeconds, set
+  only at trgEventIndex==0); in SPINNING-UP it = getOneDegreeTimeUs(instantRpm)
+  (the 90-degree window).
+- instantRpm (InstantRpmCalculator, getInstantRpm) = the ~90-degree tooth-time
+  window, updated EVERY tooth; it is STICKY - below RPM_LOW_THRESHOLD
+  calculateInstantRpm returns the last good value - so it does not flap to 0.
+
+Angle clock channels (current state after the switch):
+- dwell (CC1) and injection open (CC3) = ANGLE-domain, armed+refreshed from
+  s_ticksPerDegree which is now fed instantRpm (angleClockOnTooth).
+- spark (CC2) and injection close (CC4) = FROM-NOW time domain
+  (angleClockArmSparkFromNow delay = MSF2NT(sparkDwell); close delay =
+  injectionEndDelayNt = US2NT(PW)); they use TIME, not the angle basis, and
+  are skipped by the refresh (780-degree sentinel).
+
+instantRpm in the DECODER (trigger path):
+- rpm_calculator.cpp rpmShaftPositionCallback: updateInstantRpm (writer, every
+  tooth) + spin-up rpm consumption (setRpmValue/assignRpmValue).
+- trigger_central.cpp syncEnginePhaseAndReport: instantRpm.offsetIndices(indexOffset)
+  - ROTATES timeOfLastEvent[]/instantRpmValue[] when the sync phase shifts on a
+  resync. Storm re-syncs rotate this buffer - a mis-rotated buffer gives an
+  instantRpm spike.
+- trigger_decoder.cpp onTriggerError: resetInstantRpm() (discard on decode error).
+- engine.cpp OnTriggerSynchronizationLost: resetInstantRpm() (discard on sync loss).
+
+Consumers outside the decoder: idle getPosition, getAdvanceCorrections ->
+getIdleTimingAdjustment (idle timing PID -> advance), TS output channel, and now
+the angle clock feed + updateDwell.
+
+Change committed (a6d56a0c311): angleClockOnTooth + updateDwell use instantRpm
+instead of oneDegreeUs. Open: the C9009 angle jump (advance vs dwellDuration) is
+still not proven - sparkring records dwell but not spark.
+
 ## 2026-09-30 - m74_9 angle clock basis switched to instantRpm (90-degree window); the earlier oneDegreeUs dwell fix was on the wrong premise
 
 CORRECTION of the entry below: oneDegreeUs is NOT the 90-degree average - in
