@@ -20,6 +20,10 @@ void scheduleSparkEvent(bool limitedSpark, IgnitionEvent *event,
 // the same window falls below the arm margin and all arms fail.
 void scheduleDwellEarlyIfDue(float rpm, efitick_t edgeTimestamp, float currentPhase,
                                float nextPhase, float nextNextPhase);
+// Dump the spark schedule event ring ('sparkring' console command) - the
+// m74_9 C9009 double-schedule instrumentation records every dwell schedule
+// with its window kind, angle offsets and the phase/basis state.
+void printSparkScheduleRing(int count);
 #endif
 void turnSparkPinHighStartCharging(IgnitionEvent *event);
 void fireSparkAndPrepareNextSchedule(IgnitionEvent *event);

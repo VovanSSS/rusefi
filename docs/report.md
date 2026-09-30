@@ -1,5 +1,51 @@
 # Work Report
 
+## 2026-09-30 - m74_9: C9009 double-schedule root cause - static analysis + 'sparkring' schedule event ring instrumentation
+
+Static analysis of the counter-fall==1 re-arm (from the 2026-09-30 car log
+and the scheduling code):
+- The c9009diag signature: counter-fall==1 for ALL FOUR coils in one storm
+  (13189/13191/13193/13195), window=current (early=0), off 0-14 tenths,
+  cur = dwell-1.4..0 deg, rpm falling 1388->1340, gapCorr constant 38.
+- The dwell target angles are FIXED engine-phase angles (timingAdvance +
+  firing-order offset - dwellDuration); what moves is the WINDOW basis
+  (currentPhase). Two candidate mechanisms for the re-arm:
+  (a) garbage-basis late fire: a storm-flap tooth feeds a huge ticksPerDegree
+      -> the dwell is armed far in the future -> charge+fire land ~1 cycle
+      late (near the NEXT cycle's dwell window) -> the very next tooth's
+      current window matches the fixed dwell angle -> re-arm at
+      counter-fall==1 with off~0. The other coils follow 180 deg later, which
+      matches the diag interleaving exactly (each coil's re-schedule lands one
+      slot after its own fire, no other schedule in between).
+  (b) phase-basis jump: a gapCorr EMA step / decoder re-sync moves the window
+      onto the fixed target right after the fire. A small (tooth-aligned)
+      re-anchor cannot shift the phase by the ~700 deg that a counter-fall==1
+      re-arm right after an ON-TIME fire would require, so (a) is the primary
+      suspect - but the ring discriminates both directly.
+- The slot arithmetic: between a coil's fire slot and its re-schedule slot
+  there are ZERO other schedules, so the re-arm happens on the tooth
+  immediately after the fire - the next-cycle window is 700+ deg away for an
+  on-time fire.
+
+Instrumentation (IMPLEMENTED, not car-tested yet):
+- spark_logic.cpp: SparkScheduleRingEntry {counter, fall, dwell, cur, next,
+  off, tpd (angle-clock ticks-per-degree basis), gapCorr, syncCnt, rpm, rev,
+  ntMs, coil, window} - 256 entries, single writer (the prio-4 handoff - both
+  call sites run inside mainTriggerCallback), recorded on EVERY dwell schedule
+  (both windows, ~4/engine cycle) in scheduleSparkEvent. 'sparkring [N]'
+  console command (registered in m74_9 board_configuration.cpp) dumps the last
+  N entries. angle_clock gained the angleClockTicksPerDegree() accessor so the
+  ring records the ARM BASIS - the direct discriminator: tpd huge = (a),
+  gapCorr/syncCnt stepped between the normal arm and the re-arm = (b).
+- Reading workflow: see a c9009diag burst in the console -> run 'sparkring' ->
+  compare the entries around the re-arm (win=0, off~0, counter==fall+1) with
+  the same coil's previous entry (win=1, normal off).
+
+Validation: m74_9 board build BUILD SUCCESSFUL (bss +~6.7 KB = the ring); unit
+tests 1181 run / 12 fail - the same 12 pre-existing. NOT car-tested: the next
+storm capture names the root cause, then the fix direction is (a) clamp/reject
+the storm basis at ARM time or (b) tolerate the re-anchor.
+
 ## 2026-09-30 - m74_9 CAR SESSION: freerunning TMR2 + fire-mask fix validated; new telemetry class: close-channel busy during the C9009 double-schedule storm
 
 Flashed firmware/build/rusefi.srec (the 260929 bundle image). Six lockstats

@@ -161,6 +161,11 @@ TRIGGER_RAM_CODE uint32_t angleClockNow() {
     return ANGLE_TIMER->CNT;
 }
 
+uint32_t angleClockTicksPerDegree() {
+    // NaN casts to 0 in hardware (vcvtr saturates) - informative (no basis).
+    return static_cast<uint32_t>(s_ticksPerDegree);
+}
+
 // ── ISR dispatch ──────────────────────────────────────────────────────────
 TRIGGER_RAM_CODE static void dispatch() {
     // Pass 1: release every due channel. ALL channels are released BEFORE any

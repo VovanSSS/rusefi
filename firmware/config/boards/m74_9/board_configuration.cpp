@@ -15,6 +15,7 @@
 #include "ignition_controller.h"
 #include "thermistors.h"
 #include "angle_clock.h"
+#include "spark_logic.h"
 
 // PB14 is error LED, configured in board.mk
 Gpio getCommsLedPin() {
@@ -1091,6 +1092,12 @@ void setup_custom_board_overrides() {
 	addConsoleAction("toothdump", m74_9ToothDump);
 	addConsoleAction("toothsave", m74_9ToothSave);
 	addConsoleAction("synctrace", m74_9SyncTrace);
+#if EFI_ANGLE_CLOCK
+	// Spark schedule event ring: dump the last N dwell schedules (window kind,
+	// angle offsets, ticks-per-degree basis, gap correction, sync counter) to
+	// name the C9009 double-schedule root cause after a c9009diag burst.
+	addConsoleAction("sparkring", [](){ printSparkScheduleRing(64); });
+#endif // EFI_ANGLE_CLOCK
 	// one-shot multi-clock dump: run twice with a known wall-clock gap to
 	// verify which timebase (if any) diverges
 	addConsoleAction("timecheck", m74_9TimeCheck);

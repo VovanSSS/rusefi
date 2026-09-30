@@ -31,6 +31,88 @@ extern bool verboseMode;
 static const char *prevSparkName = nullptr;
 #endif // EFI_UNIT_TEST
 
+#if EFI_ANGLE_CLOCK
+// ── Spark schedule event ring (m74_9 C9009 double-schedule instrumentation) ──
+// Records EVERY dwell schedule (4 per engine cycle, both the early window of
+// scheduleDwellEarlyIfDue and the current window of onTriggerEventSparkLogic)
+// with the window kind, the angle offsets and the phase-basis state. The
+// counter-fall==1 storm printed by the c9009diag block is then replayable
+// with the 'sparkring' console command, which decides between the two
+// candidate root causes:
+//   (a) garbage-basis arm: tpd huge (storm-flap oneDegreeUs) -> the dwell is
+//       armed far in the future -> fires ~1 cycle late -> the next cycle's
+//       current-window match lands right after the fire (counter-fall==1);
+//   (b) phase-basis jump: gapCorr stepped / the decoder re-synced between the
+//       normal arm and the re-arm, moving the window onto the fixed dwell
+//       angle (the fire is on time, the re-arm is a legitimate next-cycle
+//       schedule shifted by the re-anchor).
+// The ntMs spacing between entries shows whether the storm compressed the
+// schedules in time. Single writer (the prio-4 handoff only - both call
+// sites run inside mainTriggerCallback), so no locking.
+struct SparkScheduleRingEntry {
+	uint16_t counter;  // sparkCounter low 16
+	uint16_t fall;     // signalFallSparkId low 16
+	uint16_t dwell;    // dwellAngle tenths of a degree
+	uint16_t cur;      // currentPhase tenths
+	uint16_t next;     // nextPhase tenths
+	int16_t  off;      // angleOffset = dwellAngle - currentPhase, tenths (signed)
+	uint16_t tpd;      // angle-clock ticks-per-degree basis at this schedule
+	int16_t  gapCorr;  // gapAnchorCorrectionDeg tenths (signed)
+	uint16_t syncCnt;  // decoder synchronization counter low 16
+	uint16_t rpm;
+	uint16_t rev;      // revolution counter low 16
+	uint16_t ntMs;     // getTimeNowMs() low 16
+	uint8_t  coil;     // cylinder index 0..3
+	uint8_t  window;   // 0 = current window, 1 = early window
+};
+
+static SparkScheduleRingEntry sparkScheduleRing[256];
+static uint16_t sparkScheduleRingHead = 0;
+static uint16_t sparkScheduleRingCount = 0;
+
+TRIGGER_RAM_CODE static void recordSparkSchedule(uint8_t coil, uint32_t counter, uint32_t fall,
+		bool earlyWindow, float dwellAngle, float currentPhase, float nextPhase,
+		float angleOffset) {
+	SparkScheduleRingEntry e;
+	e.counter = (uint16_t)counter;
+	e.fall = (uint16_t)fall;
+	e.dwell = (uint16_t)(dwellAngle * 10.0f);
+	e.cur = (uint16_t)(currentPhase * 10.0f);
+	e.next = (uint16_t)(nextPhase * 10.0f);
+	e.off = (int16_t)(angleOffset * 10.0f);
+	uint32_t tpd = angleClockTicksPerDegree();
+	e.tpd = (uint16_t)(tpd > 0xFFFF ? 0xFFFF : tpd);
+	e.gapCorr = (int16_t)(getTriggerCentral()->gapAnchorCorrectionDeg * 10.0f);
+	e.syncCnt = (uint16_t)engine->triggerCentral.triggerState.getSynchronizationCounter();
+	e.rpm = (uint16_t)Sensor::getOrZero(SensorType::Rpm);
+	e.rev = (uint16_t)getRevolutionCounter();
+	e.ntMs = (uint16_t)getTimeNowMs();
+	e.coil = coil;
+	e.window = earlyWindow ? 1 : 0;
+	sparkScheduleRing[sparkScheduleRingHead] = e;
+	sparkScheduleRingHead = (uint16_t)((sparkScheduleRingHead + 1) % efi::size(sparkScheduleRing));
+	if (sparkScheduleRingCount < efi::size(sparkScheduleRing)) {
+		sparkScheduleRingCount++;
+	}
+}
+
+// Console command 'sparkring [N]': dump the last N entries (newest last).
+void printSparkScheduleRing(int count) {
+	if (count <= 0 || count > (int)sparkScheduleRingCount) {
+		count = sparkScheduleRingCount;
+	}
+	efiPrintf("sparkring: %d entries, newest last (dwell/cur/next/off tenths of deg, tpd=ticks/deg)", count);
+	for (int i = 0; i < count; i++) {
+		uint16_t idx = (uint16_t)((sparkScheduleRingHead + efi::size(sparkScheduleRing) - count + i) % efi::size(sparkScheduleRing));
+		const SparkScheduleRingEntry& e = sparkScheduleRing[idx];
+		efiPrintf("sparkring #%u c=%u f=%u cyl=%u win=%u dwell=%d cur=%d next=%d off=%d tpd=%u gapC=%d sync=%u rpm=%u rev=%u ms=%u",
+			(unsigned)idx, (unsigned)e.counter, (unsigned)e.fall, (unsigned)e.coil, (unsigned)e.window,
+			(int)e.dwell, (int)e.cur, (int)e.next, (int)e.off,
+			(unsigned)e.tpd, (int)e.gapCorr, (unsigned)e.syncCnt, (unsigned)e.rpm, (unsigned)e.rev, (unsigned)e.ntMs);
+	}
+}
+#endif // EFI_ANGLE_CLOCK
+
 static void fireSparkBySettingPinLow(IgnitionEvent *event, IgnitionOutputPin *output) {
 #if SPARK_EXTREME_LOGGING
 	efiPrintf("[%s] %d spark goes low revolution %d tick %d current value %d",
@@ -554,6 +636,13 @@ TRIGGER_RAM_CODE void scheduleSparkEvent(bool limitedSpark, IgnitionEvent *event
 					(unsigned)getRevolutionCounter(),
 					(int)(getTriggerCentral()->gapAnchorCorrectionDeg * 10.0f));
 			}
+#if EFI_ANGLE_CLOCK
+			// Record EVERY schedule (both windows) into the spark schedule ring
+			// ('sparkring' console command) - the c9009diag print above is the
+			// trigger, the ring is the context that names the root cause.
+			recordSparkSchedule((uint8_t)event->cylinderIndex, event->sparkCounter, fall,
+				earlyWindow, dwellAngle, currentPhase, nextPhase, angleOffset);
+#endif // EFI_ANGLE_CLOCK
 		}
 	}
 #endif // !EFI_UNIT_TEST

@@ -114,6 +114,13 @@ void initAngleClock();
 // captured in the fast EXTI IRQ and read by the from-now arms).
 uint32_t angleClockNow();
 
+// Current angle->time basis (ticks per degree) used by the angle arms.
+// Diagnostics: the spark schedule ring (spark_logic.cpp) records it per
+// schedule to tell a garbage-basis storm arm (tpd huge -> armed far in the
+// future -> fires ~1 cycle late) from a phase-basis jump (gapCorr/sync).
+// 0 = no valid basis yet.
+uint32_t angleClockTicksPerDegree();
+
 // Feed the per-tooth state used by the angle channels. Call once per tooth
 // (including rpm==0 storm-flap teeth - the refresh must track true speed).
 // edgeAcTick is the TMR2-domain edge timestamp captured by the fast EXTI IRQ
