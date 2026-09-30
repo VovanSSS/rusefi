@@ -1,5 +1,49 @@
 # Work Report
 
+## 2026-09-30 - m74_9 idle session analysis (13:14-13:18 log): angclk xsec + sparkring first full reading, C9009 x2 both BENIGN fall+4
+
+Session: ~4 min idle at ~800-1190 rpm, 6 lockstats windows, 5 sparkring
+dumps, 2 C9009 warnings, zero other faults (no C935x/C9002/C9007/C9008,
+no toothloss/newerr, no overdwell events).
+
+angclk xsec (the new per-kind ISR-entry attribution) - first reading:
+- Steady idle (windows 2-6): maxLateUs 13-15 us; per-kind n=0..5, maxUs
+  6-15, and handoff=0 EVERYWHERE - in idle the residual is NOT handoff
+  collisions (the handoffs are short and fires rarely land mid-decode); it is
+  same-ISR-entry channel ordering (dwell->spark->open->close execute
+  sequentially in ONE dispatch; the close's late includes the earlier
+  actions' run time) plus the fast EXTI and NVIC entry.
+- Window 1 (startup, first ~22 s): maxLateUs=55 (dwell 55, close 50), still
+  handoff=0, plus one triggerIsr 500-1000 us tail - the boot-context class:
+  kernel-locked sections (SD/MSD/SPI/settings init, console connect) + the
+  same-entry ordering. NOT a mask.
+- lateArm: 0 in windows 2-6; window 1 open tickPast=3 + close busy=5, and
+  sched fuel n=8 = 3+5 exactly (the 1:1 fallback accounting holds again).
+- tim2clk exact in every window; LOOKAHEAD ~1:1 with fired (1213/1213,
+  1625/1624, 1887/1886); refresh skip-dominated, window 6 (rpm flapping
+  800-1000) write=2986 maxPullUs=57 - the flap's basis tracking, bounded.
+
+The decel-window 67-71 us class of the morning was NOT reproduced (this was
+an idle session) - the handoff= attribution still awaits a decel capture.
+
+C9009 x2 - both the BENIGN fall+4 class (NOT the counter-fall==1 storm):
+- 13:17:28 Coil 3 rpm=802 fall=6148 counter=6152 (delta 4 = cylinderCount)
+- 13:18:05 Coil 4 rpm=804 fall=7197 counter=7201 (delta 4)
+- charged=0 bail=no - the rpm-flap prevSparkName desync false positive
+  (documented). No c9009diag schedule-side lines at all in the session -
+  no double-schedule storm happened.
+
+sparkring (5 dumps) - the instrument is validated end to end:
+- Perfect i/d/f interleaving in firing order; every schedule win=1 (early
+  window - the LOOKAHEAD band catches 100%); off 137-177 tenths; tpd
+  560->744 tracks rpm (physical); gapC stepped 37->36 tenths (the VR model
+  retrained 0.1 deg); syncCnt +1 per rev; pw 3.3-3.8 ms (idle);
+  counter-fall==4 on every dwell; schedule->fire gap ~5-6 ms (dwell + arm
+  lead). Zero win=0 re-arms, zero counter-fall==1, zero garbage tpd.
+- Dump artifact (harmless): the ring is written while printed, so the index
+  window shifts/wraps mid-dump (a missing index, #0 after #255) - the dump
+  is a live window, not a frozen snapshot.
+
 ## 2026-09-30 - m74_9: per-kind ISR-entry lateness attribution in the angle clock ('angclk xsec' lockstats line)
 
 Question: where do the residual 67-71 us in `angclk maxLateUs` (decel windows)
