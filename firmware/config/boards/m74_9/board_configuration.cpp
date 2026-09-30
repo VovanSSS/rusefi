@@ -1193,6 +1193,25 @@ void setup_custom_board_overrides() {
 			(unsigned)angleClockInitAcDelta(), (unsigned)angleClockInitNtDelta(),
 			(unsigned)angleClockInitPsc(),
 			(unsigned)((NVIC->IP[28] >> 4) & 0xF));
+		// Per-channel ISR-entry lateness attribution (2026-09-30): the pooled
+		// maxLateUs above cannot say WHICH channel floats nor WHY. handoff = the
+		// late fires that waited for the running trigger decode (prio 4) - the
+		// fires-above-handoff trade and the source of the decel-window 67-71 us
+		// readings; the rest is the fast EXTI / same-prio serialization / short
+		// kernel-CS sections.
+		efiPrintf("angclk xsec dwell n=%u handoff=%u maxUs=%u | spark n=%u handoff=%u maxUs=%u | open n=%u handoff=%u maxUs=%u | close n=%u handoff=%u maxUs=%u (ISR-entry >=10us per type)",
+			(unsigned)angleClockLateGt10usCount(ANGLE_CLOCK_CH_DWELL),
+			(unsigned)angleClockLateHandoffCount(ANGLE_CLOCK_CH_DWELL),
+			(unsigned)(angleClockLateMaxTicks(ANGLE_CLOCK_CH_DWELL) / (NT_PER_SECOND / 1000000)),
+			(unsigned)angleClockLateGt10usCount(ANGLE_CLOCK_CH_SPARK),
+			(unsigned)angleClockLateHandoffCount(ANGLE_CLOCK_CH_SPARK),
+			(unsigned)(angleClockLateMaxTicks(ANGLE_CLOCK_CH_SPARK) / (NT_PER_SECOND / 1000000)),
+			(unsigned)angleClockLateGt10usCount(ANGLE_CLOCK_CH_OPEN),
+			(unsigned)angleClockLateHandoffCount(ANGLE_CLOCK_CH_OPEN),
+			(unsigned)(angleClockLateMaxTicks(ANGLE_CLOCK_CH_OPEN) / (NT_PER_SECOND / 1000000)),
+			(unsigned)angleClockLateGt10usCount(ANGLE_CLOCK_CH_CLOSE),
+			(unsigned)angleClockLateHandoffCount(ANGLE_CLOCK_CH_CLOSE),
+			(unsigned)(angleClockLateMaxTicks(ANGLE_CLOCK_CH_CLOSE) / (NT_PER_SECOND / 1000000)));
 		// Refresh write-split telemetry (2026-09-26): skip = armed CCR already
 		// optimal (steady no-op, ~2 x teeth); write = re-anchors that pulled the
 		// event EARLIER by more than the deadband - only real accel/decel

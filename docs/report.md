@@ -1,5 +1,33 @@
 # Work Report
 
+## 2026-09-30 - m74_9: per-kind ISR-entry lateness attribution in the angle clock ('angclk xsec' lockstats line)
+
+Question: where do the residual 67-71 us in `angclk maxLateUs` (decel windows)
+come from? The pooled max cannot say which channel floats or why - and
+sparkring cannot answer it either (the ring timestamps are millisecond-scale
+ntMs, invisible to a 70 us delay; the 70 us is measured only inside the TMR2
+ISR at entry, as CNT - CCR).
+
+IMPLEMENTED: dispatch() (angle_clock.cpp) now records per-channel ISR-entry
+lateness: s_lateGt10us[ch] (fires >= 10 us late), s_lateMax[ch], and
+s_lateHandoff[ch] (of the >=10 us fires, how many fired while triggerReentrant
+> 0 - i.e. WAITED FOR THE RUNNING TRIGGER DECODE, the documented
+fires-above-handoff trade; the rest is the fast EXTI, same-prio fire
+serialization and short kernel-CS sections). Printed as one lockstats line
+'angclk xsec dwell n=%u handoff=%u maxUs=%u | spark ... | open ... | close ...
+(ISR-entry >=10us per type)'; reset with lockstats like the rest. The
+injection close (CC4) is covered too - the most blocked path (fires at prio 3
+but its open runs on TIM5 fallbacks inside storms).
+
+Expected on the car: in the clean windows n~=0 everywhere; in the decel
+windows the counts concentrate in the channel whose fire landed mid-handoff
+(triggerIsr 100-250 us buckets in the SAME window) with handoff~=n - the
+proof that the residual is the handoff's own length, not a new mask.
+
+Validation: m74_9 board build BUILD SUCCESSFUL. Unit tests not re-run (the
+change is inside #if EFI_ANGLE_CLOCK && EFI_PROD_CODE - compiled out on the
+host; the last green run 1181/12 stands). NOT car-tested.
+
 ## 2026-09-30 - m74_9: C9009 double-schedule root cause - static analysis + 'sparkring' schedule event ring instrumentation
 
 Static analysis of the counter-fall==1 re-arm (from the 2026-09-30 car log

@@ -43,6 +43,12 @@
 
 #include "angle_clock.h"
 
+// trigger_central.cpp file-scope global: > 0 while TriggerCentral::handleShaftSignal
+// (the prio-4 trigger handoff) is executing. Read by dispatch() to attribute
+// per-fire ISR-entry lateness: a fire delayed WHILE the handoff runs was waiting
+// for the decode (the documented fires-above-handoff trade).
+extern int triggerReentrant;
+
 // ── Timer alias ────────────────────────────────────────────────────────────
 #define ANGLE_TIMER TIM2   // 32-bit APB1, VectorB0, IRQ 28
 
@@ -115,6 +121,17 @@ static float    s_ticksPerDegree = 0.0f;
 static uint32_t s_fired[4]       = {0, 0, 0, 0};
 static uint32_t s_lateArm[4]     = {0, 0, 0, 0};
 static uint32_t s_lateArmBusy[4] = {0, 0, 0, 0};
+// Per-channel ISR-ENTRY lateness attribution (2026-09-30): s_maxLateTicks is
+// the pooled max (angclk maxLateUs) and cannot say WHICH channel floats; these
+// counters do. The handoff split uses triggerReentrant (the trigger_central
+// decode-in-progress counter, incremented around TriggerCentral::handleShaftSignal
+// at prio 4): a fire with late >= 10 us WHILE triggerReentrant > 0 was waiting
+// for a running decode - the documented fires-above-handoff trade and the
+// dominant source of the decel-window 67-71 us readings. Anything else is the
+// fast EXTI (prio 0), same-prio fire serialization or short kernel-CS sections.
+static uint32_t s_lateGt10us[4] = {0, 0, 0, 0};
+static uint32_t s_lateMax[4]    = {0, 0, 0, 0};
+static uint32_t s_lateHandoff[4] = {0, 0, 0, 0};
 static uint32_t s_lateArmDwellGuard    = 0;  // dwell armGuard refusal (no basis / stale phase)
 static uint32_t s_lateArmDwellTickPast = 0;  // dwell target tick already in the past
 static uint32_t s_lateArmOpenGuard     = 0;  // open armGuard refusal (no basis / stale phase)
@@ -204,6 +221,16 @@ TRIGGER_RAM_CODE static void dispatch() {
             s_fired[ch]++;
             if (late > 0 && static_cast<uint32_t>(late) > s_maxLateTicks)
                 s_maxLateTicks = static_cast<uint32_t>(late);
+            // Per-kind attribution (lockstats 'angclk xsec'): which channel
+            // floats and whether it waited for the running trigger handoff.
+            if (late > 0) {
+                const uint32_t lateU = static_cast<uint32_t>(late);
+                if (lateU > s_lateMax[ch]) s_lateMax[ch] = lateU;
+                if (lateU >= US2NT(10)) {
+                    s_lateGt10us[ch]++;
+                    if (triggerReentrant > 0) s_lateHandoff[ch]++;
+                }
+            }
             act.execute();
         }
     }
@@ -604,6 +631,9 @@ TRIGGER_RAM_CODE void angleClockCancelClose()     { cancelChannel(ANGLE_CLOCK_CH
 uint32_t angleClockFiredCount(int ch)       { return s_fired[ch]; }
 uint32_t angleClockLateArmCount(int ch)     { return s_lateArm[ch]; }
 uint32_t angleClockBusyCount(int ch)        { return s_lateArmBusy[ch]; }
+uint32_t angleClockLateGt10usCount(int ch)  { return s_lateGt10us[ch]; }
+uint32_t angleClockLateMaxTicks(int ch)     { return s_lateMax[ch]; }
+uint32_t angleClockLateHandoffCount(int ch) { return s_lateHandoff[ch]; }
 uint32_t angleClockLateArmDwellGuard()      { return s_lateArmDwellGuard; }
 uint32_t angleClockLateArmDwellTickPast()   { return s_lateArmDwellTickPast; }
 uint32_t angleClockLateArmOpenGuard()       { return s_lateArmOpenGuard; }
@@ -627,6 +657,7 @@ uint32_t angleClockInitPsc()         { return s_initPsc; }
 void angleClockResetStats() {
     for (int ch = 0; ch < 4; ch++) {
         s_fired[ch] = s_lateArm[ch] = s_lateArmBusy[ch] = 0;
+        s_lateGt10us[ch] = s_lateMax[ch] = s_lateHandoff[ch] = 0;
     }
     s_lateArmDwellGuard = s_lateArmDwellTickPast = 0;
     s_lateArmOpenGuard = s_lateArmOpenTickPast = 0;
