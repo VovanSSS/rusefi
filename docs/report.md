@@ -1,5 +1,92 @@
 # Work Report
 
+## 2026-09-30 - m74_9 C9009 fall+1 double-schedule ROOT CAUSE (sparkring + c9009diag): advance step 22 deg under decel, NOT garbage-basis and NOT phase-jump
+
+Data: c9009diag 18:21:39 (two fall+1) + sparkring 18:28:40 (frozen at the
+anomaly). The sparkring discriminator REFUTES both earlier candidate
+mechanisms:
+- garbage-basis late fire: tpd would be huge. It is 484 (normal, drifting
+  376->484 as rpm falls 1768->1376).
+- phase-basis jump (gapCorr step / resync): gapC=38 constant, sync=26407
+  constant across every entry, including the anomaly.
+
+ACTUAL root cause - a 22 deg advance step under decel:
+- dwellAngle = sparkAngle - dwellAngleDuration (spark_logic.cpp L309),
+  sparkAngle = -advance + firingOrderOffset (L275-279). dwellAngleDuration
+  ~21.5 deg (c9009diag: 351.0-329.3 = 21.7, 529.9-508.4 = 21.5).
+- Normal dwell (#247, cyl=2=Coil 4): dwell=3072 -> spark 328.9 -> advance
+  31.1 deg. Anomalous (#249 + c9009diag Coil 4): spark=3510 -> advance 9.0 deg.
+  advance dropped 31.1 -> 9.0 = 22.1 deg in ONE cycle (the 200 Hz tick lands
+  inside the ~2.6 ms dwell and steps the table at the decel/DFCO boundary).
+
+Trace (ring):
+  #247 d c=52815 f=52811 cyl=2 win=1 dwell=3072 cur=2921 next=2981 off=150
+  #248 f c=52815
+  #249 d c=52816 f=52815 cyl=2 win=0 dwell=3293 cur=3281 next=3341 off=12
+1. dwell armed at 307.2 deg (advance 31.1).
+2. advance drops to 9.0 during the dwell.
+3. fire (52815) -> prepareCylinderIgnitionSchedule recomputes dwellAngle =
+   351.0 - 21.7 = 329.3 deg.
+4. next tooth (cur 328.1, next 334.1): 329.3 in [328.1, 334.1) -> the
+   CURRENT-window arm (win=0, off=12 = 1.2 deg) re-arms the SAME coil at
+   counter+1. dwellStartArmed was cleared at the fire (L241), so the guard
+   is open and the current-window branch (meant for the first cycle after
+   resync) catches the shifted angle as 'this cycle's dwell'.
+
+Cascade: firing order 4-2-1-3 (rotation of 1-3-4-2). Coil 4 re-arm at 52816
+steals Coil 2's slot, Coil 2 re-arm at 52818 (c9009diag: counter=52818
+fall=52817 dwell=5084 spark=5299 off=2) steals Coil 1's slot, etc. - the
+whole cycle re-fires in adjacent slots (the storm fingerprint). charged=0
+bail=no = wasted spark ~22 deg later, not a double-charge.
+
+FIX (matches the 09-24 candidate): respacing guard on the current-window arm
+- refuse while sparkCounter - signalFallSparkId < 2. Normal next dwell of
+the same coil is +4 (720 deg = 4 cylinders), so the guard passes it and cuts
+only the +1 double-schedule. Deeper alternative (recompute dwellAngle from the
+advance latched at arm time, not at fire) removes the angle shift itself but
+changes advance-tracking behavior - riskier.
+
+Validation: analysis only, no code changes, no build/test run.
+
+## 2026-09-30 - m74_9 lockstats 21:02-21:08 (post fire-mask fix): CLAUDE.md 'close is the long pole' claim CORRECTED - the close body is microseconds, the residual maxLateUs is same-entry ordering + cross-entry ser
+
+User correction (this session): 'InjectionEvent::update() is instant' is
+RIGHT and the earlier 'the close action recomputes the injection model in
+the prio-3 ISR (~50-70 us)' claim is WRONG. Verified in code:
+- turnInjectionPinLow (main_trigger_callback.cpp) = output->close(nowNt) for
+each output + event->update().
+- InjectionEvent::update() = updateInjectionAngle() (computeInjectionAngle:
+one MS2US(fuelMs)/oneDegreeUs divide + wrap -> next cycle's opening angle)
+plus output-index bookkeeping. No mixture, no fuel math - microseconds.
+- The mixture is computed in periodicFastCallback (200 Hz, MAIN LOOP), never
+in the close ISR.
+
+Correct reading of the 21:02-21:08 residual maxLateUs (9-71 us):
+- Clean windows 9-16 us = NVIC entry + fast-EXTI + short handoff CS - the
+fire-mask removal (Part B) floor, unchanged.
+- Elevated windows (27/47/58/71 us) are ser, and ser's close maxUs is
+SAME-ENTRY ordering: dispatch() executes due channels in order
+dwell->spark->open->close and measures late = CNT - dueCcr per channel, so
+when all four co-fire close (executed LAST) inherits the dwell/spark/open
+bodies before it. Not a heavy close body. The residual cross-entry ser
+(dwell<->close mutual, ser 9/8 per ~900 fires in 21:02:21) is the close/dwell
+~1 deg tune cluster at higher rpm.
+- immediate 46/48 and refresh maxPullUs 478/498 spike in the transient windows
+(21:02:21, 21:03:48) - arm-basis (oneDegreeUs 90-deg average) lag during rpm
+change, NOT bench noise (my earlier 'shum stenda' reading was wrong; the fan
+relay IO tests correlate in time only).
+
+Applied: CLAUDE.md 'angclk maxLateUs SEMANTICS' bullet corrected (the 'long
+pole / recomputes the model' text replaced with the retraction). The older
+13:23-13:31 report entry still carries the wrong phrase by design (never
+rewrite earlier entries); the 15:08-15:11 RETRACTION entry already supersedes
+it.
+
+Open: the double-schedule storm under decel (armedAt-passed next-cycle
+re-schedule) remains the real lever for the cross-entry ser, unchanged.
+
+Validation: analysis only, no code changes, no build/test run.
+
 ## 2026-09-30 - m74_9: why oneDegreeUs drops to 0/NAN with NO logs at all - root cause is a dense-edge burst collapsing the 90-degree instantRpm window -> silent setRpmValue clamp
 
 User facts (established over the session): at the drop instant the console
