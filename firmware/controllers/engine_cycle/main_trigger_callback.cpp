@@ -296,6 +296,15 @@ TRIGGER_RAM_CODE void InjectionEvent::onTriggerTooth(efitick_t nowNt, float curr
 	injectionStartArmed = true;
 	injectionStartArmedAt = startTime;
 
+#if EFI_ANGLE_CLOCK
+	// Spark schedule ring ('sparkring'): the injection-open entries interleave
+	// with the dwell entries on the same teeth, showing the open compression
+	// that produces the close-busy class during the C9009 storm.
+	recordInjectionSchedule((uint8_t)ownIndex, eventAngle,
+		scheduleEarly, currentPhase, nextPhase, angleFromNow,
+		injectionDurationStage1);
+#endif // EFI_ANGLE_CLOCK
+
 	// Store PW for turnInjectionPinHigh which arms the close on TIM5 CC2
 	// at the ACTUAL open moment (not the nominal startTime).
 	// Simultaneous mode (startSimultaneousInjection) never calls

@@ -21,9 +21,18 @@ void scheduleSparkEvent(bool limitedSpark, IgnitionEvent *event,
 void scheduleDwellEarlyIfDue(float rpm, efitick_t edgeTimestamp, float currentPhase,
                                float nextPhase, float nextNextPhase);
 // Dump the spark schedule event ring ('sparkring' console command) - the
-// m74_9 C9009 double-schedule instrumentation records every dwell schedule
-// with its window kind, angle offsets and the phase/basis state.
+// m74_9 C9009 double-schedule instrumentation records every dwell schedule,
+// injection-open schedule and spark fire with its window kind, angle offsets
+// and the phase/basis state.
 void printSparkScheduleRing(int count);
+// Ring writers (see the ring comment in spark_logic.cpp for the fields).
+void recordSparkSchedule(uint8_t coil, uint32_t counter, uint32_t fall,
+		bool earlyWindow, float dwellAngle, float currentPhase, float nextPhase,
+		float angleOffset);
+void recordInjectionSchedule(uint8_t coil, float eventAngle,
+		bool earlyWindow, float currentPhase, float nextPhase, float angleFromNow,
+		float pwMs);
+void recordSparkFire(uint8_t coil, uint32_t counter);
 #endif
 void turnSparkPinHighStartCharging(IgnitionEvent *event);
 void fireSparkAndPrepareNextSchedule(IgnitionEvent *event);

@@ -30,18 +30,55 @@ and the scheduling code):
 Instrumentation (IMPLEMENTED, not car-tested yet):
 - spark_logic.cpp: SparkScheduleRingEntry {counter, fall, dwell, cur, next,
   off, tpd (angle-clock ticks-per-degree basis), gapCorr, syncCnt, rpm, rev,
-  ntMs, coil, window} - 256 entries, single writer (the prio-4 handoff - both
-  call sites run inside mainTriggerCallback), recorded on EVERY dwell schedule
-  (both windows, ~4/engine cycle) in scheduleSparkEvent. 'sparkring [N]'
-  console command (registered in m74_9 board_configuration.cpp) dumps the last
-  N entries. angle_clock gained the angleClockTicksPerDegree() accessor so the
-  ring records the ARM BASIS - the direct discriminator: tpd huge = (a),
-  gapCorr/syncCnt stepped between the normal arm and the re-arm = (b).
+  ntMs, pw, kind, coil, window} - 256 entries, kind 0 = injection-open
+  schedule, 1 = dwell schedule, 2 = spark fire; recorded in scheduleSparkEvent
+  (dwell), InjectionEvent::onTriggerTooth (injection, with PW) and
+  fireSparkAndPrepareNextSchedule (fire). Writers: the prio-4 handoff
+  (schedules) and the prio-3 TMR2 ISR / prio-5 executor (fires) - the ring
+  push disables interrupts briefly. 'sparkring [N]' console command dumps the
+  last N entries. angle_clock gained the angleClockTicksPerDegree() accessor
+  so the ring records the ARM BASIS - the direct discriminator: tpd huge =
+  (a), gapCorr/syncCnt stepped between the normal arm and the re-arm = (b),
+  and the schedule->fire ntMs gap (~1 cycle in the storm) proves the late
+  fire directly.
 - Reading workflow: see a c9009diag burst in the console -> run 'sparkring' ->
   compare the entries around the re-arm (win=0, off~0, counter==fall+1) with
   the same coil's previous entry (win=1, normal off).
 
-Validation: m74_9 board build BUILD SUCCESSFUL (bss +~6.7 KB = the ring); unit
+armedAt/guard analysis (the injection vs dwell asymmetry, code-verified):
+- DWELL guard (dwellStartArmed): set true at every schedule, cleared ONLY at
+  the fire (prepareCylinderIgnitionSchedule). NO time component - after the
+  fire the next window match arms unconditionally, protected only by the
+  window geometry. A phase-basis jump does not touch the flag; the armed CCR
+  fires by time at its bounded tick (the desync branch of the refresh leaves
+  it alone), then the fixed dwell angle lands in the current window of the
+  next tooth -> re-arm -> counter-fall==1.
+- INJECTION guard (injectionStartArmed + injectionStartArmedAt): set true +
+  armedAt = startTime (NT-domain predicted open instant) after every arm;
+  the guard at the top of onTriggerTooth is TIME-based
+  (injectionStartArmedAt - nowNt > 0) and returns BEFORE the window math - a
+  phase jump does not invalidate it. Cleared in InjectionEvent::update() at
+  the close (turnInjectionPinLow -> update recomputes the angle, End-of-
+  injection mode moves open = close - PW with the 200 Hz pipeline).
+  Subtleties: (1) over-hold - the refresh can fire the open EARLIER than the
+  predicted armedAt, so the guard stays closed past the actual open (benign,
+  the next match is 720 deg later); (2) garbage-basis arm - both armedAt and
+  the CCR are far-future, the refresh recovers the CCR as the basis
+  normalizes while armedAt is still far ahead, so the guard stays closed
+  until the close - this is why the injection side double-fires ~2% vs the
+  dwell's whole-cycle storm: the TIME guard shields the injection against
+  the immediate re-arm; the residual double opens appear only after the
+  armedAt instant passes (the documented armedAt-passed next-cycle
+  re-schedule class). The close-busy class is the injection analog delayed by
+  this guard: after the close's update() clears the flag and recomputes the
+  angle, a shifted basis matches the current window on an early tooth ->
+  open(N+1) arms while close(N) still holds CC4 -> busy -> TIM5 fallback.
+- NOT recorded (limit): injection window matches SUPPRESSED by the time guard
+  (the guard returns before the window math - recording them would re-add the
+  per-tooth window cost the guard removes); they are inferable from the entry
+  gaps.
+
+Validation: m74_9 board build BUILD SUCCESSFUL (bss +~7.7 KB = the ring); unit
 tests 1181 run / 12 fail - the same 12 pre-existing. NOT car-tested: the next
 storm capture names the root cause, then the fix direction is (a) clamp/reject
 the storm basis at ARM time or (b) tolerate the re-anchor.
