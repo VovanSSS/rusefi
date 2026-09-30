@@ -1,5 +1,50 @@
 # Work Report
 
+## 2026-09-30 - m74_9 post-fix drives 15:57-18:32: the injection double-schedule fix did NOT close the storm - the real mechanism is the DWELL double-schedule (C9009 fall+1)
+
+Three drives (15:57, 16:01-16:23, 16:32-16:36) + evening (18:09-18:32) on the
+injection-guard build (627fe69f2c3). VERDICT: the fix did not close the storm.
+
+Evidence:
+- close busy == close lateArm still huge and growing: 1370 / 10712 / 11910 /
+  2380 / 1801 / 2001 / 469 / 29 / 183 / 215 / 10207 / 6258 per window.
+- open lateArm split tickPast still 120 / 152 / 370 / 636 / 160 (the handoff
+  running late, NOT the open double-arm).
+- C9009 counter-fall==1 still fires on EVERY drive (16:01, 16:02, 16:03, 16:08,
+  16:09 - a full 4-coil fall+1 burst - 16:12, 16:14, 16:16, 18:21, 18:32).
+
+THE FIX ADDRESSED THE WRONG LAYER: it guarded against the injection open
+double-arm (angleClockIsArmed(OPEN)), but open busy was ALREADY 0 before the
+fix (15:08-15:11 windows) - the angle-clock open double-arm was never the
+mechanism. The real storm is the DWELL double-schedule, and close busy / open
+tickPast are its downstream symptoms (the cycle re-fires -> the opens compress
+-> CC4 is still busy when the next open arms close -> TIM5 fallback).
+
+SMOKING GUN - sparkring #249 (frozen on the anomaly, 18:28:40):
+  #248 f c=52815 f=0  cyl=2        (fire)
+  #249 d c=52816 f=52815 cyl=2 win=0 dwell=3293 cur=3281 next=3341 off=12
+A coil re-arms ONE global slot after its own fire (c = f + 1, should be f + 4)
+in the CURRENT window (win=0, off 1.2 deg) instead of the EARLY window (win=1,
+off ~17 deg). Same signature as the c9009diag counter-fall==1 lines (early=0,
+off 2-22 tenths, gapCorr=38 constant).
+
+Mechanism (to confirm): dwellStartArmed is cleared in prepareCylinderIgnitionSchedule
+AT THE FIRE; the fixed dwellAngle then re-matches the current window of the very
+next tooth. scheduleDwellEarlyIfDue should have armed it one tooth earlier (T-1)
+but missed -> the dwell falls to the current window and re-arms one slot after
+the fire. 16:09:46 shows the WHOLE cycle fall+1 in firing order (Coil 2->1->3->4)
+= a full-cycle re-fire, not a single dwell. 16:22:54 C9354 overcharge 7.5 ms +
+16:23:28 dwell busy=1 suggests the fire was intercepted by the overdwell rescue
+(so dwellStartArmed was not cleared in time).
+
+Open:
+- Why the early arm is missed: fire skipped / rescue intercept / dwell angle
+  recomputed onto the tooth boundary / phase jump (resync or gapCorr step).
+- The injection guard fix (627fe69f2c3) is left in place (more correct, harmless)
+  but is NOT the root fix.
+
+Validation: analysis only, no new code changes this session.
+
 ## 2026-09-30 - m74_9 injection double-schedule FIX: guard on the angle-clock pending state, not the stale arm-time
 
 The armedAt-passed re-schedule root cause is found and fixed. The
