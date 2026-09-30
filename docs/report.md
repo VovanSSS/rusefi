@@ -1,5 +1,46 @@
 # Work Report
 
+## 2026-09-30 - m74_9 CAR SESSION: freerunning TMR2 + fire-mask fix validated; new telemetry class: close-channel busy during the C9009 double-schedule storm
+
+Flashed firmware/build/rusefi.srec (the 260929 bundle image). Six lockstats
+windows over ~10 min, ~800-1400 rpm, decel events at ~1340-1390 rpm.
+
+CONFIRMED (the goal of the 09-29 change):
+- angclk maxLateUs = 9-14 us in the clean windows (was 66-128 us with the
+  executor kernel-CS mask) - the 60-70 us TIM5 fire mask is GONE.
+- dwell/spark/open lateArm = 0 in steady state; refusal none; tim2clk exact in
+  every window (sleep T2d~398-400k, busy T2d~400000 == NTd; ARR=FFFFFFFF =
+  PMEN holds; PSC=71; DIER transient bits normal; nvic T2=3 and the
+  exti=0/handoff=4/tim5=5 want-string all match).
+- Fallback accounting is airtight: every failed angle-clock arm = exactly one
+  TIM5 fallback event (sched fuel n == close lateArm + open lateArm in all
+  three decel windows: 775 = 705 + 70, 593 = 566 + 27, 382 = 347 + 35;
+  sched dwell n == dwell lateArm: 3 = 3, 2 = 2). No lost events anywhere.
+
+RESIDUAL maxLateUs 67-71 us in the decel windows: not the executor - the
+prio-4 handoff's own length (triggerMaxDuration up to 150 us; a prio-3 fire
+pending during a RUNNING handoff waits for the decode - the documented
+fires-above-handoff trade of the 09-28 ladder). The lever is the postDecode
+shrink, not the executor.
+
+NEW TELEMETRY CLASS: angclk close lateArm=busy (705 / 566 / 347) appears ONLY
+in the windows containing the C9009 double-schedule storm (counter-fall==1,
+all four coils, off 0-14 tenths, rpm falling 1388->1340). close busy = the
+previous close still pending on CC4 when the next open fires = the injection
+analog of the spark double-schedule (the storm re-fires the whole cycle in
+adjacent slots, compressing the opens in time). Every busy close falls back
+to TIM5 1:1 and the injector still closes (close total == open total exactly
+in every window), so the only cost is executor precision (up to ~130 us) for
+~5-10% of closes INSIDE the storm windows. The class predates this change
+(the C9009 root is documented 2026-09-20..24); it was invisible before
+because the injection close used to live on the TIM5 CC2 mini-queue with no
+busy telemetry. Open follow-up: why the whole cycle double-fires under decel
+(the armedAt-passed next-cycle re-schedule, the standing open item).
+
+C9009 warnings: the known charged=0 bail=no counter-fall==1 class (harmless
+wasted spark at the correct angle) - unchanged. No C935x/C9002/C9007/C9008,
+no overdwells, maxTriggerReentrant=0, maxLockedDuration=0 in the whole log.
+
 ## 2026-09-29 - m74_9: TMR2 free-running in its own time domain (zero TIM5 in the angle-clock path) + executor "fire mask" removed
 
 Two changes implementing the user directive "tmr2 must not depend on tim5 in
