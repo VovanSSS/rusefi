@@ -1,5 +1,63 @@
 # Work Report
 
+## 2026-09-30 - m74_9: why oneDegreeUs drops to 0/NAN with NO logs at all - root cause is a dense-edge burst collapsing the 90-degree instantRpm window -> silent setRpmValue clamp
+
+User facts (established over the session): at the drop instant the console
+shows NO C9002/C9003, NO 'engine stopped', NO 'gap in time', no synctrace
+'E'. Every zeroing writer of rpm has a print EXCEPT one: RpmCalculator::
+setRpmValue() on the alwaysInstantRpm path. So the drop is silent.
+
+Chain (all code-verified):
+- oneDegreeUs is the reciprocal of cachedRpmValue, written together in
+  RpmCalculator::assignRpmValue(). With alwaysInstantRpm=yes (21129.msq) the
+  rpm value IS the 90-degree instant RPM: rpmShaftPositionCallback L414-418 ->
+  setRpmValue(instantRpm) EVERY tooth.
+- setRpmValue (rpm_calculator.cpp L173-178) clamps: 'if (value >
+  MAX_ALLOWED_RPM=30000) value = 0; assignRpmValue(value)' - SILENT. So a huge
+  instantRpm (or <=0/NaN) zeroes oneDegreeUs without any print.
+- Once cachedRpmValue == 0 every downstream print is ALSO gated off:
+  setStopSpinning prints 'engine stopped' only if cachedRpmValue != 0, path C
+  prints C9002 only if rpm != 0 -> one silent clamp-zero silences the whole
+  storm. (Path B prints C9003 unconditionally; its absence confirms path B does
+  not fire.)
+
+The spike is real, not a timing artifact: instantRpm = (60000000/360 *
+US_TO_NT_MULTIPLIER) * angleDiff / time (instant_rpm_calculator.cpp L120),
+where time = nowNt32 - timeOfLastEvent[prevIndex] and prevIndex =
+findAngleIndex(currentAngle - 90) is the tooth ~90 deg back (~14-15 events).
+instantRpm > 30000 <=> time < ~2000 NT ticks (0.5 ms). time is the interval
+between the CURRENT tooth and the ~90-deg-ago tooth, i.e. 14-15 teeth in
+<0.5 ms = a DENSE EDGE BURST from the front-end.
+
+Ruled out:
+- 'long ISR -> storm' does NOT compress time: the timestamps are captured in
+  the fast EXTI IRQ (prio 0) at the real edge times, so a handoff backlog only
+  delays processing, never the inter-edge interval.
+- Buffer rotation offsetIndices (the 'mis-rotated buffer' spike) is
+  Mitsubishi-VVT only: it is called from syncEnginePhaseAndReport (trigger_
+  central.cpp L180-195) <- adjustCrankPhase VVT_MITSUBISHI_4G63/6G75 cases.
+  m74_9 has vvtMode1=Inactive/camInputs1=NONE, so offsetIndices never runs.
+- TIM5 low-priority: getTimeNowLowerNt() = TIM5->CNT, a hardware free-running
+  32-bit counter (4 MHz, wraps ~1073 s) read directly (microsecond_timer_stm32
+  .cpp L116-120). The TIM5 executor ISR (prio 5) fires events, not the clock.
+  A frozen CNT would NOT zero rpm (elapsed = 0 -> engineMovedRecently stays
+  true, opposite failure).
+
+Conclusion: the root cause is a DENSE EDGE BURST (~15 edges in <0.5 ms) from
+the trigger front-end (L9779 VRS conditioner / sensor) landing mid-revolution
+(so no gap involved -> no C9002/C9003), collapsing the 90-degree instantRpm
+window -> spike >30000 -> silent setRpmValue clamp -> oneDegreeUs = NAN.
+
+Confirm on the car (diagnostics, no band-aid):
+- 'instantRpm' is already a TS/MLG channel (status_loop.cpp) - it must show
+  30000 (or NaN) at the same instant rpm/oneDegreeUs drops to 0.
+- 'rawtrg' pin-level capture at the same instant proves the dense burst really
+  arrived at the pin.
+- (optional, firmware) a latch in calculateInstantRpm that records {current_
+  index, prevIndex, time, angleDiff, instantRpm, nowNt} on the first
+  instantRpm > MAX_ALLOWED_RPM, printed in lockstats - names the exact
+  prevIndex/time/angleDiff, diagnosis not a clamp.
+
 ## 2026-09-30 - m74_9 oneDegreeUs vs instantRpm: oneDegreeUs returns 0/NAN on a desync; instantRpm is the sticky 90-degree basis
 
 KEY FACT: oneDegreeUs (RpmCalculator field) can return 0/NAN. assignRpmValue
