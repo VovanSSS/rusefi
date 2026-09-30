@@ -385,7 +385,17 @@ floatms_t IgnitionState::getSparkDwell(float rpm, bool isCranking) {
 
 void IgnitionState::updateDwell(float rpm, bool isCranking) {
 	sparkDwell = getSparkDwell(rpm, isCranking);
-	dwellDurationAngle = std::isnan(rpm) ? NAN : getDwell() / getOneDegreeTimeMs(rpm);
+	// Dwell duration in degrees from the SAME basis the angle clock arms from:
+	// the InstantRpmCalculator's ~90-degree tooth window (instantRpm), not the
+	// raw SensorType::Rpm. During the trigger storm the rpm sensor flaps 0/300+
+	// at ~1 kHz and getOneDegreeTimeMs(rpm) = 166.67/rpm diverges as rpm -> 0,
+	// collapsing dwellDurationAngle to ~0. instantRpm is sticky below
+	// RPM_LOW_THRESHOLD and holds through the storm, so the dwell angle stays
+	// put. Steady state is numerically identical to the old full-cycle form.
+	const float instantRpm = engine->triggerCentral.instantRpm.getInstantRpm();
+	dwellDurationAngle = (std::isnan(rpm) || !(instantRpm > 0))
+		? NAN
+		: getDwell() * 1000.0f / getOneDegreeTimeUs(instantRpm);
 }
 
 floatms_t IgnitionState::getDwell() const {

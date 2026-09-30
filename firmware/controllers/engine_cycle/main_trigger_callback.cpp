@@ -442,8 +442,16 @@ TRIGGER_RAM_CODE void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edge
 		// the 90-degree basis is back everywhere, the per-tooth refresh still
 		// re-anchors each armed channel from it every tooth, so the prediction
 		// error stays bounded to one tooth of acceleration.)
+		// Angle->time basis: the InstantRpmCalculator's ~90-degree tooth window
+		// (instantRpm), NOT the full-cycle average (oneDegreeUs) which lags by up
+		// to a full 720 deg cycle. instantRpm is sticky below RPM_LOW_THRESHOLD
+		// (calculateInstantRpm returns the last good value), so it does not flap to
+		// 0 like SensorType::Rpm does on a trigger desync; the stopped case
+		// (instantRpm <= 0) feeds NAN and angleClockOnTooth keeps the last good
+		// basis.
+		const float instantRpm = engine->triggerCentral.instantRpm.getInstantRpm();
 		angleClockOnTooth(edgeAcTimestamp, currentPhase, engine->engineState.engineCycle,
-		                  US2NT(engine->rpmCalculator.oneDegreeUs));
+		                  US2NT(instantRpm > 0 ? getOneDegreeTimeUs(instantRpm) : NAN));
 	}
 	// Dwell arm runs on ALL teeth including rpm==0 storm-flap teeth (see above).
 	scheduleDwellEarlyIfDue(engine->rpmCalculator.getCachedRpm(),

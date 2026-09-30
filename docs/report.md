@@ -1,5 +1,69 @@
 # Work Report
 
+## 2026-09-30 - m74_9 angle clock basis switched to instantRpm (90-degree window); the earlier oneDegreeUs dwell fix was on the wrong premise
+
+CORRECTION of the entry below: oneDegreeUs is NOT the 90-degree average - in
+RUNNING it is the full-cycle average (60*mult/periodSeconds at trgEventIndex==0),
+set from the SAME floatRpmValue as SensorType::Rpm (reciprocal), so it flaps to
+0/NAN on a desync exactly like the rpm sensor. The actual 90-degree tooth-time
+average is the InstantRpmCalculator: engine->triggerCentral.instantRpm.getInstantRpm()
+(calculateInstantRpm hunts a tooth ~90 deg back), and it is STICKY - below
+RPM_LOW_THRESHOLD it returns the last good value, so it does not flap to 0.
+
+Change (both files):
+- main_trigger_callback.cpp: angleClockOnTooth is now fed
+  US2NT(instantRpm > 0 ? getOneDegreeTimeUs(instantRpm) : NAN) instead of
+  US2NT(oneDegreeUs) - the 90-degree window reacts within 90 deg instead of
+  lagging a full 720 deg cycle.
+- ignition_state.cpp updateDwell: dwellDurationAngle = getDwell()*1000/getOneDegreeTimeUs(instantRpm)
+  - consistent with the angle clock basis.
+
+Open: TIM5 fallback anchors (scheduleSparkEvent chargeTime, onTriggerTooth
+delayUs) still use oneDegreeUs (full-cycle); the C9009 jump (advance vs
+dwellDuration) is still not proven - the sparkring records dwell but not spark.
+
+Validation: m74_9 board build BUILD SUCCESSFUL. NOT car-tested.
+
+## 2026-09-30 - m74_9 C9009 fall+1 ROOT CAUSE FOUND + FIXED: dwell duration angle collapses on the rpm flap
+
+The double-schedule storm (C9009 counter-fall==1) is the DWELL duration angle
+collapsing when the trigger storm flaps the raw rpm. The sparkring (18:28:40)
+is the smoking gun: the SAME cylinder's dwell angle jumps +26 deg at the fire -
+  #247 d c=52815 f=52811 cyl=2 win=1 dwell=3032 (normal, fall+4)
+  #248 f c=52815 f=0  cyl=2               (fire)
+  #249 d c=52816 f=52815 cyl=2 win=0 dwell=3293 (anomaly, fall+1)
+303.2 -> 329.3 deg = +26.1 deg. The c9009diag lines (early=0, off 2-22 tenths,
+gapCorr=38 constant) are this same shifted angle re-matching the CURRENT window
+one global slot after the fire (c = f + 1 instead of f + 4).
+
+Mechanism (all code-verified):
+- periodicFastCallback (200 Hz) reads rpm = Sensor::getOrZero(Rpm), which flaps
+  0/300+ during the storm.
+- IgnitionState::updateDwell(rpm) computes dwellDurationAngle = getDwell() /
+  getOneDegreeTimeMs(rpm) = getDwell()*rpm/166.67. rpm -> 0 collapses it to ~0
+  (getOneDegreeTimeMs is a 1/rpm macro with no guard; the isnan(rpm) check does
+  not catch rpm == 0).
+- At the next fire prepareCylinderIgnitionSchedule recomputes dwellAngle =
+  sparkAngle - dwellDurationAngle, so the full dwell duration (~25 deg at
+  ~1400 rpm) is NOT subtracted -> the dwell angle jumps +25..26 deg into the
+  current window right after the fire -> scheduleDwellEarlyIfDue already ran
+  for that tooth -> onTriggerEventSparkLogic's current-window arm re-arms it
+  one slot after the fire -> C9009 counter-fall==1 (the whole-cycle re-fire).
+
+FIX (ignition_state.cpp updateDwell): derive dwellDurationAngle from the
+SMOOTHED basis (engine->rpmCalculator.oneDegreeUs, the 90-deg average the angle
+clock arms from) instead of the raw rpm. Steady state is numerically identical
+(getDwell()*1000/oneDegreeUs == getDwell()/getOneDegreeTimeMs(rpm)); through the
+storm oneDegreeUs holds, so the dwell angle no longer jumps. NaN/zero basis
+falls back to NAN exactly like the old isnan(rpm) guard.
+
+Validation: m74_9 board build BUILD SUCCESSFUL. NOT car-tested - the verdict is
+the next lockstats (expect C9009 counter-fall==1 to disappear and close busy to
+drop to ~0).
+
+Open: the injection guard fix (627fe69f2c3) is still in place (correct, harmless)
+but was the wrong layer for this storm; keep it or revert it on the next pass.
+
 ## 2026-09-30 - m74_9 post-fix drives 15:57-18:32: the injection double-schedule fix did NOT close the storm - the real mechanism is the DWELL double-schedule (C9009 fall+1)
 
 Three drives (15:57, 16:01-16:23, 16:32-16:36) + evening (18:09-18:32) on the
