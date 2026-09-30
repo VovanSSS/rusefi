@@ -1,5 +1,71 @@
 # Work Report
 
+## 2026-09-30 - m74_9 15:08-15:11 lockstats: the 60-70 us fire delays are single-vector serialization (ser), a STORM symptom not a hang - 'close recomputes the model' RETRACTED
+
+Four lockstats windows (15:08:16 idle, 15:08:52 quiet, 15:10:29 and 15:11:31
+storm) + one C9009. The user's question was WHY the fire-entry delay sits at
+7-12 us then jumps to 60-70 us with a COMPLETELY EMPTY console (no C9009, no
+warnings, no prints). The full xsec ser= split answers it.
+
+DECISIVE COUNTERS (same in all 4 windows):
+- maxLockedDuration=0, maxTriggerReentrant=0 -> not a kernel lock, not flash.
+- nvic exact (exti=0 handoff=4 tim5=5 canTx=12 canRx0=12 adc=7), tim2clk exact
+  (EN=1 LPEN=1 RST=0 CEN=1 PSC=71 ARR=FFFFFFFF, sleep T2d~NTd~400k, busy
+  T2d~NTd~400k) -> no TMR2 clock issue.
+
+THE 60-70 us IS ser (single-vector serialization). Quiet windows have ser=0..3
+per ~1400 fires and maxLateUs 37-53; the two storm windows have ser dominating
+and maxLateUs 70-79:
+  15:10:29  dwell n=43 handoff=3 ser=30 maxUs=70 | spark n=49 ser=40 maxUs=71 |
+            close n=79 handoff=3 ser=70 maxUs=65
+  15:11:31  dwell n=20 handoff=1 ser=14 maxUs=79 | spark n=91 handoff=13 ser=70
+            maxUs=63 | close n=64 handoff=7 ser=47 maxUs=67
+ser = the fire's CCR had already matched when the PREVIOUS TMR2 entry ended
+(dueCcr <= s_lastHandlerEndTick), i.e. the fire waited for that entry's action
+bodies on the one shared vector. Silent by construction - exactly the user's
+'no logs'.
+
+RETRACTION - 'the injection-close action recomputes the model in the prio-3 ISR'
+(from the 13:23-13:31 note and the angle_clock.cpp comment) is WRONG. Verified
+in code: InjectionEvent::update() (run by turnInjectionPinLow at close) does
+NOT compute the mixture. It only re-derives the NEXT cycle's opening ANGLE from
+a precomputed duration: computeInjectionAngle() reads engineState.injectionDuration
+and engineState.injectionOffset, does one MS2US(fuelMs)/oneDegreeUs divide, and
+wraps -> the whole close body is microseconds. The mixture is computed in
+periodicFastCallback (200 Hz, MAIN LOOP): getInjectionMass (getBaseFuelMass ->
+airmass/VE -> getCycleFuelMass -> CLT/IAT/post-crank/baro -> DFCO -> AE -> wall
+fuel -> STFT/LTFT) then InjectorModelBase::getInjectionDuration (deadtime etc.)
+stored into engineState.injectionDuration. So close's large maxUs is same-entry
+ordering (close executes LAST in dispatch, its late = sum of the dwell/spark/open
+bodies) plus, in storms, cross-entry ser - NOT a heavy close body.
+
+THE STORM FINGERPRINT (windows 3+4, all spiking TOGETHER with ser):
+  close busy == close lateArm == 313 / 325 (previous close still pending on CC4
+  when the next open fires -> close falls to TIM5)
+  open lateArm split tickPast = 28 / 22
+  immediate = 90 / 51
+  refresh maxPullUs = 568 / 558
+This is the double-schedule storm: the whole cycle re-fires in adjacent slots
+under decel (the armedAt-passed next-cycle re-schedule open item), compressing
+the 4 event types into a burst -> they serialize on the one TMR2 vector. So the
+60-70 us is a SYMPTOM of the storm, not a hang and not a cause. Fixing the storm
+removes ser + the sched fuel late (up to 197 us, the TIM5 fallbacks) + immediate
++ refresh maxPull in one shot.
+
+SEPARATE RARE CLASS (still open): window 1 triggerMaxDuration=3171 ticks=792 us
+- one 500-1000 us handoff tail in BOTH triggerIsr and trgPostDecode, with
+handoff=0 at the fires (they did not overlap). Unrelated to the ser story.
+
+The single C9009 (15:11:17) = fall=10130 counter=10134 -> counter-fall==4, the
+benign rpm-flap prevSparkName desync class, NOT the fall+1 storm.
+
+Open follow-ups:
+- Close the double-schedule under decel (armedAt-passed next-cycle re-schedule).
+- Retract the 'close recomputes the model' text in CLAUDE.md and in the
+  angle_clock.cpp dispatch comment.
+
+Validation: analysis only, no code changes, no build/test run.
+
 ## 2026-09-30 - m74_9 logs 13:23-13:31: the residual 60-76 us named (single-vector serialization, not the handoff) + the first c9009diag fall+1 capture + ring freeze-on-anomaly
 
 Eight lockstats windows + two sparkring dumps. The user's 'задержки на месте'
