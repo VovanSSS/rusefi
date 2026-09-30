@@ -106,8 +106,27 @@ TRIGGER_RAM_CODE void InjectionEvent::onTriggerTooth(efitick_t nowNt, float curr
 	// cycle's scheduling - at high duty the next window can arrive before
 	// the injection end recomputes the angle, and the pre-existing behavior
 	// schedules with the stale angle.
-	if (injectionStartArmed && (injectionStartArmedAt - nowNt) > 0) {
-		return;
+	if (injectionStartArmed) {
+#if EFI_ANGLE_CLOCK
+		// The arm is a REFRESHED angle-domain CCR, not a fixed time: the
+		// per-tooth angleClockRefresh re-anchors CC3 as the basis wobbles (idle
+		// oscillation, accel/decel), so the stale arm-time prediction
+		// (injectionStartArmedAt) is already in the past while the compare is
+		// still genuinely armed. Guarding on that time opened early and the
+		// LOOKAHEAD overlap tooth re-armed the SAME injection: angleClockArmInjection
+		// saw CC3 busy -> TIM5 fallback -> two opens + close-busy (the ser storm,
+		// which also fires at steady idle). The channel's own pending state is
+		// the truth; the time test is kept only for the TIM5-fallback arm, where
+		// CC3 was never armed.
+		if (angleClockIsArmed(ANGLE_CLOCK_CH_OPEN) ||
+				(injectionStartArmedAt - nowNt) > 0) {
+			return;
+		}
+#else
+		if ((injectionStartArmedAt - nowNt) > 0) {
+			return;
+		}
+#endif // EFI_ANGLE_CLOCK
 	}
 
 	// The injection start is scheduled one tooth ahead: the early window

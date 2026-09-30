@@ -184,6 +184,10 @@ TRIGGER_RAM_CODE uint32_t angleClockNow() {
     return ANGLE_TIMER->CNT;
 }
 
+TRIGGER_RAM_CODE bool angleClockIsArmed(int ch) {
+    return static_cast<bool>(s_ch[ch].action);
+}
+
 uint32_t angleClockTicksPerDegree() {
     // NaN casts to 0 in hardware (vcvtr saturates) - informative (no basis).
     return static_cast<uint32_t>(s_ticksPerDegree);

@@ -1,5 +1,46 @@
 # Work Report
 
+## 2026-09-30 - m74_9 injection double-schedule FIX: guard on the angle-clock pending state, not the stale arm-time
+
+The armedAt-passed re-schedule root cause is found and fixed. The
+injection-open guard in InjectionEvent::onTriggerTooth used a STALE TIME
+((injectionStartArmedAt - nowNt) > 0): injectionStartArmedAt = startTime is a
+one-shot time prediction made at arm time from the then-current basis. The
+actual arm is a REFRESHED angle-domain CCR on TMR2 CC3 - angleClockRefresh
+re-anchors it each tooth as the basis wobbles (idle oscillation, accel/decel) -
+so the stale startTime is in the past while CC3 is still genuinely armed. The
+guard then opened on the LOOKAHEAD overlap tooth (the early window is 2 teeth
+wide: [nextPhase, nextNextPhase + 6 deg)) and re-armed the SAME injection:
+angleClockArmInjection saw CC3 busy -> fell back to TIM5 -> two opens scheduled
+-> the close-busy / ser storm. This is the user's 60-70 us fire delays; it is
+NOT decel-specific (a basis wobble at steady idle is enough to open the stale
+time while the arm is still pending).
+
+FIX:
+- angle_clock.h/.cpp: new accessor angleClockIsArmed(int ch) = the channel's
+  pending-action state (s_ch[ch].action; set by writeChannel, released by the
+  ISR dispatch). This is the truth for 'is the arm still pending', independent
+  of any time prediction.
+- main_trigger_callback.cpp: the guard is now
+    if (injectionStartArmed &&
+        (angleClockIsArmed(ANGLE_CLOCK_CH_OPEN) || (injectionStartArmedAt - nowNt) > 0))
+        return;
+  The angle-clock term suppresses the re-arm exactly while CC3 is still armed;
+  the time term is kept ONLY for the TIM5-fallback arm, where CC3 was never
+  armed. Non-angle-clock builds keep the old time test unchanged.
+
+Validation: m74_9 board build (compile_m74_9.sh) BUILD SUCCESSFUL. NOT
+car-tested - the verdict is the next lockstats (expect open lateArm and close
+busy to drop to ~0, and ser to fall out of the storm windows).
+
+Open:
+- Whether this fully kills the steady-idle ser: window 2 (15:08:52, quiet)
+  showed dwell n=4 ser=3 maxUs=53 with close busy=0 - a separate, minor
+  dwell-serialization class (a few events per ~1400 fires) that this injection
+  guard fix does NOT touch. Watch it in the next session.
+- The 'close recomputes the model' retraction (CLAUDE.md + the two code
+  comments in angle_clock.{h,cpp}) is still pending.
+
 ## 2026-09-30 - m74_9 15:08-15:11 lockstats: the 60-70 us fire delays are single-vector serialization (ser), a STORM symptom not a hang - 'close recomputes the model' RETRACTED
 
 Four lockstats windows (15:08:16 idle, 15:08:52 quiet, 15:10:29 and 15:11:31

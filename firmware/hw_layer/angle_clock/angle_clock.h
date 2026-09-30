@@ -199,6 +199,13 @@ void angleClockCancelSpark();
 void angleClockCancelInjection();
 void angleClockCancelClose();
 
+// True while the channel holds a pending action (armed and not yet fired).
+// The action is stored by writeChannel and released by the ISR dispatch when
+// the CCR matches, so this tracks the real pending state even as the per-tooth
+// refresh re-anchors the compare value - the double-arm guard in
+// InjectionEvent::onTriggerTooth keys on it instead of the stale arm-time.
+bool angleClockIsArmed(int ch);
+
 // --- Telemetry ---
 // Fired / failed-arm / busy-channel counters per event type (channel index).
 uint32_t angleClockFiredCount(int ch);
