@@ -17798,3 +17798,117 @@ build (2122dfabdd6). Verdict: the design works.
 Still open: the CAR verdict (real crank signal, catch storm, decel bands) -
 the bench validates the mechanics, not the trigger storm / VRS path.
 
+## 2026-09-30 - m74_9: C9009 counter-fall==1 respacing guard - FIX ANALYSIS (not implemented)
+
+Analysis of the proposed minimal fix for the counter-fall==1 C9009 (Mode B, the
+post-fire phase re-anchor double-schedule - see CLAUDE.md 2026-09-24): refuse the
+current-window dwell arm in onTriggerEventSparkLogic while the coil fired "too
+recently", deferring the post-fire re-arm to the coil's normal next-cycle
+early-window arm. The fix is correct in substance; the implementation has ONE
+critical trap that the prose phrasing glosses over.
+
+What the fix does:
+- The current-window arm is `scheduleNow = isPhaseInRange(dwellAngle, currentPhase,
+  nextPhase)` at spark_logic.cpp L1020. After a fire, prepareCylinderIgnitionSchedule
+  recomputes dwellAngle from the NEW advance; on a decel/DFCO boundary (advance
+  31.1 -> 9.0 deg) the angle jumps +22 deg and lands in the current window of the
+  very next tooth, re-arming the same coil one global slot after its own fire
+  (counter - fall == 1). The guard refuses that arm.
+- Placement: after the dwellStartArmed guard (L991), current-window branch only
+  (`scheduleNow && !scheduleEarly`). The early-window arm (scheduleDwellEarlyIfDue /
+  scheduleEarly) is the normal path with the correct fall+4 spacing and must NOT be
+  touched.
+
+The trap - WHICH counter to compare (the whole point of this analysis):
+At the guard point (before scheduleSparkEvent) there are THREE counters, only one
+of which is usable.
+
+| counter | value at the guard point | anomaly (fall+1) | normal (fall+4) |
+| --- | --- | --- | --- |
+| event->sparkCounter (this event's LAST schedule) | == signalFallSparkId (the fire copied it at L190) | N | N |
+| globalSparkCounter (engine->engineState.globalSparkCounter, BEFORE the L671 ++) | the counter about to be assigned | N+1 | N+4 |
+| new sparkCounter (after L671) | == the guard-point globalSparkCounter (post-increment assignment) | N+1 | N+4 |
+
+- event->sparkCounter is WRONG: at the guard point it equals signalFallSparkId in BOTH
+  the anomaly and the normal case, so event->sparkCounter - fall == 0 always and the
+  guard would refuse the legit dwell too.
+- globalSparkCounter (before ++) is the one to compare - it is the value L671 will
+  assign.
+- L671 is a POST-increment (`event->sparkCounter = globalSparkCounter++`), so the new
+  sparkCounter equals the guard-point globalSparkCounter and the post-assignment diff
+  is the same number.
+
+Honest numbers at the guard point (CORRECTED vs the first draft's "0 vs 3"):
+- anomaly: diff == 1 (c9009diag L697 prints exactly counter == fall + 1, so the value
+  about to be assigned is fall + 1).
+- normal: diff == 4 (== cylinderCount, the report.md-verified benign counter - fall
+  == 4).
+The first draft's "0 vs 3" table is off by one: it forgot that the FIRED event's own
+schedule already incremented globalSparkCounter past the fired counter (a schedule is
+the only thing that increments it; the fire does not, and nothing is scheduled
+between the fire and the Mode-B re-arm on the next tooth). The correction matters only
+for the comment, not the threshold - < 2 cuts 1 and passes 4 either way.
+
+Correct implementation:
+```cpp
+// onTriggerEventSparkLogic, after the dwellStartArmed guard (L991),
+// current-window branch only (scheduleNow && !scheduleEarly):
+IgnitionOutputPin* output = event->outputs[0];
+if (output && output->signalFallSparkId != 0 &&
+    engine->engineState.globalSparkCounter - output->signalFallSparkId < 2) {
+    continue;  // refuse the +1 double-schedule
+}
+```
+
+Three mandatory conditions:
+1. signalFallSparkId != 0 - the never-fired sentinel (same guard as c9009diag L697),
+   otherwise the very first schedule of a coil (globalSparkCounter < 2) is cut.
+2. globalSparkCounter, not event->sparkCounter.
+3. current-window only (scheduleNow && !scheduleEarly) - the early window is untouched.
+
+Three-scenario check:
+- anomaly (fall+1): fire at N -> fall = N, nothing scheduled between fire and re-arm
+  -> guard-point globalSparkCounter = N+1 -> diff 1 < 2 -> refuse. correct.
+- normal (fall+4): fire at N -> 3 other coils scheduled -> guard-point
+  globalSparkCounter = N+4 -> diff 4 >= 2 -> pass. correct.
+- first cycle after (re)sync: fall far in the past (or 0) -> diff large -> pass. correct.
+
+What the fix does NOT fix:
+- It masks the symptom, not the cause. The angle jump (advance 31.1 -> 9.0 deg at the
+  decel/DFCO boundary) remains: dwellAngle still recomputes +22 deg in
+  prepareCylinderIgnitionSchedule. That shifted dwellAngle is the CORRECT next-cycle
+  angle (computed from the new advance); it merely lands in the current window of the
+  next tooth. The guard defers it to the coil's normal early-window arm one full engine
+  cycle later (~720 deg), so the wasted spark disappears and no dwell is skipped.
+
+Risks / boundaries:
+1. Threshold < 2 assumes every legitimate same-output step is >= 2. On a 4-cyl that
+   holds for BOTH sequential (step 4) and two-wire wasted cranking (step 2 - the same
+   coil output charges twice per cycle). On a 1-cyl motor the normal step is 1, and on
+   a 2-cyl one-coil wasted setup it is also 1 - the guard would cut a legit dwell there.
+   General form is NOT "< cylindersCount" (that would cut the step-2 cranking schedules
+   on a 4-cyl); the guard must be skipped where a legit step can be 1 (gate on
+   cylindersCount, e.g. >= 4, or a board constant).
+2. Multispark is off on m74_9. Restrikes are scheduled from fireSparkAndPrepareNextSchedule
+   (time-based, L460-470), not from onTriggerEventSparkLogic, so the guard never sees
+   them; restrikes also CONSUME a global counter each (L463-464), which only INCREASES
+   the next diff - they cannot false-refuse. Re-verify explicitly if multispark is ever
+   enabled.
+3. The main risk is a false refusal = missed dwell = coil not charged = a skipped spark.
+   The invariant "globalCounter - fall < 2 happens only for the +1 anomaly" holds only
+   in sequential mode - validate before shipping that a burst cannot stall the firing
+   sequence.
+4. The guard is common code (not under EFI_ANGLE_CLOCK). On the FALSE build scheduleEarly
+   is a compile-time false, so the condition reduces to scheduleNow-only - still correct.
+
+Alternative (deeper, higher risk): recompute dwellAngle from the advance LATCHED at arm
+time rather than at fire time - removes the shift itself. But it changes advance-tracking
+behavior (dwell lags one cycle) and touches prepareCylinderIgnitionSchedule /
+scheduleSparkEvent - a higher regression risk. The guard is the minimal, reversible fix.
+
+Validation: none - analysis only (no code written, no build, no car run). Open follow-ups:
+implement the guard + a unit test covering the three scenarios, run the m74_9 build and
+the test suite (expect the documented 12 pre-existing failures, nothing new), then a car
+lockstats: the counter-fall==1 C9009 bursts should disappear while dwell fired == spark
+fired stays exact.
+
