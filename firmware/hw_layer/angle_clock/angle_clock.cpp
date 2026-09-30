@@ -126,12 +126,18 @@ static uint32_t s_lateArmBusy[4] = {0, 0, 0, 0};
 // counters do. The handoff split uses triggerReentrant (the trigger_central
 // decode-in-progress counter, incremented around TriggerCentral::handleShaftSignal
 // at prio 4): a fire with late >= 10 us WHILE triggerReentrant > 0 was waiting
-// for a running decode - the documented fires-above-handoff trade and the
-// dominant source of the decel-window 67-71 us readings. Anything else is the
-// fast EXTI (prio 0), same-prio fire serialization or short kernel-CS sections.
+// for a running decode - the documented fires-above-handoff trade. The
+// serialized split uses s_lastHandlerEndTick: a fire whose CCR had already
+// matched when the PREVIOUS TMR2 entry ended (dueCcr <= s_lastHandlerEndTick)
+// waited for that entry's action bodies on the single shared vector - the
+// dominant 60-76 us class (the injection-close action recomputes the model in
+// the prio-3 ISR). Everything else is the fast EXTI, short kernel-CS sections
+// and same-entry channel ordering.
 static uint32_t s_lateGt10us[4] = {0, 0, 0, 0};
 static uint32_t s_lateMax[4]    = {0, 0, 0, 0};
 static uint32_t s_lateHandoff[4] = {0, 0, 0, 0};
+static uint32_t s_lateSerialized[4] = {0, 0, 0, 0};
+static uint32_t s_lastHandlerEndTick = 0;
 static uint32_t s_lateArmDwellGuard    = 0;  // dwell armGuard refusal (no basis / stale phase)
 static uint32_t s_lateArmDwellTickPast = 0;  // dwell target tick already in the past
 static uint32_t s_lateArmOpenGuard     = 0;  // open armGuard refusal (no basis / stale phase)
@@ -222,13 +228,22 @@ TRIGGER_RAM_CODE static void dispatch() {
             if (late > 0 && static_cast<uint32_t>(late) > s_maxLateTicks)
                 s_maxLateTicks = static_cast<uint32_t>(late);
             // Per-kind attribution (lockstats 'angclk xsec'): which channel
-            // floats and whether it waited for the running trigger handoff.
+            // floats and whether it waited for the running trigger handoff or
+            // for the previous TMR2 entry's action bodies (single-vector
+            // serialization).
             if (late > 0) {
                 const uint32_t lateU = static_cast<uint32_t>(late);
                 if (lateU > s_lateMax[ch]) s_lateMax[ch] = lateU;
                 if (lateU >= US2NT(10)) {
                     s_lateGt10us[ch]++;
-                    if (triggerReentrant > 0) s_lateHandoff[ch]++;
+                    if (triggerReentrant > 0) {
+                        s_lateHandoff[ch]++;
+                    } else if (dueCcr[ch] <= s_lastHandlerEndTick) {
+                        // The compare matched while the previous TMR2 entry was
+                        // still executing its actions - same-prio serialization
+                        // on the single shared vector.
+                        s_lateSerialized[ch]++;
+                    }
                 }
             }
             act.execute();
@@ -243,6 +258,9 @@ TRIGGER_RAM_CODE void STM32_TIM2_HANDLER(void) {
     dispatch();
     assertInterruptPriority(__func__, EFI_IRQ_ANGLE_CLOCK_PRIORITY);
     OSAL_IRQ_EPILOGUE();
+    // Stamp the end of this entry: a fire whose CCR matched before this tick
+    // waited for THIS entry's action bodies (the 'serialized' xsec split).
+    s_lastHandlerEndTick = ANGLE_TIMER->CNT;
 }
 
 } // extern "C"
@@ -634,6 +652,7 @@ uint32_t angleClockBusyCount(int ch)        { return s_lateArmBusy[ch]; }
 uint32_t angleClockLateGt10usCount(int ch)  { return s_lateGt10us[ch]; }
 uint32_t angleClockLateMaxTicks(int ch)     { return s_lateMax[ch]; }
 uint32_t angleClockLateHandoffCount(int ch) { return s_lateHandoff[ch]; }
+uint32_t angleClockLateSerializedCount(int ch) { return s_lateSerialized[ch]; }
 uint32_t angleClockLateArmDwellGuard()      { return s_lateArmDwellGuard; }
 uint32_t angleClockLateArmDwellTickPast()   { return s_lateArmDwellTickPast; }
 uint32_t angleClockLateArmOpenGuard()       { return s_lateArmOpenGuard; }
@@ -657,7 +676,7 @@ uint32_t angleClockInitPsc()         { return s_initPsc; }
 void angleClockResetStats() {
     for (int ch = 0; ch < 4; ch++) {
         s_fired[ch] = s_lateArm[ch] = s_lateArmBusy[ch] = 0;
-        s_lateGt10us[ch] = s_lateMax[ch] = s_lateHandoff[ch] = 0;
+        s_lateGt10us[ch] = s_lateMax[ch] = s_lateHandoff[ch] = s_lateSerialized[ch] = 0;
     }
     s_lateArmDwellGuard = s_lateArmDwellTickPast = 0;
     s_lateArmOpenGuard = s_lateArmOpenTickPast = 0;

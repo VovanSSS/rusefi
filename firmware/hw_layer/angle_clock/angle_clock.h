@@ -206,12 +206,15 @@ uint32_t angleClockLateArmCount(int ch);
 uint32_t angleClockBusyCount(int ch);
 
 // Per-channel ISR-ENTRY lateness attribution (the pooled angleClockMaxLateTicks
-// cannot say which channel floats): count of fires >= 10 us late, the max, and
-// how many of those waited for the running trigger handoff (the decel-window
-// 67-71 us readings = the fires-above-handoff trade).
+// cannot say which channel floats): count of fires >= 10 us late, the max, how
+// many waited for the running trigger handoff (fires-above-handoff trade), and
+// how many waited for the previous TMR2 entry's action bodies (single-vector
+// serialization - the 60-76 us class, the injection-close action recomputes
+// the model in the prio-3 ISR).
 uint32_t angleClockLateGt10usCount(int ch);
 uint32_t angleClockLateMaxTicks(int ch);
 uint32_t angleClockLateHandoffCount(int ch);
+uint32_t angleClockLateSerializedCount(int ch);
 
 // Split of the dwell arm failure by reason - tells which of the failure
 // branches fires when dwell falls back to TIM5.

@@ -1,5 +1,50 @@
 # Work Report
 
+## 2026-09-30 - m74_9 logs 13:23-13:31: the residual 60-76 us named (single-vector serialization, not the handoff) + the first c9009diag fall+1 capture + ring freeze-on-anomaly
+
+Eight lockstats windows + two sparkring dumps. The user's 'задержки на месте'
+is CONFIRMED and now attributed:
+- Non-storm windows with 60-76 us lates (13:25:28 maxLateUs=67, 13:27:15
+  maxLateUs=76, 13:28:45 maxLateUs=69): xsec shows dwell n=9/11/17 with
+  handoff=0 in every one - the fires did NOT wait for the decode. The only
+  remaining blocker on the single TMR2 vector is SAME-PRIO SERIALIZATION: the
+  previous entry's action bodies (the injection-close action recomputes the
+  model in the prio-3 ISR - the heaviest body; the tune's close/dwell are ~1
+  deg apart at ~1400 rpm so the dwell CCR regularly matches during the close
+  action). NOTE 13:27:15 had triggerMaxDuration=2782 ticks = 695 us (one huge
+  handoff tail) and STILL handoff=0 at the fires - the tail and the fires did
+  not overlap.
+- Storm window 13:31:33 (3 min, contains the 13:30:10 storm): maxLateUs=72,
+  xsec spark n=163 handoff=52, close n=167 handoff=44, dwell n=52 handoff=1,
+  open n=40 handoff=1 - HERE the handoff IS a contributor (~1/3 of the late
+  fires, the documented fires-above-handoff trade); close lateArm=541 busy,
+  open lateArm=43, dwell lateArm=2, sched fuel n=584 = 43+541 exactly;
+  immediate=162; triggerIsr 100-250us=720; the dwell refusal (branch=2 win=1
+  rem=0.7) shows the early arm running 163 us after the edge.
+- NEW INSTRUMENT: the xsec line gained a ser= split - a fire whose CCR had
+  already matched when the previous TMR2 entry ended (dueCcr <=
+  s_lastHandlerEndTick, stamped at the handler exit) waited for that entry's
+  action bodies. The next decel window will show ser dominating the non-storm
+  lates -> the fix lever is shrinking the close action (defer the injection
+  model recompute out of the prio-3 ISR), not the handoff.
+
+FIRST c9009diag fall+1 CAPTURE (13:30:10): Coil 2 counter=8395 fall=8394
+(off=10 tenths, early=0) then Coil 1 counter=8397 fall=8396 (off=7 tenths) -
+TWO adjacent-in-firing-order coils double-scheduled at the correct angle, rpm
+falling 1383->1372, gapCorr constant 38. The current-window re-arm class.
+The sparkring dump at 13:30:22 came 12 s later and the ring (~0.5 s of
+history at 12 entries/cycle) had already rolled the storm out - MISSED.
+FIXED: the ring now FREEZES at the anomaly (the anomalous schedule is
+recorded first, then the freeze; 'sparkring' dumps the pre-storm context +
+the anomaly as the last entry and unfreezes). The next storm is captured no
+matter when the dump is issued.
+
+Also: C9009 13:28:25 = fall+4 benign; all other windows clean (maxLateUs
+11-15); tim2clk exact everywhere; the 13:30:27 dump (rpm 1530->1408 falling)
+shows all win=1 arms with tpd 432->472 - clean.
+
+Validation: m74_9 board build BUILD SUCCESSFUL. NOT car-tested.
+
 ## 2026-09-30 - m74_9 idle session analysis (13:14-13:18 log): angclk xsec + sparkring first full reading, C9009 x2 both BENIGN fall+4
 
 Session: ~4 min idle at ~800-1190 rpm, 6 lockstats windows, 5 sparkring

@@ -75,8 +75,16 @@ struct SparkScheduleRingEntry {
 static SparkScheduleRingEntry sparkScheduleRing[256];
 static uint16_t sparkScheduleRingHead = 0;
 static uint16_t sparkScheduleRingCount = 0;
+// Frozen after the counter-fall==1 anomaly (the C9009 double-schedule): the
+// ring only holds ~0.5 s and a later 'sparkring' would see the storm roll out.
+// Freezing keeps the pre-storm context + the anomalous schedule as the last
+// entry; 'sparkring' unfreezes after the dump.
+static bool sparkScheduleRingFrozen = false;
 
 static void sparkRingPush(const SparkScheduleRingEntry& e) {
+	if (sparkScheduleRingFrozen) {
+		return;
+	}
 	// Multiple writers (handoff, TMR2 ISR, executor) - make the push atomic.
 	__disable_irq();
 	sparkScheduleRing[sparkScheduleRingHead] = e;
@@ -162,6 +170,8 @@ void printSparkScheduleRing(int count) {
 			(int)e.dwell, (int)e.cur, (int)e.next, (int)e.off,
 			(unsigned)e.tpd, (int)e.gapCorr, (unsigned)e.syncCnt, (unsigned)e.rpm, (unsigned)e.rev, (unsigned)e.ntMs, (unsigned)e.pw);
 	}
+	// The dump consumed the frozen storm capture - resume recording.
+	sparkScheduleRingFrozen = false;
 }
 #endif // EFI_ANGLE_CLOCK
 
@@ -674,6 +684,13 @@ TRIGGER_RAM_CODE void scheduleSparkEvent(bool limitedSpark, IgnitionEvent *event
 		IgnitionOutputPin *outputForDiag = event->outputs[0];
 		if (outputForDiag) {
 			uint32_t fall = (uint32_t)outputForDiag->signalFallSparkId;
+#if EFI_ANGLE_CLOCK
+			// Record FIRST so the anomalous schedule itself becomes the last ring
+			// entry when the freeze below fires - 'sparkring' then shows the
+			// pre-storm context + the anomaly.
+			recordSparkSchedule((uint8_t)event->cylinderIndex, event->sparkCounter, fall,
+				earlyWindow, dwellAngle, currentPhase, nextPhase, angleOffset);
+#endif // EFI_ANGLE_CLOCK
 			// fall == 0 is the never-fired sentinel: the very first schedule of
 		// each coil (counter 1..4) would otherwise read as counter - fall == 1
 		// at startup (observed: Coil 1 counter=1 fall=0 rev=0). Skip it.
@@ -692,14 +709,13 @@ TRIGGER_RAM_CODE void scheduleSparkEvent(bool limitedSpark, IgnitionEvent *event
 					(int)Sensor::getOrZero(SensorType::Rpm),
 					(unsigned)getRevolutionCounter(),
 					(int)(getTriggerCentral()->gapAnchorCorrectionDeg * 10.0f));
-			}
 #if EFI_ANGLE_CLOCK
-			// Record EVERY schedule (both windows) into the spark schedule ring
-			// ('sparkring' console command) - the c9009diag print above is the
-			// trigger, the ring is the context that names the root cause.
-			recordSparkSchedule((uint8_t)event->cylinderIndex, event->sparkCounter, fall,
-				earlyWindow, dwellAngle, currentPhase, nextPhase, angleOffset);
+				// Freeze the ring at the anomaly: a later 'sparkring' then shows the
+				// pre-storm entries (the ring only holds ~0.5 s and the storm data
+				// rolls out within seconds). 'sparkring' unfreezes after the dump.
+				sparkScheduleRingFrozen = true;
 #endif // EFI_ANGLE_CLOCK
+			}
 		}
 	}
 #endif // !EFI_UNIT_TEST
