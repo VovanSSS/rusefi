@@ -168,7 +168,7 @@ public final class M749ReadFlashCli {
         out.accept("  [--serial-baud 115200] [--slcan-bus 1..3] [--start 0x08000000] [--length 0x3F0000]");
         out.accept("  [--pair-file ECU.pair | --immo-backup PAIRED_FULLFLASH.bin]");
         out.accept("Default: 4032 KiB main flash, session-60 RAM helper, two matching reads per block.");
-        out.accept("SLCAN works on supported desktop OSes; PCAN requires Windows Java and matching PEAK libraries.");
+        out.accept("SLCAN works on supported desktop OSes; PCAN uses the native PCAN-Basic library (MacCAN on macOS, PEAK on Windows).");
         out.accept("SocketCAN requires Linux and an explicit interface already up at 500 kbit/s, e.g. --socketcan can0.");
         out.accept("Partial output/checkpoint are resumable. Completed output is never overwritten.");
     }

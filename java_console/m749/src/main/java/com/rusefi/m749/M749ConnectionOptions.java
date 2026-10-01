@@ -100,9 +100,6 @@ class M749ConnectionOptions {
             o.slcan = port;
             return SlcanTransport.open(port, o.baud, o.bus, out);
         }
-        if (!System.getProperty("os.name").toLowerCase(Locale.ROOT).startsWith("windows")) {
-            throw new IOException("PCAN requires native Windows Java; use --slcan or Linux --socketcan");
-        }
         PcanDevice device = new PcanDevice();
         List<PcanDevice.Channel> channels = device.scan();
         String selected = o.channel;

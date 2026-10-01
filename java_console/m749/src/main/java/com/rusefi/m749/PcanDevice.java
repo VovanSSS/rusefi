@@ -1,6 +1,5 @@
 package com.rusefi.m749;
 
-import peak.can.MutableInteger;
 import peak.can.basic.*;
 
 import java.io.IOException;
@@ -36,14 +35,22 @@ final class PcanDevice {
         }
         List<Channel> channels = new ArrayList<>();
         for (TPCANHandle handle : TPCANHandle.values()) {
-            if (handle == TPCANHandle.PCAN_NONEBUS) {
+            if (handle == TPCANHandle.PCAN_NONEBUS || !handle.name().startsWith("PCAN_USBBUS")) {
                 continue;
             }
-            MutableInteger condition = new MutableInteger(0);
-            TPCANStatus status = api.GetValue(handle, TPCANParameter.PCAN_CHANNEL_CONDITION, condition, 4);
-            if (status == TPCANStatus.PCAN_ERROR_OK && (condition.value & 3) != 0) {
-                channels.add(new Channel(handle,
-                        condition.value == TPCANParameterValue.PCAN_CHANNEL_AVAILABLE.getValue()));
+            // MacCAN (libPCBUSB) does not populate the PCAN_CHANNEL_CONDITION
+            // value buffer, so detect presence by actually opening each USB
+            // channel and reading the Initialize status. The same probe works
+            // on the PEAK driver, distinguishing a free channel (OK) from one
+            // already opened by another process (INITIALIZE/ILLOPERATION).
+            TPCANStatus status = api.Initialize(handle, TPCANBaudrate.PCAN_BAUD_500K,
+                    TPCANType.PCAN_TYPE_NONE, 0, (short) 0);
+            if (status == TPCANStatus.PCAN_ERROR_OK) {
+                channels.add(new Channel(handle, true));
+                api.Uninitialize(handle);
+            } else if (status == TPCANStatus.PCAN_ERROR_INITIALIZE ||
+                    status == TPCANStatus.PCAN_ERROR_ILLOPERATION) {
+                channels.add(new Channel(handle, false));
             }
         }
         return channels;

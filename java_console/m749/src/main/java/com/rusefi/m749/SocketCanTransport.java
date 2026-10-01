@@ -24,7 +24,7 @@ final class SocketCanTransport implements RawCanTransport {
     static SocketCanTransport open(String name) throws IOException {
         requireInterface(name);
         if (!System.getProperty("os.name").toLowerCase(Locale.ROOT).startsWith("linux")) {
-            throw new IOException("SocketCAN requires Linux; use --slcan or native Windows --channel");
+            throw new IOException("SocketCAN requires Linux; use --slcan or --channel");
         }
         SocketCanRawPort port = new SocketCanRawPort(name);
         try {
