@@ -1,0 +1,103 @@
+dependencies {
+    implementation project(':ui')
+    implementation project(':connectivity')
+    implementation project(':ecu_io')
+    implementation project(':peak-can-basic')
+}
+
+// Build provenance: board repository and rusEFI submodule git hashes plus the build time.
+// Written to build.properties (printed by M749Cli at startup) and copied into the jar
+// manifests, including rusefi_console.jar, so a stale build is recognizable from its
+// first output line. providers.exec keeps this compatible with the configuration cache.
+def gitDescribe = { File dir ->
+    providers.exec {
+        commandLine 'git', '-C', dir.absolutePath, 'describe', '--always', '--dirty', '--abbrev=12', '--exclude=*'
+        ignoreExitValue = true
+    }.standardOutput.asText.map { text -> text.trim().isEmpty() ? 'unknown' : text.trim() }
+}
+// In this repo there is no separate board checkout; both provenance fields
+// resolve to the rusEFI repository root (the fw-m74.9 layout used a board dir).
+def boardGit = gitDescribe(rootProject.projectDir)
+def rusefiGit = gitDescribe(rootProject.projectDir)
+def buildInfoDir = layout.buildDirectory.dir('generated-resources/m749')
+def buildInfoFile = buildInfoDir.map { it.file('com/rusefi/m749/build.properties') }
+tasks.register('generateM749BuildInfo') {
+    inputs.property('boardGit', boardGit)
+    inputs.property('rusefiGit', rusefiGit)
+    outputs.file(buildInfoFile)
+    outputs.upToDateWhen { false }
+    doLast {
+        def file = buildInfoFile.get().asFile
+        file.parentFile.mkdirs()
+        def date = java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC)
+            .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'"))
+        file.text = "board.git=${boardGit.get()}\nrusefi.git=${rusefiGit.get()}\nbuild.date=${date}\n"
+    }
+}
+sourceSets.main.resources.srcDir buildInfoDir
+tasks.named('processResources') { dependsOn 'generateM749BuildInfo' }
+tasks.named('jar') {
+    doFirst {
+        def properties = new Properties()
+        buildInfoFile.get().asFile.withInputStream { properties.load(it) }
+        manifest.attributes(
+            'Board-Git': properties.getProperty('board.git', 'unknown'),
+            'Rusefi-Git': properties.getProperty('rusefi.git', 'unknown'),
+            'Build-Date': properties.getProperty('build.date', 'unknown'))
+    }
+}
+
+test {
+    systemProperty 'java.awt.headless', 'true'
+}
+
+jar {
+    manifest {
+        attributes 'Main-Class': 'com.rusefi.m749.M749Cli'
+    }
+}
+
+task fatJar(type: Jar) {
+    dependsOn configurations.runtimeClasspath
+    archiveClassifier = 'all'
+    manifest {
+        attributes 'Main-Class': 'com.rusefi.m749.M749Cli'
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from sourceSets.main.output
+    from {
+        configurations.runtimeClasspath.findAll { it.name.endsWith('jar') }.collect { zipTree(it) }
+    }
+}
+
+tasks.register('runM749Cli', JavaExec) {
+    group = 'Execution'
+    description = 'M74.9 CAN identification and OEM-loader firmware uploader'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.rusefi.m749.M749Cli'
+    workingDir = rootProject.file('java_console')
+    systemProperty 'java.library.path', rootProject.file('java_console').absolutePath +
+            File.pathSeparator + System.getProperty('java.library.path')
+    if (project.hasProperty('m749Args')) {
+        args org.apache.tools.ant.types.Commandline.translateCommandline(project.property('m749Args').toString())
+    }
+}
+
+tasks.register('installM749Cli', Sync) {
+    dependsOn jar
+    into layout.buildDirectory.dir('install/m749/lib')
+    from tasks.named('jar')
+    from configurations.runtimeClasspath
+}
+
+tasks.register('runM749Tab', JavaExec) {
+    dependsOn testClasses
+    group = 'Execution'
+    description = 'Open the standalone M74.9 custom tab with PCAN, SLCAN and SocketCAN identification'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.rusefi.m749.M749TabSandbox'
+    workingDir = rootProject.file('java_console')
+    systemProperty 'input_files_path', rootProject.file('firmware/build').absolutePath
+    systemProperty 'java.library.path', rootProject.file('java_console').absolutePath +
+            File.pathSeparator + System.getProperty('java.library.path')
+}

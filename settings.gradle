@@ -77,6 +77,8 @@ include ':mcp_can'
 project(':mcp_can').projectDir = new File(rootRelativePath + 'java_console/mcp_can')
 include ':openblt_can'
 project(':openblt_can').projectDir = new File(rootRelativePath + 'java_console/openblt_can')
+include ':m749'
+project(':m749').projectDir = new File(rootRelativePath + 'java_console/m749')
 include ':enum_generator'
 project(':enum_generator').projectDir = new File(rootRelativePath + 'java_tools/enum_generator')
 
