@@ -9,24 +9,39 @@
 #   see com.rusefi.m749.M749Cli --help
 #   e.g. m749_can.sh --upload rusefi.hex --channel PCAN_USBBUS1
 
+# Remember the caller's working directory before cd, so relative file arguments
+# (upload input, read-flash output, pair files) resolve against it, not java_console/.
+CALLER_PWD="$(pwd)"
+
 cd "$(dirname "$0")/.." || exit 1
 
 JAR=m749/build/libs/m749-all.jar
 (cd .. && ./gradlew :m749:fatJar) || exit 1
 
-# Resolve relative file arguments against the CALLER's cwd BEFORE the cd below.
+# Flags whose VALUE is a file/output path and must be anchored to the caller's
+# cwd. Transport/flow-control flags (--channel/--slcan/--socketcan/--serial-baud/
+# --slcan-bus/--block-size/--stmin) and --read-byte (a hex address) are left alone.
+resolve_file_arg() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *)  printf '%s' "$CALLER_PWD/$1" ;;
+  esac
+}
+
 resolved_args=()
+prev=""
 for arg in "$@"; do
   case "$arg" in
     -*) resolved_args+=("$arg") ;;
     *)
-      if [ -e "$arg" ]; then
-        resolved_args+=("$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")")
-      else
-        resolved_args+=("$arg")
-      fi
+      case "$prev" in
+        --upload|--write-flash|--check-target|--read-flash|--read-pair|--export-pair|--pair-file|--immo-backup)
+          resolved_args+=("$(resolve_file_arg "$arg")") ;;
+        *) resolved_args+=("$arg") ;;
+      esac
       ;;
   esac
+  prev="$arg"
 done
 
 # libpcanbasic_jni.dylib / PCANBasic_JNI.dll live in java_console/.
