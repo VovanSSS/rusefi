@@ -1,5 +1,67 @@
 # Work Report
 
+## 2026-10-01 - M74.9 OEM-loader CLI ported into rusefi (`:m749`), PCAN-on-macOS enabled, read/write validated 1:1 against an openocd dump
+
+Ported the fw-m74.9 M749 tool (flashes/reads through the OEM I812/I865 resident loader
+over UDS 7E0/7E8 @500k) into the rusefi tree as Gradle subproject `:m749`
+(`java_console/m749/`), with launcher `java_console/bin/m749_can.sh`. The tool keeps the
+OEM loader, identity, pairing and storage; it is NOT OpenBLT. Full command reference in
+docs/m749_cli.md.
+
+What was added to the tree:
+- `java_console/m749/` - M749Cli, uploader, UDS client, transports (PCAN/SLCAN/SocketCAN),
+  image readers, checksum/byte/pair reader, IMMO, read-flash + 28 test classes.
+- `com.rusefi.io.can`: CanAddress, ClassicCanFrame, RawCanPort, SocketCanRawPort,
+  SlcanPortScanner, SlcanVersion - a new raw-CAN port abstraction the tool needs.
+- `com.rusefi.ui.plugins.StartupTabProvider` - new startup-tab SPI.
+- `HelloCommand` / `SerialAutoChecker` - timeout-carrying overloads (additive, the 2-arg
+  forms now delegate with Timeouts.BINARY_IO_TIMEOUT; behavior preserved, ecu_io tests green).
+- `settings.gradle` - `include ':m749'`.
+
+PCAN on macOS (the fw-m74.9 tool was Windows-PCAN only):
+- Root cause of `--list` reporting "PCAN not detected" on MacCAN/libPCBUSB:
+  `GetValue(PCAN_CHANNEL_CONDITION)` returns OK but does NOT populate the value buffer
+  (value stays -1), so the `(condition.value & 3) != 0` check always failed. Fixed by
+  `PcanDevice.scan()` using an Initialize-probe: `Initialize()` on each PCAN_USBBUSx ->
+  OK = present+available, INITIALIZE/ILLOPERATION = occupied, ILLHW/ILLHANDLE = absent.
+  Verified on the adapter: USBBUS1 -> OK, USBBUS2..8 -> ILLHW.
+- Removed the hardcoded Windows-only PCAN guard in `M749ConnectionOptions.open()`.
+  `--identify --channel PCAN_USBBUS1` now reads OEM DIDs F186/F189/F192 over
+  libpcanbasic_jni.dylib (bridge to MacCAN-Core).
+
+Read speed (diagnostic CAN is hard-capped at ~27 kB/s receive):
+- default double-read per block ~13.8 kB/s verified.
+- added `--fast` (single read per block, ~2x): `--fast --block-size 16 --stmin 0` ~19.7 kB/s
+  reliable; `--fast --block-size 0 --stmin 0` ~26.5 kB/s but OVERRUNS the MacCAN receive
+  buffer (timeout SID 23 receiving 4085-byte response, 3975/4085 bytes - dropped frames).
+  `--block-size 16` (flow control every 16 frames) is the reliable fast setting.
+
+Validation on a live I865 ECU (I865LB52_w2404b1, CPU 41 0F C2 41 = Cortex-M4/AT32F435):
+- full read (m749-full.bin) vs openocd dump Read_FULLFLASH_I865LB52.bin: 1:1 in every region
+  EXCEPT `EEPROM backing store 0` (0x08250000..0x0825FFFF, runtime data - 468 bytes).
+- write (--write-flash OEM-backup.bin) restored app+calibration 0x08001000..0x080FFFFF;
+  post-write read (m749-full-after.bin) matches the openocd dump 1:1 in app seg1/seg2 +
+  calibration + CRC. 3 expected residuals only:
+  * 0x08200004..0x0820000F (12 B) programming-state metadata (marker 0x43A0C212 intact,
+    the rest erased to FF after activation);
+  * 0x0824E000 (256 B) programming-history record appended by the tool (ASCII 20261001 +
+    fw-m74.9 CLI);
+  * EEPROM backing store 0 (runtime).
+
+IMMO (paired ECU): programming entry `10 02` returns NRC 22 (`conditionsNotCorrect`) on a
+paired I865. `--immo-backup PAIRED_FULLFLASH.bin` loads the key (0x08274000) and reference
+(0x0804C2B4) locally; the tool then prompts "Cycle ECU bench power now", captures the ECU's
+0x713 startup challenge, does the ChaCha proof exchange, sends the programming permission on
+0x714 and enters the loader. Only the validated backup hash is accepted
+(SHA-256 ac052cd5...). Power-cycle must be a REAL power-off (L9779 holds VCC through a quick
+key flick).
+
+Gotchas:
+- launcher must resolve relative file args against the CALLER cwd (not java_console/),
+  else read-flash output lands in java_console/ - fixed in m749_can.sh.
+- MacCAN `PCAN_ATTACHED_CHANNELS_COUNT` returns ILLOPERATION on this build - only the
+  Initialize-probe enumerates channels.
+
 ## 2026-09-30 - m74_9 C9009 fall+1 double-schedule ROOT CAUSE (sparkring + c9009diag): advance step 22 deg under decel, NOT garbage-basis and NOT phase-jump
 
 Data: c9009diag 18:21:39 (two fall+1) + sparkring 18:28:40 (frozen at the
