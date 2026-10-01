@@ -18032,3 +18032,37 @@ Open follow-ups:
    trigger (canOpenBLT) in the running main app.
 5. flash1 is 97% full - watch code growth (the main app TEXT sits in
    0x08090000-0x080FFFFB).
+
+## 2026-10-01 - m74_9: three-stage image generation + app init wiring
+
+Follow-up to the OpenBLT second-stage commit. Two pieces:
+
+1. Wired the OEM-loader contract into the main app init. In
+   setup_custom_board_overrides() (board_configuration.cpp), under EFI_PROD_CODE:
+   - initM749BootloaderHandoff() - installs custom_board_can_rx for UDS 10 02 +
+     the F1A0-F1A3 CRC/activation DIDs;
+   - custom_board_InitHardwareEarly = initM749BootActivation - computes the CRC,
+     holds the marker normal (called via initHardwareNoConfig() -> call_board_override).
+   The includes bootloader_handoff.h / boot_activation.h were added.
+
+2. Image generation. The old hex2dfu flow writes a STM32-style CRC at 0x0801001C,
+   which is wrong for the OEM contract. Added:
+   - firmware/config/boards/m74_9/bin/m749_image.py - merges the OpenBLT ELF
+     (blbuild/openblt_m74_9.elf) and the main app ELF (build/rusefi.elf) into one
+     addressed image, computes CRC-32/MPEG-2 over the two application segments
+     (0x08001000-0x0805FFFF + 0x08080000-0x080FFFFB) and stores it little-endian
+     at 0x080FFFFC, then emits HEX/SREC.
+   - firmware/config/boards/m74_9/compile_m74_9_oem.sh - builds the app, the
+     bootloader, then runs the merge and overwrites build/rusefi.hex/.srec.
+
+Validation: main app rebuilds with the init wiring (text 704124 B, links clean).
+The merge script runs on the two ELFs and emits addressed HEX/SREC; the OpenBLT
+vector table (SP 0x20020000, reset 0x08080001) and the CRC word at 0x080FFFFC are
+present in the output.
+
+Open follow-ups:
+- CLI: recognize/validate the three-stage images (the M749 CLI flashes them over
+  the OEM UDS loader).
+- Coexistence of the UDS handoff and the OpenBLT CAN trigger (canOpenBLT) in the
+  running main app still needs on-car validation.
+- flash1 (main app TEXT) is 97% full - watch code growth.

@@ -9,6 +9,8 @@
 #include "m74_9_tooth_diag.h"
 #include "m74_9_vr_model.h"
 #include "m74_9_lin.h"
+#include "bootloader_handoff.h"
+#include "boot_activation.h"
 #include "runtime_state.h"
 #include "digital_input_exti.h"
 #include "pwm_generator_logic.h"
@@ -875,6 +877,10 @@ static const char* m74_9AngclkChannelName(int ch) {
 #endif // EFI_ANGLE_CLOCK
 
 void setup_custom_board_overrides() {
+#if EFI_PROD_CODE
+	initM749BootloaderHandoff();
+	custom_board_InitHardwareEarly = initM749BootActivation;
+#endif
 	custom_board_InitHardware = m74_9_boardInitHardware;
 	custom_board_DefaultConfiguration = m74_9_boardDefaultConfiguration;
 	custom_board_ConfigOverrides = m74_9_boardConfigOverrides;
