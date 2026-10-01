@@ -18066,3 +18066,43 @@ Open follow-ups:
 - Coexistence of the UDS handoff and the OpenBLT CAN trigger (canOpenBLT) in the
   running main app still needs on-car validation.
 - flash1 (main app TEXT) is 97% full - watch code growth.
+
+## 2026-10-01 - m74_9: three-stage chain CAR-VERIFIED on a stock I865 ECU (OEM loader -> OpenBLT -> main app)
+
+Flashed the merged three-stage image (OpenBLT second-stage + main rusEFI app)
+onto a stock I865 ECU through the OEM resident loader, and confirmed the whole
+chain boots.
+
+Hardware: macOS + PCAN-USB (PCAN_USBBUS1), stock Itelma I865LB52_w2404b1 ECU
+(F186=01, VIN 8450094615). The ECU was paired (IMMO): preflight showed
+UDS 10 rejected NRC 22, so the upload used --immo-backup with the validated
+backup Read_FULLFLASH_I865LB52_w2404b1____(240626_103727).bin
+(SHA-256 ac052cd5...). IMMO challenge/response 0x713/0x714 completed on the
+bench power-cycle prompt.
+
+Upload (m749_can.sh --upload --channel PCAN_USBBUS1 --immo-backup ...):
+- erase + write 0x08001000-0x0805FFFF (389120 B, 95 pages) and
+  0x08080000-0x080FFFFF (524288 B, 128 pages);
+- 16-bit additive block checksums verified both ranges;
+- activation: "application reports valid software/calibration/loader CRCs and
+  normal boot marker after reset".
+
+Post-reset identify: F1A0 = 0x4D740101 (M749ACT ready) - the main app is
+running, so OEM loader booted OpenBLT (marker normal), OpenBLT validated the
+main app and jumped into it, and the main app computed the CRCs and holds the
+marker normal. OEM DIDs F186/F189/F192 now timeout (expected - the rusEFI app
+replaced the OEM app). The OEM loader, identity, paired key (0x08274000) and
+calibration (0x08060000-0x0807FFFF) are preserved.
+
+So the goal is met: OpenBLT runs as the second stage behind the stock loader.
+Subsequent main-app updates can go over OpenBLT XCP without touching the loader.
+
+Open follow-ups:
+1. F1A4 ("rEFI" identity) does not respond: the m74_9 board here does not set
+   EFI_UDS=TRUE (fw-m74.9 did). F1A0 works. Add -DEFI_UDS=TRUE to board.mk if
+   the rEFI identity DID is wanted.
+2. The "flash OpenBLT first, then main app via OpenBLT" two-step bootstrap needs
+   a FlashVerifyChecksum main-app-vector guard (so OpenBLT does not jump into a
+   blank main app) and an OpenBLT-only image generator. The one-shot full-image
+   install above is the current first-install path.
+3. flash1 (main app TEXT) is 97% full - watch code growth.
