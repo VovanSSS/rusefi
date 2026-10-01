@@ -190,9 +190,16 @@ blt_bool FlashDone() {
 
 blt_bool FlashWriteChecksum() {
 #ifdef M74_9_OEM_LOADER
-	// The host erases the whole segment 2 (including the CRC word), so the
-	// 4-byte CRC location is erased and ready to program.
+	// The host erases only up to the end of the program data (the app-only
+	// .srec does not include the CRC word), so the CRC sector 0x080FF000..
+	// 0x080FFFFF may still hold the previous CRC and is not erased. Erase it
+	// first - it holds only 0xFF padding plus the old CRC - then program.
 	uint32_t crc = computeAppCrc();
+	if (!intFlashIsErased(0x080FFFFC, 4)) {
+		if (FLASH_RETURN_SUCCESS != intFlashErase(0x080FF000, 0x1000)) {
+			return BLT_FALSE;
+		}
+	}
 	return (FLASH_RETURN_SUCCESS == intFlashWrite(0x080FFFFC, (const char*)&crc, 4)) ? BLT_TRUE : BLT_FALSE;
 #else
 	return BLT_TRUE;

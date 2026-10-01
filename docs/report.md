@@ -18106,3 +18106,30 @@ Open follow-ups:
    blank main app) and an OpenBLT-only image generator. The one-shot full-image
    install above is the current first-install path.
 3. flash1 (main app TEXT) is 97% full - watch code growth.
+
+## 2026-10-01 - m74_9: OpenBLT app-update path FIXED + the follow-up console issue
+
+Fixed the OpenBLT XCP "flash main app" path. The previous failure was
+"Finalize (PROGRAM size=0) failed: ERR 0x31": the app-only .srec does not
+include the CRC word, so the host erases only up to the end of the program data
+(0x080FD398) and the CRC sector 0x080FF000-0x080FFFFF still held the previous
+CRC. FlashWriteChecksum then tried to program the (same) CRC word into a
+non-erased cell - the AT32 rejects reprogramming a non-erased word.
+
+Fix (openblt_flash.cpp, under M74_9_OEM_LOADER): FlashWriteChecksum now erases
+the 4 KiB CRC sector (0x080FF000) before programming the new word when
+0x080FFFFC is not already erased. Rebuilt the bootloader and re-flashed the
+full image through the OEM loader (m749_can.sh --immo-backup, power-cycle IMMO).
+
+Validated: the app-only srec (2 segments, 705812 bytes) now flashes over
+OpenBLT end-to-end - erase both segments, 16-bit/ADD11 checksum "passed",
+PROGRAM size=0 finalize, reset. Full path now works both ways: OEM loader for
+the first install (OpenBLT + main app), OpenBLT XCP for later main-app updates.
+
+Open follow-up (investigate next session): after the OpenBLT app flash + reset,
+the running main app no longer answers - m749_can.sh --identify reports F1A0
+"ISO-TP/UDS timeout" and the Java console does not connect. The OpenBLT probe
+still works, but intermittently logs a garbage station-id length
+(16842760 = 0x01010008) instead of 7. Suspects to check: whether OpenBLT
+actually jumps to the main app after reset (CRC/FlashVerifyChecksum), and the
+intermittent GetID mis-parse (station-id length read as le32 at offset 4).
