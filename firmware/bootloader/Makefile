@@ -269,6 +269,7 @@ TCPPSRC =
 # List ASM source files here
 ASMXSRC = $(STARTUPASM) $(PORTASM) $(OSALASM) \
 	$(RUSEFIASM) \
+	$(BOOTLOADER_ASMXSRC) \
 	$(PROJECT_DIR)/hw_layer/main_hardfault_asm.S
 
 INCDIR += $(BOARDINC) \

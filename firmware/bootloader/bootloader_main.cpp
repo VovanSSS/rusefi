@@ -13,6 +13,10 @@ extern "C" {
 	#include "shared_params.h"
 }
 
+#ifdef M74_9_OEM_LOADER
+#include "boot_activation.h"
+#endif
+
 // rusEFI extension: runtime CAN baudrate switch (XCP SET_CAN_BAUDRATE).
 // The XCP handler only records the request; the switch itself must happen
 // after the response frame left the wire, so it is applied here in the main
@@ -228,6 +232,13 @@ int main(void) {
 	chSysInit();
 
 	baseMCUInit();
+
+#ifdef M74_9_OEM_LOADER
+	// Hold the OEM validity marker normal and validate the application CRC.
+	// On an invalid image OpenBLT stays in XCP mode: CpuStartUserProgram()
+	// checks NvmVerifyChecksum() and never jumps to the corrupt main app.
+	initM749BootActivation();
+#endif
 
 	// Init openblt shared params
 	SharedParamsInit();

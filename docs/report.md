@@ -17974,3 +17974,61 @@ the test suite (expect the documented 12 pre-existing failures, nothing new), th
 lockstats: the counter-fall==1 C9009 bursts should disappear while dwell fired == spark
 fired stays exact.
 
+
+## 2026-10-01 - m74_9: OpenBLT as second-stage bootloader behind the OEM loader - IMPLEMENTED (build-validated, not flashed)
+
+Three-stage boot chain: OEM resident loader -> OpenBLT -> main rusEFI app. The
+OEM loader keeps identity/pairing/calibration/rollback; later updates use the
+standard OpenBLT XCP path. All files live in the rusefi tree (the OEM-loader
+memory contract and the marker/CRC/UDS logic are borrowed from the fw-m74.9 repo).
+
+Pivotal go/no-go resolved first: the OEM loader decides boot by the validity
+marker ONLY (0x43A0C212 normal / 0x2548A4D2 programming at 0x08200000), not the
+application CRC. The application validates its own CRC and re-enters the loader
+(boot_activation.cpp). So the chain is safe: OpenBLT boots whenever marker=normal
+and self-validates the main app (stays in XCP mode when the image is bad).
+
+Ownership split (confirmed with the user):
+- OpenBLT: validates the main app CRC, holds the marker normal, owns the M749ACT2
+  activation descriptor at 0x0805FFE0 and the XCP transport.
+- Main app: engine control + UDS 10 02 handoff back into the OEM loader.
+
+Memory layout (addresses from the fw-m74.9 OEM contract):
+- OpenBLT vectors 0x08001000 (SP 0x20020000, reset 0x08080001), code
+  0x08080000-0x0808FFFF (64 KiB), descriptor 0x0805FFE0.
+- Main app vectors/rodata/data LMA 0x08010000-0x0805EFFF, code
+  0x08090000-0x080FFFFB.
+- Calibration 0x08060000-0x0807FFFF (untouched), marker 0x08200000, MFS banks
+  0x08300000-0x0837FFFF.
+
+Change inventory:
+- firmware/config/boards/m74_9/firmware/m749_openblt.ld   (new, OpenBLT stage linker)
+- firmware/config/boards/m74_9/firmware/m749.ld           (new, main app relocated + ram_fast)
+- firmware/config/boards/m74_9/firmware/m749_startup.S    (new, OpenBLT reset handler)
+- firmware/config/boards/m74_9/firmware/boot_activation.{h,cpp}  (ported: marker/CRC)
+- firmware/config/boards/m74_9/firmware/bootloader_handoff.{h,cpp} (ported: UDS 10 02)
+- firmware/config/boards/m74_9/firmware/board_storage.cpp (ported: OEM MFS banks)
+- board.mk           conditional LDSCRIPT + split BOARDCPPSRC + M74_9_OEM_LOADER define
+- bootloader/Makefile BOOTLOADER_ASMXSRC (board asm into the bootloader build)
+- openblt_flash.cpp  M74_9_OEM_LOADER: write/erase whitelist + CRC-32/MPEG-2 at
+                     0x080FFFFC + user-program base 0x08010000
+- bootloader_main.cpp initM749BootActivation() call after baseMCUInit()
+- board.c            fast-text copy guarded with #ifndef EFI_BOOTLOADER
+- boot_activation.cpp defines m749BootIntent (was extern); bootloader_handoff.cpp
+                     references it extern (both builds own the .boot_intent symbol)
+
+Validation: OpenBLT bootloader links (flash0 2152 B, flash1 12144 B, entry
+0x08080000, 32-byte descriptor emitted, linker asserts pass). Main app links
+(flash0 258420 B = 79.9%, flash1 445768 B = 97.2%, ram_fast 19072 B = 29.1%).
+
+Open follow-ups:
+1. Wire initM749BootActivation() into the main app board init - otherwise the
+   F1A0-F1A3 DIDs return garbage (the CRC is never computed in the app).
+2. Image generation: replace the hex2dfu flow (writes the STM32 CRC at
+   0x0801001C) with m749_image.py (CRC-32/MPEG-2 over the two segments at
+   0x080FFFFC) and merge OpenBLT + main app into one addressed image.
+3. CLI: recognize/validate the three-stage images.
+4. Coexistence of the UDS handoff (bootloader_handoff.cpp) and the OpenBLT CAN
+   trigger (canOpenBLT) in the running main app.
+5. flash1 is 97% full - watch code growth (the main app TEXT sits in
+   0x08090000-0x080FFFFB).

@@ -67,6 +67,60 @@ static blt_bool FlashBufferedWrite(blt_addr addr, blt_int32u len, blt_int8u *dat
 
 #endif
 
+#ifdef M74_9_OEM_LOADER
+// Three-stage boot chain behind the OEM resident loader. OpenBLT owns the
+// fixed application contract (vectors 0x08001000, code 0x08080000-0x0808FFFF,
+// activation descriptor 0x0805FFE0) and may only write the relocated main
+// rusEFI application. The CRC domain is the full application image (both
+// software segments), CRC-32/MPEG-2, little-endian word at 0x080FFFFC.
+static const blt_addr kMainSeg1Start = 0x08010000;
+static const blt_addr kMainSeg1End   = 0x0805F000;  // descriptor sector boundary
+static const blt_addr kMainSeg2Start = 0x08090000;
+static const blt_addr kMainSeg2Crc   = 0x080FFFFC;  // CRC word
+static const blt_addr kMainSeg2End   = 0x08100000;  // sector-aligned end
+
+static bool inWriteRange(blt_addr addr, blt_int32u len) {
+	blt_addr end = addr + len;
+	return (addr >= kMainSeg1Start && end <= kMainSeg1End) ||
+	       (addr >= kMainSeg2Start && end <= kMainSeg2Crc);
+}
+
+static bool inEraseRange(blt_addr addr, blt_int32u len) {
+	blt_addr end = addr + len;
+	return (addr >= kMainSeg1Start && end <= kMainSeg1End) ||
+	       (addr >= kMainSeg2Start && end <= kMainSeg2End);
+}
+
+static uint32_t crc32Mpeg2Byte(uint32_t crc, uint8_t byte) {
+	crc ^= uint32_t(byte) << 24;
+	for (int bit = 0; bit < 8; bit++) {
+		crc = (crc << 1) ^ ((crc & 0x80000000U) ? 0x04C11DB7U : 0U);
+	}
+	return crc;
+}
+
+static uint32_t crc32Mpeg2Word(uint32_t crc, uint32_t word) {
+	crc = crc32Mpeg2Byte(crc, uint8_t(word));
+	crc = crc32Mpeg2Byte(crc, uint8_t(word >> 8));
+	crc = crc32Mpeg2Byte(crc, uint8_t(word >> 16));
+	crc = crc32Mpeg2Byte(crc, uint8_t(word >> 24));
+	return crc;
+}
+
+// Application CRC over both software segments (excluding the CRC word itself):
+//   0x08001000-0x0805FFFF and 0x08080000-0x080FFFFB.
+static uint32_t computeAppCrc() {
+	uint32_t crc = 0xFFFFFFFF;
+	for (uint32_t a = 0x08001000; a < 0x08060000; a += 4) {
+		crc = crc32Mpeg2Word(crc, *reinterpret_cast<const volatile uint32_t*>(a));
+	}
+	for (uint32_t a = 0x08080000; a < 0x080FFFFC; a += 4) {
+		crc = crc32Mpeg2Word(crc, *reinterpret_cast<const volatile uint32_t*>(a));
+	}
+	return crc;
+}
+#endif // M74_9_OEM_LOADER
+
 void FlashInit() {
 	// Flash already init by ChibiOS
 #if defined(STM32H7XX) || defined(AT32F435xx)
@@ -75,7 +129,9 @@ void FlashInit() {
 }
 
 blt_addr FlashGetUserProgOffset() {
-#ifdef STM32H7XX
+#ifdef M74_9_OEM_LOADER
+	return 0x10000;  // main app vector table at 0x08010000
+#elif defined(STM32H7XX)
 	return 128 * 1024;
 #else // not STM32H7
 	return 32 * 1024;
@@ -87,10 +143,17 @@ blt_addr FlashGetUserProgBaseAddress() {
 }
 
 blt_bool FlashWrite(blt_addr addr, blt_int32u len, blt_int8u *data) {
+#ifdef M74_9_OEM_LOADER
+	// don't allow overwriting OpenBLT, the descriptor, calibration or NVM
+	if (!inWriteRange(addr, len)) {
+		return BLT_FALSE;
+	}
+#else
 	// don't allow overwriting the bootloader
 	if (addr < FlashGetUserProgBaseAddress()) {
 		return BLT_FALSE;
 	}
+#endif
 
 #if defined(STM32H7XX) || defined(AT32F435xx)
 	return FlashBufferedWrite(addr, len, data);
@@ -100,10 +163,16 @@ blt_bool FlashWrite(blt_addr addr, blt_int32u len, blt_int8u *data) {
 }
 
 blt_bool FlashErase(blt_addr addr, blt_int32u len) {
+#ifdef M74_9_OEM_LOADER
+	if (!inEraseRange(addr, len)) {
+		return BLT_FALSE;
+	}
+#else
 	// don't allow erasing the bootloader
 	if (addr < FlashGetUserProgBaseAddress()) {
 		return BLT_FALSE;
 	}
+#endif
 
 	if (!intFlashIsErased(addr, len)) {
 		return (FLASH_RETURN_SUCCESS == intFlashErase(addr, len)) ? BLT_TRUE : BLT_FALSE;
@@ -120,10 +189,22 @@ blt_bool FlashDone() {
 }
 
 blt_bool FlashWriteChecksum() {
+#ifdef M74_9_OEM_LOADER
+	// The host erases the whole segment 2 (including the CRC word), so the
+	// 4-byte CRC location is erased and ready to program.
+	uint32_t crc = computeAppCrc();
+	return (FLASH_RETURN_SUCCESS == intFlashWrite(0x080FFFFC, (const char*)&crc, 4)) ? BLT_TRUE : BLT_FALSE;
+#else
 	return BLT_TRUE;
+#endif
 }
 
 blt_bool FlashVerifyChecksum() {
+#ifdef M74_9_OEM_LOADER
+	uint32_t calculated = computeAppCrc();
+	uint32_t stored = *reinterpret_cast<const volatile uint32_t*>(0x080FFFFC);
+	return calculated == stored ? BLT_TRUE : BLT_FALSE;
+#else
 	// Naive check: if the first block is blank, there's no code there
 	if (intFlashIsErased(FlashGetUserProgBaseAddress(), 4)) {
 		return BLT_FALSE;
@@ -149,6 +230,7 @@ blt_bool FlashVerifyChecksum() {
 	uint32_t storedChecksum = *reinterpret_cast<uint32_t*>(start + checksumOffset);
 
 	return calcChecksum == storedChecksum ? BLT_TRUE : BLT_FALSE;
+#endif
 }
 
 blt_bool isFlashDualBank(void) {

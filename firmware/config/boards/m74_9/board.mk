@@ -9,19 +9,38 @@ BOARDCPPSRC = $(BOARD_DIR)/board_configuration.cpp \
   $(BOARD_DIR)/m74_9_lin.cpp \
   $(BOARD_DIR)/m74_9_tooth_diag.cpp \
   $(BOARD_DIR)/m74_9_vr_model.cpp \
-  $(BOARD_DIR)/../at_start_f435/board_storage.cpp
+  $(BOARD_DIR)/firmware/bootloader_handoff.cpp \
+  $(BOARD_DIR)/firmware/boot_activation.cpp \
+  $(BOARD_DIR)/firmware/board_storage.cpp
 else
-BOARDCPPSRC = $(BOARD_DIR)/board_bootloader.cpp
+BOARDCPPSRC = $(BOARD_DIR)/board_bootloader.cpp \
+  $(BOARD_DIR)/firmware/boot_activation.cpp
 endif
 
 DDEFS += -DLED_CRITICAL_ERROR_BRAIN_PIN=Gpio::Unassigned
 
 IS_AT32F435 = yes
 
+# Three-stage boot chain behind the OEM resident loader (see
+# firmware/m749_openblt.ld and firmware/m749.ld). The OpenBLT flash driver
+# switches to the OEM CRC-32/MPEG-2 whitelist + checksum domain under this
+# flag instead of the generic rusEFI checksum-at-0x1C scheme.
+DDEFS += -DM74_9_OEM_LOADER=TRUE
+
 # board.c from this directory
 BOARD_C = $(BOARD_DIR)/board.c
-# board.h from this directory
-BOARDINC = $(BOARD_DIR)
+# board.h and the OEM-loader contract headers from this directory
+BOARDINC = $(BOARD_DIR) $(BOARD_DIR)/firmware
+
+# The three-stage layout: OpenBLT is the OEM loader's "application" (vectors
+# 0x08001000, entry 0x08080000), the main rusEFI app is relocated above it.
+# Each build links against its own script.
+ifeq ($(IS_RE_BOOTLOADER),yes)
+override LDSCRIPT = $(BOARD_DIR)/firmware/m749_openblt.ld
+BOOTLOADER_ASMXSRC += $(BOARD_DIR)/firmware/m749_startup.S
+else
+override LDSCRIPT = $(BOARD_DIR)/firmware/m749.ld
+endif
 
 #This board has no USB wired out
 DDEFS += -DSTM32_USB_USE_OTG1=FALSE
