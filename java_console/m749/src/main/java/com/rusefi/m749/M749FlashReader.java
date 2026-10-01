@@ -8,6 +8,11 @@ import java.util.function.Consumer;
 final class M749FlashReader {
     static String read(M749RamHelper helper, FlashReadFile file, int block, Consumer<String> out)
             throws IOException, InterruptedException {
+        return read(helper, file, block, false, out);
+    }
+
+    static String read(M749RamHelper helper, FlashReadFile file, int block, boolean fast, Consumer<String> out)
+            throws IOException, InterruptedException {
         if (block < 1 || block > M749RamHelper.MAX_BLOCK) { throw new IllegalArgumentException("Invalid read block size"); }
         helper.probe();
         if (file.completed() > 0) {
@@ -26,7 +31,7 @@ final class M749FlashReader {
             int count = Math.min(block, file.length - file.completed());
             int address = file.address + file.completed();
             byte[] first = helper.read(address, count);
-            if (!Arrays.equals(first, helper.read(address, count))) {
+            if (!fast && !Arrays.equals(first, helper.read(address, count))) {
                 throw new IOException(String.format("Repeated read differs at %08X; block was not saved", address));
             }
             file.append(first);

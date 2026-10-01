@@ -24,6 +24,10 @@ final class FlashReadFile implements AutoCloseable {
     private int completed;
 
     FlashReadFile(Path output, int address, int length, boolean resume) throws IOException {
+        this(output, address, length, resume, false);
+    }
+
+    FlashReadFile(Path output, int address, int length, boolean resume, boolean fast) throws IOException {
         M749RamHelper.requireRange(address, length);
         this.address = address;
         this.length = length;
@@ -67,7 +71,7 @@ final class FlashReadFile implements AutoCloseable {
                 state.setProperty("helper.sha256", M749RamHelper.SHA256);
                 state.setProperty("address", Integer.toString(address));
                 state.setProperty("length", Integer.toString(length));
-                state.setProperty("verification", "two-identical-reads-per-block");
+                state.setProperty("verification", fast ? "single-read-per-block" : "two-identical-reads-per-block");
                 state.setProperty("created", java.time.Instant.now().toString());
                 data.force(true);
                 save(false);

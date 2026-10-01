@@ -25,7 +25,7 @@ public final class M749ReadFlashCli {
         String pair, immo;
         int chunk = 1024;
         int address = M749RamHelper.BASE, length = M749RamHelper.SIZE;
-        boolean resume, running, reset;
+        boolean resume, running, reset, fast;
     }
 
     static Options parse(String[] args) {
@@ -38,6 +38,7 @@ public final class M749ReadFlashCli {
                 case "--resume": o.resume = true; continue;
                 case "--helper-running": o.running = true; continue;
                 case "--reset-after": o.reset = true; continue;
+                case "--fast": o.fast = true; continue;
                 case "--read-flash":
                     if (i + 1 < args.length && !args[i + 1].startsWith("--")) { o.output = Path.of(args[++i]); }
                     continue;
@@ -116,7 +117,7 @@ public final class M749ReadFlashCli {
         M749Immo authorization = o.pair != null ? M749PairFile.load(Path.of(o.pair)).credential() :
                 o.immo == null ? null : M749Immo.load(Path.of(o.immo));
         // Resource, credential and file/resume validation precede all adapter access.
-        try (FlashReadFile file = new FlashReadFile(o.output, o.address, o.length, o.resume)) {
+        try (FlashReadFile file = new FlashReadFile(o.output, o.address, o.length, o.resume, o.fast)) {
             out.accept(String.format("Main-flash backup %08X..%08X -> %s", o.address,
                     o.address + o.length - 1, o.output));
             out.accept("Receive flow control: BS=" + o.block + ", STmin=" + o.stmin + " ms; chunk=" + o.chunk);
@@ -125,7 +126,7 @@ public final class M749ReadFlashCli {
                 if (authorization != null) { authorization.authorize(transport, out); }
                 M749RamHelper reader = new M749RamHelper(o.client(transport), o.stmin);
                 file.identify(reader.start(helper, o.running, out));
-                String hash = M749FlashReader.read(reader, file, o.chunk, out);
+                String hash = M749FlashReader.read(reader, file, o.chunk, o.fast, out);
                 published = true;
                 out.accept("Backup complete: " + o.output + " SHA-256 " + hash);
                 if (o.reset) {
@@ -163,11 +164,12 @@ public final class M749ReadFlashCli {
         M749ConnectionOptions.usage(out);
         out.accept("m749-cli --read-flash [OUTPUT.bin] [--slcan PORT|auto | --socketcan IFACE | --channel PCAN_USBBUS1|auto]");
         out.accept("Defaults: timestamped m749-full-*.bin in the current directory, automatic SLCAN scan.");
-        out.accept("  [--resume] [--helper-running] [--reset-after]");
+        out.accept("  [--resume] [--helper-running] [--reset-after] [--fast]");
         out.accept("  [--chunk-size 1..4080] [--block-size 0..255] [--stmin 0..127]");
         out.accept("  [--serial-baud 115200] [--slcan-bus 1..3] [--start 0x08000000] [--length 0x3F0000]");
         out.accept("  [--pair-file ECU.pair | --immo-backup PAIRED_FULLFLASH.bin]");
         out.accept("Default: 4032 KiB main flash, session-60 RAM helper, two matching reads per block.");
+        out.accept("--fast reads each block once (no double verification), roughly doubling throughput at the 500 kbit/s CAN limit.");
         out.accept("SLCAN works on supported desktop OSes; PCAN uses the native PCAN-Basic library (MacCAN on macOS, PEAK on Windows).");
         out.accept("SocketCAN requires Linux and an explicit interface already up at 500 kbit/s, e.g. --socketcan can0.");
         out.accept("Partial output/checkpoint are resumable. Completed output is never overwritten.");
