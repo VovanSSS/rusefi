@@ -71,15 +71,21 @@ void LogBuffer<TBufferSize>::writeInternal(const char* buffer) {
 		// pointer field was clobbered by an out-of-bounds writer). Writing
 		// here used to underflow 'available' (TBufferSize - current - 1 as
 		// size_t) and blast the line past the end of the object, corrupting
-		// the adjacent globals. Report once and recover instead.
+		// the adjacent globals. Report once, then recover the pointer from
+		// the intact content so the accumulated log is NOT lost - reset()
+		// here used to wipe the whole boot log.
 		static bool reported = false;
 		if (!reported) {
 			reported = true;
 			efiPrintf("LOGBUF clobber: m_writePtr=0x%08x m_buffer=0x%08x (out of [base, base+%u])",
 				(unsigned)diagWritePtr(), (unsigned)diagBase(), (unsigned)TBufferSize);
 		}
-		reset();
-		current = 0;
+		if (!recoverWritePointer()) {
+			// No null terminator within the buffer - the content itself is
+			// corrupted, nothing trustworthy to keep.
+			reset();
+		}
+		current = length();
 	}
 	size_t len = std::strlen(buffer);
 	// leave one byte extra at the end to guarantee room for a null terminator
@@ -129,24 +135,31 @@ const char* swapOutputBuffers(size_t* actualOutputBufferSize) {
 
 	*actualOutputBufferSize = readBuffer->length();
 #if EFI_ENABLE_ASSERTS
-	size_t expectedOutputSize = std::strlen(readBuffer->get());
+	size_t expectedOutputSize = readBuffer->contentLength();
 
 	// Check that the actual length of the buffer matches the expected length of how much we thought we wrote
 	if (*actualOutputBufferSize != expectedOutputSize) {
 		// Memory-corruption triage (m74_9, 2026-10-02): the write pointer of
-		// the READ buffer was clobbered by an out-of-bounds writer. Report the
-		// exact state - WHICH buffer, what the field contains, where the text
-		// really ends - and RECOVER by resetting the buffer, so the console
-		// still receives the boot log (the evidence) instead of a nullptr,
-		// which handleGetText would turn into a 4-billion-byte CAN response.
+		// the READ buffer was clobbered by an out-of-bounds writer. Capture
+		// the clobbered state, then RECOVER the pointer from the intact,
+		// null-terminated content so the console still receives the full
+		// boot log (the evidence) instead of an empty payload - resetting
+		// here used to truncate the log to whatever accumulated after the
+		// clobber, which is exactly the 'logs cut off' symptom.
+		const uintptr_t clobberedWritePtr = reinterpret_cast<uintptr_t>(readBuffer->diagWritePtr());
+		const uintptr_t clobberedBase = reinterpret_cast<uintptr_t>(readBuffer->diagBase());
+		const size_t clobberedLength = *actualOutputBufferSize;
+		if (!readBuffer->recoverWritePointer()) {
+			// No null terminator within the buffer - the content itself is
+			// corrupted, nothing trustworthy to send.
+			readBuffer->reset();
+		}
+		*actualOutputBufferSize = readBuffer->length();
 		efiPrintf("LOGBUF mismatch: rd=0x%08x wr=0x%08x writePtr=0x%08x base=0x%08x len=%u strlen=%u textTail=\"%.40s\"",
 			(unsigned)readBuffer, (unsigned)writeBuffer,
-			(unsigned)readBuffer->diagWritePtr(), (unsigned)readBuffer->diagBase(),
-			(unsigned)*actualOutputBufferSize, (unsigned)expectedOutputSize,
+			(unsigned)clobberedWritePtr, (unsigned)clobberedBase,
+			(unsigned)clobberedLength, (unsigned)expectedOutputSize,
 			readBuffer->get() + (expectedOutputSize > 40 ? expectedOutputSize - 40 : 0));
-		readBuffer->reset();
-		*actualOutputBufferSize = 0;
-		return readBuffer->get();
 	}
 #endif /* EFI_ENABLE_ASSERTS */
 	return readBuffer->get();

@@ -17,6 +17,7 @@
 MEMORY
 {
     boot_intent (rw) : org = 0x20000000, len = 4
+    shared (rw) : org = 0x20000004, len = 16
     mstack (rw) : org = 0x20020000 - __main_stack_size__, len = __main_stack_size__
     flash0 (rx) : org = 0x08001000, len = 0xF000
     activation (rx) : org = 0x0805FFE0, len = 32
@@ -62,10 +63,20 @@ SECTIONS {
     .m749_activation : { KEEP(*(.m749_activation)) } > activation
 }
 
+/* OpenBLT shared params - fixed address, same as m749.ld (the app build).
+ * As an orphan section it used to land right after the bootloader's own
+ * .data (0x20020804), which the main app's .data copy overwrites on every
+ * app boot - the reset counters never accumulated. This fixed placement
+ * (outside both images' data/bss) restores the reset-loop latch. */
+SECTIONS {
+    .shared (NOLOAD) : { KEEP(*(.shared)) } > shared
+}
+
 INCLUDE rules.ld
 
 ASSERT(ADDR(.vectors) == 0x08001000, "M74.9 OpenBLT vectors moved")
 ASSERT(__main_stack_end__ == 0x20020000, "M74.9 OpenBLT initial SP moved")
 ASSERT((Reset_Handler & ~1) == 0x08080000, "M74.9 OpenBLT reset entry moved")
 ASSERT(SIZEOF(.boot_intent) == 4, "M74.9 boot intent must be reserved")
+ASSERT(ADDR(.shared) == 0x20000004 && SIZEOF(.shared) == 16, "M74.9 shared params must be fixed at 0x20000004")
 ASSERT(SIZEOF(.m749_activation) == 32, "M74.9 activation descriptor missing")

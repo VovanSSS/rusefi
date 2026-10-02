@@ -1,5 +1,95 @@
 # Work Report
 
+## 2026-10-02 - m74_9 LOGBUF clobber / truncated console logs ROOT CAUSE: the ChibiOS heap overlapped the app bss in m749.ld (fixed)
+
+Symptom (user, bench, after the three-stage chain): the console received only
+'the newest' logs - the complete boot log accumulated since reset was cut off,
+with a `LOGBUF clobber: m_writePtr=0x00000000 m_buffer=0x20039F38` line in the
+stream. Before the OEM-loader rework the console always got the full log.
+
+The triage commit 4968f517af9 (firmwareError->recovery) had already made logs
+REAPPEAR, but its recovery was `reset()` - which drops the accumulated content,
+hence the truncation. The real bug was found this session:
+
+- m749.ld aliased HEAP_RAM to `ram_heap (0x20020000, 128k)` - a SUB-range of
+  ram0 (0x20020000..0x20050000). The app data/bss (0x20020600..0x2004FF04)
+  fills nearly all of ram0, so the linker placed the .heap section at the
+  region ORIGIN 0x20020000 - INSIDE the live bss (map: `.heap 0x20020000
+  0x20000 *fill*`). __heap_base__/__heap_end__ = 0x20020000/0x20040000, i.e.
+  the ChibiOS memcore+heap (131072 B = exactly the region) overlapped
+  ~128 KB of static objects.
+- The Lua arena (chHeapAlloc -> memcore from the TOP: 0x20040000 downward)
+  landed on 0x2003BFA8..0x20040000, which contains buffers[0].m_writePtr
+  (0x2003DF38) - the observed 0x00000000 (and the earlier '0x516/0x520-class'
+  values) are Lua/heap writes, NOT a mystery writer. Old builds had
+  HEAP_RAM=ram0 with the heap placed AFTER bss - no overlap, hence the
+  regression appeared exactly with the three-stage rework.
+- Verified in the image: the merged ctor DOES initialize the write pointers
+  (0x8096964: str r3,[r2,#-4] = [0x2003DF38]=0x20039F38) - the earlier
+  'missing constructor' theory was refuted.
+
+Fix:
+- m749.ld: ram_heap moved to the genuinely free low SRAM between the
+  boot-intent word and the main stack: `org 0x20000004, len 0x1EFFC`
+  (links to __heap_base__=0x20000008..__heap_end__=0x2001F000, ~124 KB;
+  Lua usage is ~13 KB). The OpenBLT build is unaffected (its heap sits
+  after its own bss). New linker ASSERT:
+  `(heap_end <= data_base) || (heap_base >= bss_end)` - fails the build if
+  the heap ever overlaps data/bss again.
+- loggingcentral.{h,cpp}: clobber recovery now PRESERVES the log instead of
+  dropping it - new LogBuffer::contentLength() (bounded null scan) +
+  recoverWritePointer(); writeInternal recovers the pointer from the intact
+  text (reset only when the content itself has no terminator), and
+  swapOutputBuffers delivers the recovered full content on the mismatch
+  path instead of an empty payload (also removed the unbounded
+  std::strlen on possibly-corrupt content).
+- m749.ld + m749_openblt.ld: .shared pinned to a fixed region at 0x20000004
+  (16 B) in BOTH scripts (previously an orphan: app 0x20020c80 vs bootloader
+  0x20020804, the app's .data copy clobbering the bootloader's reset counters);
+  the app heap moved to 0x20000014 to make room. ASSERTs enforce the address.
+
+Validation: compile_m74_9.sh green (map: .heap 0x20000008 0x1eff8, bss
+0x20020600..0x2004FF04 - disjoint; ASSERT passes); unit tests logBuffer
+(writeSmall/writeOverflow) pass on the host clang build.
+
+BENCH-CONFIRMED 2026-10-02 (user, 13:09 session): the full boot log arrives on
+connect - 'Reset Cause' onwards, no LOGBUF clobber/mismatch lines, and the Lua
+print reads 'Lua total heap(s) usage: 13402 / 126968' (the new ~124 KiB heap).
+The heap-in-bss theory is thereby proven end-to-end.
+
+One-off observation (SAME session, first boot after flashing, NOT reproducible
+on the second boot - user): a latched `CRITICAL error: Send: CAN1 device not
+configured NBC 1F6` appeared ~30 ms after the ignition gate turned ON. The
+console re-prints the LATCHED firmwareError message on every poll (the ~200 ms
+cadence in the log), so this was ONE criticalError, not a spam of failures.
+Reading: the first dash send (0x1F6, bus 0) ran CanTxMessage::~CanTxMessage
+with s_devices[0] == nullptr, while the console-over-CAN (same bus, SERIAL
+category, same s_devices[0]) kept working on the same boot - so the device was
+set during initHardware (initCan, which completed before 'Running main loop')
+and was NULL only inside the short window. The only runtime code that unsets
+the device is transmitCompleted() in bootloader_handoff.cpp:
+CanTxMessage::removeDevice(0) followed by an up-to-50 ms busy-wait for all
+three mailboxes empty (the dash sender keeps them busy, so the wait usually
+runs to the 50 ms timeout) before setDevice(0, &CAND1). A UDS-pattern frame
+(SID 0x7E0) arriving right after boot - leftover M749-CLI session traffic or
+a console ISO-TP frame matching the 0x22/0x11 filter - would run exactly this
+path, and any dash frame inside the window (dash = every 10-20 ms) latches the
+critical error (its NBC 1F6 is the first frame of the 10 ms group). The second
+boot had no stale 0x7E0 frame -> clean. OPEN follow-up if it recurs:
+harden transmitCompleted (set pauseCANdueToSerialUntil for the own-the-mailbox
+window so the BCM sender parks, or tighten the UDS pattern match so console
+ISO-TP frames can never match), and/or make the dash sender tolerate a briefly
+unset device without latching a fatal error.
+
+Open follow-ups (NOT fixed, discovered this session):
+- The .shared mismatch described below WAS fixed in this session (see the
+  previous paragraph's fix list): both linker scripts now pin .shared to
+  0x20000004 via a dedicated region + ASSERT, so the bootloader's reset
+  counters survive app boots again. Caveat recorded: 0x20000004 must survive
+  the OEM resident loader's own RAM use (only the 0x20000000 boot-intent word
+  is proven to do so); if the latch counters still never accumulate on the
+  car, the OEM loader is the prime suspect.
+
 ## 2026-10-02 - m74_9 DEFAULT build = OEM three-stage (compile_m74_9.sh), bundle/hex2dfu path deprecated + hang root cause
 
 Triggered by a build incident: `bash bin/compile.sh -b config/boards/m74_9/meta-info.env`

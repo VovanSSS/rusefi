@@ -57,6 +57,27 @@ public:
 	uintptr_t diagWritePtr() const { return reinterpret_cast<uintptr_t>(m_writePtr); }
 	uintptr_t diagBase() const { return reinterpret_cast<uintptr_t>(m_buffer); }
 
+	// Bounded content scan: writeInternal always null-terminates the buffer,
+	// so this is the true length of the intact text even when the m_writePtr
+	// accounting field has been clobbered. Never walks past the object.
+	size_t contentLength() const {
+		size_t n = 0;
+		while (n < TBufferSize && m_buffer[n] != '\0') {
+			n++;
+		}
+		return n;
+	}
+
+	// Re-derive the accounting pointer from the intact, null-terminated
+	// content instead of resetting and dropping the accumulated log.
+	// Returns false when no null terminator exists within the buffer (the
+	// content itself is corrupted) - the caller should then reset().
+	bool recoverWritePointer() {
+		const size_t n = contentLength();
+		m_writePtr = m_buffer + n;
+		return n < TBufferSize;
+	}
+
 #if !EFI_UNIT_TEST
 private:
 #endif
