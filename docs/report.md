@@ -1,5 +1,93 @@
 # Work Report
 
+## 2026-10-02 (4) - m74_9 OpenBLT app-update BENCH-VALIDATED: the flush-first CRC fix works end-to-end
+
+Closed the (3) entry. User-verified on the bench with the exact reproduction
+path:
+1. Full stock restore via openocd (Read_FULLFLASH_I865LB52.bin at 0x08000000,
+   verify + reset).
+2. rusEFI three-stage image via the OEM loader (m749_can.sh --upload
+   firmware/build/rusefi.hex --immo-backup ...) - console connects.
+3. openblt_can.sh --probe, then the app-only update
+   (openblt_can.sh firmware/build/rusefi_app.srec).
+
+The console now comes back after the OpenBLT srec flash - previously the
+repro bricked the ECU every time (stuck in XCP, console dead). So the
+flush-before-CRC fix in FlashWriteChecksum (openblt_flash.cpp) is confirmed on
+hardware, and the OpenBLT-over-CAN app-update path is WORKING for the m74_9
+three-stage chain: full image via the OEM loader for the first install,
+OpenBLT XCP (rusefi_app.srec) for later main-app updates.
+
+(Note for the log: the openocd full-flash step above worked with the
+at32f435xM.cfg driver against a full 2 MB bin - a whole-image write, unlike
+the partial-image case that exposes the 8 KB-sector model; the 'never
+write_image for partial images' warning from entry (3) still stands for
+partial operations.)
+
+
+## 2026-10-02 (3) - m74_9 OpenBLT app-update brick ROOT CAUSE FOUND: the CRC is computed before the last write-buffer line is flushed (fixed in code, bench re-flash pending)
+
+Closed the (2) entry. SWD evidence + a host-side recompute pinned the whole chain.
+
+ROOT CAUSE: NvmDone() calls FlashWriteChecksum() BEFORE FlashDone(), and the
+AT32 4-byte write buffer (FLASH_ECC_LINE_SIZE = 4) still holds the LAST line of
+program data at that point. computeAppCrc() then reads that line from flash as
+0xFFFFFFFF and stores a CRC of an image that does not exist yet; FlashDone()
+flushes the line right after, so the finalized image no longer matches the
+stored word. On the next boot checkImages recomputes over the COMPLETE image,
+finds the mismatch and the bootloader stays in XCP mode forever (console dead,
+OpenBLT probe alive) - exactly the observed signature. The app segments
+verify byte-perfect (BUILD_CHECKSUM), so the only wrong byte is the CRC word.
+
+SWD EVIDENCE (openocd, stlink-dap, at32f435xM):
+- pc = 0x080805b0 = inside crc32Mpeg2Byte - the bootloader was actively
+  computing the boot-time CRC when halted (not a dead loop);
+- 0x080FFFFC = 0x54F37818, while the hex build stores 0xDA36F642;
+- marker 0x08200000 = 0x43A0C212 (normal) - the marker path is innocent;
+- SharedParams slots 1/2 = 0 - no reset-loop latch.
+
+PROOF 0x54F37818 is the pending-buffer CRC: recomputing CRC-32/MPEG-2 over
+build/rusefi.hex (domain 0x08001000..0x08060000 + 0x08080000..0x080FFFFC,
+byte-ascending, poly 0x04C11DB7, init 0xFFFFFFFF, no final xor) gives
+0xDA36F642; forcing ONLY the last 4 data bytes of segment 2 (0x080FD43C..
+0x080FD43F, the line that sits in the RAM buffer until FlashDone) to 0xFF
+gives exactly 0x54F37818. Segments end at 0x0804F204 / 0x080FD440 in this
+build (the .srec tail is 4-byte aligned, so the last line is always pending).
+
+FIX (firmware/bootloader/openblt_chibios/openblt_flash.cpp, FlashWriteChecksum
+under M74_9_OEM_LOADER):
+1. FlashBufferFlush() FIRST - the CRC is now computed over the complete flash
+   (idempotent: FlashDone() flushes again to an empty buffer).
+2. Readback verify: the 4 bytes at 0x080FFFFC must equal the computed CRC,
+   else BLT_FALSE - a silent CRC write failure is invisible to the host's
+   BUILD_CHECKSUM verify and bricks the next boot.
+
+Validation: compile_m74_9.sh green (app + bootloader + merge). Bootloader ELF
+disassembly confirms the order: bl FlashBufferFlush @0x8082d4c -> bl
+computeAppCrc @0x8082d54 -> intFlashIsErased/erase -> intFlashWrite -> readback
+cmp -> FlashDone. The new merged hex carries CRC word 3E 93 3A A7 (LE
+0xA73A933E) - changed vs 42 F6 36 DA because the bootloader code itself is in
+the CRC domain (0x08080000..0x0808FFFF). Recomputing over the new hex agrees.
+
+Deploy/re-test steps (user-owned, bench):
+1. Flash the full three-stage image (build/rusefi.hex) through the M749 CLI -
+   the fixed bootloader is inside it. This also un-bricks the bench ECU.
+2. Run the OpenBLT app update (openblt_can.sh + build/rusefi_app.srec) -
+   'Resetting into the new firmware' must now be followed by a working console.
+3. Sanity: openblt_can.sh --read-word 0x080FFFFC must print the word that the
+   FULL-image hex carries for THAT build (extract from rusefi.hex, the value
+   moves whenever the bootloader code changes).
+
+Notes:
+- The 8 KB-sector model in tool-openocd-at32's flash driver does not match the
+  real 4 KB pages - 'flash write_image erase' would erase the OEM loader's
+  first page (its 8 KB sector 0x08000000 spans two real pages). Use the M749
+  CLI or manual register programming; never openocd write_image on this chip.
+- The --read-word diagnostic (b26a78aa73b) remains useful for the next time:
+  a stuck ECU + CRC word != the hex value = the flash state is the problem;
+  a stuck ECU + matching word = look at the marker/chain state instead.
+
+
 ## 2026-10-02 (2) - m74_9 OpenBLT app-update STILL bricks after the CpuReset fix - the flash state itself is rejected (diagnosis in progress)
 
 Follow-up bench test (user): the CpuReset fix (f284bb55ef5) did NOT change the

@@ -985,6 +985,30 @@ OpenBLT/firmware-side levers if the speed ever matters again (NOT done): 1 Mbit/
 
 `FATAL: BUILD_CHECKSUM(0x08010000, 32768) failed: RES [FF]` + `Bootloader station id length: 16842760 bytes` = the host's response stream is shifted by ONE: `16842760` = 0x01010008 = LE-32 of a CONNECT response parsed as the GET_ID station-id length (rusEFI builds are INTEL byte order - BOOT_CPU_BYTE_ORDER_MOTOROLA=0 - so the CONNECT reply bytes 4..7 are [dto_lo=8, dto_hi=0, proto=1, transport=1]); `RES [FF]` = a stale 1-byte ACK where the 8-byte BUILD_CHECKSUM reply was expected. Trigger condition: the session entered the bootloader from a RUNNING app via the CAN trigger (frameId==BOOT_COM_CAN_RX_MSG_ID && DLC==2 -> jump_to_openblt); a bootloader already running (or entered from power-on) is always clean. XcpClient.request() accepts ANY positive reply with no command correlation, so one extra frame desyncs everything; erase/program cannot detect it (all replies are identical 1-byte [FF] ACKs) and the failure surfaces only at the first 8-byte-response command - AFTER the image is erased. FIXED host-side (station-id handshake: drainRx + SYNCH-answered-negatively check + GET_ID length in {7,12}, refuse to flash on garbage; verify drains + re-issues once) and bootloader-side (CanInit releases RX FIFOs after canStart). STILL OPEN: the exact emitter of the extra CONNECT response (hal_lld_init resets APB1/CAN1 at every boot, so stale-FIFO survival is REFUTED; one frame = one response in the bootloader) - settle with one `--verbose` flasher run. Note: the 0xBF board-signature reply is truncated to 7 chars over CAN (8-byte DLC - 1 PID byte).
 
+### m74_9 OpenBLT app-update CRC: NvmDone order + the 4-byte write buffer (brick root cause, fixed 2026-10-02)
+
+`NvmDone()` calls `FlashWriteChecksum()` BEFORE `FlashDone()`, and the AT32
+write buffer (`FLASH_ECC_LINE_SIZE = 4`) still holds the LAST 4-byte line of
+program data at that point. Any CRC computed over flash inside
+`FlashWriteChecksum` therefore reads that line as 0xFFFFFFFF; `FlashDone()`
+flushes it right after, so the stored CRC never matches the finalized image and
+the next boot's `checkImages` strands the ECU in XCP mode (console dead,
+OpenBLT probe alive). `FlashWriteChecksum` (m74_9 OEM path) now flushes first
+and readbacks the CRC word. INVARIANT: never compute a flash-content CRC in the
+bootloader without flushing the write buffer first. Also: the app-only srec
+ends 4-byte aligned, so the last line is ALWAYS pending until FlashDone - the
+bug hit every single app-update session, not just unlucky ones.
+
+### tool-openocd-at32 flash driver: NEVER `flash write_image erase` (8KB-sector model)
+
+The at32f435xM.cfg driver probes bank1 as 31 x 8 KB sectors + one 0x1C2000
+sector, but the real AT32F435 pages are 4 KB. Its erase of "sector 0"
+(0x08000000, 8 KB model) erases only the real 4 KB page 0x08000000..0x08000FFF
+= the OEM resident loader's first page, and the following 8 KB of writes then
+hit non-erased cells (EPPERR). Flash this chip via the M749 CLI (UDS) or by
+manual FLASH register programming over SWD; openocd write_image is
+loader-destructive.
+
 ### Bootloader "ECU dead, bootloader answers" = reset-loop latch (2026-09-08)
 
 The bootloader counts resets in SharedParams slots 1/2 (RAM that survives

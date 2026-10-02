@@ -190,6 +190,19 @@ blt_bool FlashDone() {
 
 blt_bool FlashWriteChecksum() {
 #ifdef M74_9_OEM_LOADER
+#if defined(STM32H7XX) || defined(AT32F435xx)
+	// CRITICAL ORDER (2026-10-02 brick root cause): NvmDone() calls
+	// FlashWriteChecksum() BEFORE FlashDone(), and the 4-byte write buffer
+	// still holds the last line of the program data at that point. Flush it
+	// FIRST or computeAppCrc() reads a 0xFFFFFFFF tail and stores a CRC that
+	// the finalized image no longer matches - the next boot's checkImages
+	// rejects the app and the ECU stays stuck in XCP mode (console dead,
+	// OpenBLT probe alive). Measured on the bench: stored 0x54F37818 =
+	// CRC with the last word still erased vs the correct 0xDA36F642.
+	if (FlashBufferFlush() == BLT_FALSE) {
+		return BLT_FALSE;
+	}
+#endif
 	// The host erases only up to the end of the program data (the app-only
 	// .srec does not include the CRC word), so the CRC sector 0x080FF000..
 	// 0x080FFFFF may still hold the previous CRC and is not erased. Erase it
@@ -200,7 +213,12 @@ blt_bool FlashWriteChecksum() {
 			return BLT_FALSE;
 		}
 	}
-	return (FLASH_RETURN_SUCCESS == intFlashWrite(0x080FFFFC, (const char*)&crc, 4)) ? BLT_TRUE : BLT_FALSE;
+	if (FLASH_RETURN_SUCCESS != intFlashWrite(0x080FFFFC, (const char*)&crc, 4)) {
+		return BLT_FALSE;
+	}
+	// Read back the stored word: a silent write failure here is invisible to
+	// the per-segment BUILD_CHECKSUM verify and bricks the next boot.
+	return (*reinterpret_cast<const volatile uint32_t*>(0x080FFFFC) == crc) ? BLT_TRUE : BLT_FALSE;
 #else
 	return BLT_TRUE;
 #endif
