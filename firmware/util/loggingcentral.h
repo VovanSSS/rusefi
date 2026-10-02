@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include "generated_lookup_meta.h"
 
 class Logging;
@@ -49,6 +50,12 @@ public:
 	size_t length() const;
 	void reset();
 	const char* get() const;
+
+	// Diagnostic accessors: expose the internals so swapOutputBuffers can
+	// report WHICH field was clobbered and to what value when the buffer
+	// accounting check trips (memory-corruption triage).
+	uintptr_t diagWritePtr() const { return reinterpret_cast<uintptr_t>(m_writePtr); }
+	uintptr_t diagBase() const { return reinterpret_cast<uintptr_t>(m_buffer); }
 
 #if !EFI_UNIT_TEST
 private:

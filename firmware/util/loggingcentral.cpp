@@ -64,9 +64,26 @@ const char* LogBuffer<TBufferSize>::get() const {
 
 template <size_t TBufferSize>
 void LogBuffer<TBufferSize>::writeInternal(const char* buffer) {
+	size_t current = length();
+	if (current >= TBufferSize) {
+		// The write pointer was driven out of range (either the buffer really
+		// filled to the last byte, or - the observed m74_9 failure - the
+		// pointer field was clobbered by an out-of-bounds writer). Writing
+		// here used to underflow 'available' (TBufferSize - current - 1 as
+		// size_t) and blast the line past the end of the object, corrupting
+		// the adjacent globals. Report once and recover instead.
+		static bool reported = false;
+		if (!reported) {
+			reported = true;
+			efiPrintf("LOGBUF clobber: m_writePtr=0x%08x m_buffer=0x%08x (out of [base, base+%u])",
+				(unsigned)diagWritePtr(), (unsigned)diagBase(), (unsigned)TBufferSize);
+		}
+		reset();
+		current = 0;
+	}
 	size_t len = std::strlen(buffer);
 	// leave one byte extra at the end to guarantee room for a null terminator
-	size_t available = TBufferSize - length() - 1;
+	size_t available = TBufferSize - current - 1;
 
 	// If we can't fit the whole thing, write as much as we can
 	len = minI(available, len);
@@ -116,9 +133,20 @@ const char* swapOutputBuffers(size_t* actualOutputBufferSize) {
 
 	// Check that the actual length of the buffer matches the expected length of how much we thought we wrote
 	if (*actualOutputBufferSize != expectedOutputSize) {
-		firmwareError(ObdCode::ERROR_LOGGING_SIZE_CALC, "lsize mismatch %d vs strlen %d", *actualOutputBufferSize, expectedOutputSize);
-
-		return nullptr;
+		// Memory-corruption triage (m74_9, 2026-10-02): the write pointer of
+		// the READ buffer was clobbered by an out-of-bounds writer. Report the
+		// exact state - WHICH buffer, what the field contains, where the text
+		// really ends - and RECOVER by resetting the buffer, so the console
+		// still receives the boot log (the evidence) instead of a nullptr,
+		// which handleGetText would turn into a 4-billion-byte CAN response.
+		efiPrintf("LOGBUF mismatch: rd=0x%08x wr=0x%08x writePtr=0x%08x base=0x%08x len=%u strlen=%u textTail=\"%.40s\"",
+			(unsigned)readBuffer, (unsigned)writeBuffer,
+			(unsigned)readBuffer->diagWritePtr(), (unsigned)readBuffer->diagBase(),
+			(unsigned)*actualOutputBufferSize, (unsigned)expectedOutputSize,
+			readBuffer->get() + (expectedOutputSize > 40 ? expectedOutputSize - 40 : 0));
+		readBuffer->reset();
+		*actualOutputBufferSize = 0;
+		return readBuffer->get();
 	}
 #endif /* EFI_ENABLE_ASSERTS */
 	return readBuffer->get();

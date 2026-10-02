@@ -937,6 +937,15 @@ static void handleGetText(TsChannelBase* tsChannel) {
 	logMsg("get test sending [%d]\r\n", outputSize);
 #endif
 
+	// swapOutputBuffers can return nullptr only if the assert path above is
+	// compiled out (EFI_ENABLE_ASSERTS=FALSE) and the accounting check is
+	// skipped entirely - never send a nullptr/garbage-sized payload: a
+	// 4-billion-byte response from address 0 would flood the CAN link.
+	if (output == nullptr) {
+		output = "";
+		outputSize = 0;
+	}
+
 	tsChannel->writeCrcPacket(TS_RESPONSE_OK, reinterpret_cast<const uint8_t*>(output), outputSize, true);
 #if EFI_SIMULATOR
 	logMsg("sent [%d]\r\n", outputSize);
