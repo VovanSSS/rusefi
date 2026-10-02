@@ -1,5 +1,40 @@
 # Work Report
 
+## 2026-10-02 - m74_9 OpenBLT app-update left the app unreachable (console dead) - PROGRAM_RESET must re-enter through the OEM loader (fixed)
+
+Symptom (user, reproduced since the OEM-loader transition): full-image flash via
+the M749 CLI works (console connects), then an OpenBLT app update
+(openblt_can.sh + rusefi_app.srec - flash completes, 'Checksum verification
+passed') leaves the console dead. The user flashed the SAME build's app over
+itself, so the app content was never the problem - the OpenBLT session itself
+broke the boot.
+
+Root cause (code-verified): XcpCmdProgramReset (ext/openblt/Target/Source/xcp.c)
+ended the session with CpuStartUserProgram() - a DIRECT jump into the app's
+reset handler with NO CPU reset and NO pass through the OEM resident loader.
+Since the three-stage rework the boot chain is OEM loader -> OpenBLT -> app,
+with both OpenBLT (initM749BootActivation) and the app itself
+(custom_board_InitHardwareEarly -> the same initM749BootActivation) validating
+the image on the way in; the app self-check hard-resets on any failure. The
+direct jump skips that whole chain - the freshly flashed app never gets the
+normal boot path, and the console (ISO-TP over CAN) has nothing to talk to.
+The full-image path works because the M749 CLI ends its session with a real
+reset, replaying the complete chain. (The flasher's 'Checksum verification
+passed' is a per-segment BUILD_CHECKSUM byte check and does NOT cover the
+boot-chain validation, so it cannot catch this.)
+
+Fix:
+- ext/openblt/Target/Source/cpu.h + bootloader/openblt_chibios/openblt_chibios.cpp:
+  new CpuReset() (NVIC_SystemReset + trap).
+- xcp.c XcpCmdProgramReset: under M74_9_OEM_LOADER call CpuReset() so the ECU
+  re-enters via the OEM loader (the exact chain the full-image flash ends with
+  and which is proven to boot); classic boards keep the direct jump.
+
+Validation: compile_m74_9.sh green; in the bootloader ELF CpuStartUserProgram
+now has exactly ONE caller (the normal boot path) - XcpCmdProgramReset no
+longer jumps directly. Bench verdict pending: full-image flash -> OpenBLT app
+update -> the console must reconnect after 'Resetting into the new firmware'.
+
 ## 2026-10-02 - m74_9 LOGBUF clobber / truncated console logs ROOT CAUSE: the ChibiOS heap overlapped the app bss in m749.ld (fixed)
 
 Symptom (user, bench, after the three-stage chain): the console received only

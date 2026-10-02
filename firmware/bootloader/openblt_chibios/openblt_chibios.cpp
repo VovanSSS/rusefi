@@ -7,6 +7,19 @@ extern "C" {
 
 void CpuInit() { }
 
+/**
+ * Full system reset. The three-stage (OEM loader -> OpenBLT -> main app)
+ * chain must re-enter through the OEM resident loader after a flash session:
+ * a direct jump (CpuStartUserProgram) skips the loader's boot-time setup and
+ * the bootloader's own activation/checksum path, which left the app dead
+ * after an OpenBLT app update (console unreachable, 2026-10-02). The reset
+ * replays the exact chain the full-image (M749 CLI) flash ends with.
+ */
+void CpuReset() {
+	NVIC_SystemReset();
+	for (;;) { }
+}
+
 void TimerInit() { }
 void TimerReset() { }
 
