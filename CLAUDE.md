@@ -31,9 +31,49 @@ Outputs are placed in `firmware/deliver/`:
 - `rusefi.bin` - Complete image (bootloader + firmware) for blank ECUs
 - `rusefi_update.srec` - Update image for bootloader flashing
 
-### Building the m74_9 bundle (console + srec + bin + ini + tune in one zip)
+### Building the m74_9 firmware (DEFAULT = OEM three-stage image)
 
-One command builds everything (console jar via gradle, config/ini regen, firmware, OpenBLT merge, zip):
+The m74_9 boot chain is three-stage (OEM resident loader -> OpenBLT -> main app,
+landed 2026-10-01, commits 2e5fcebaa3c/836e69a5b66). The DEFAULT build is the
+board compile script, which produces the merged three-stage image with the OEM
+CRC-32/MPEG-2 at 0x080FFFFC:
+
+```bash
+firmware/config/boards/m74_9/compile_m74_9.sh
+```
+
+- Steps: `gmake -j12` (main app, links at 0x08010000/0x08090000) ->
+  `gmake -C bootloader -r SUBMAKE=yes` (OpenBLT second-stage, vectors 0x08001000,
+  entry 0x08080000) -> `config/boards/m74_9/bin/m749_image.py` merges BOTH ELFs
+  into `build/rusefi.hex`/`build/rusefi.srec` (one image 0x08001000..0x08100000,
+  CRC-32/MPEG-2 @ 0x080FFFFC). Flash those via the M749 CLI (UDS/I865 OEM
+  loader), NOT via OpenBLT rusefi.bin.
+- DO NOT run `bash bin/compile.sh -b config/boards/m74_9/meta-info.env` for this
+  board anymore: the bundle flow's `.h2d-sentinel`/`rusefi.srec` rules merge
+  bootloader+app with hex2dfu, which assumes the CLASSIC layout (bootloader
+  @0x08000000, app @0x08008000, rusEFI CRC @vectors+0x1C). Fed the OEM-layout
+  bootloader hex (segments 0x08001000..0x08001220 + 0x0805FFE0 + 0x08080000..),
+  hex2dfu's `-c` block mutates `add_crc32` per image (`add_crc32 -=
+  tar_start_address[i]`, persists into the next image) and computes a CRC over a
+  ~4-billion-byte wrapped length -> the tool spins forever (~57% CPU, tiny RSS)
+  instead of failing (learned 2026-10-02). Same class: the app-only
+  `rusefi.srec` rule still runs hex2dfu with `-c` and completes, but its CRC
+  placement is the WRONG (rusEFI) scheme - the OEM script overwrites it.
+- Gotcha: `common_script_read_meta_env.inc` is incompatible with `set -u` - it
+  references BOARD_DIR/PROJECT_BOARD/POST_BUILD_SCRIPT unguarded (both in
+  `[ -z "${VAR}" ]` and `${VAR}` in echo) and dies with 'unbound variable' for
+  meta files that do not define PROJECT_BOARD. Use `set -eo pipefail` in board
+  scripts that source it.
+- The OpenBLT-over-CAN app update path (openblt_can.sh + the app-only srec,
+  e.g. rusefi_app.srec) REMAINS the supported update route on the car: the
+  bootloader's FlashWriteChecksum erases the 0x080FF000 CRC sector and writes
+  the OEM CRC itself (commit 836e69a5b66, car-verified).
+
+### m74_9 bundle build (LEGACY, do not use - kept for reference)
+
+The bundle flow below is the OLD first-stage-OpenBLT flow. It no longer matches
+the m74_9 three-stage layout and hangs in hex2dfu (see above). Kept here only
+for the other-boards/legacy documentation:
 
 ```bash
 cd firmware

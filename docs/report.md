@@ -1,5 +1,45 @@
 # Work Report
 
+## 2026-10-02 - m74_9 DEFAULT build = OEM three-stage (compile_m74_9.sh), bundle/hex2dfu path deprecated + hang root cause
+
+Triggered by a build incident: `bash bin/compile.sh -b config/boards/m74_9/meta-info.env`
+(the memorized bundle flow) hung forever in `misc/hex2dfu/hex2dfu.mac` (~57% CPU,
+tiny RSS, killed after 2+ min).
+
+Root cause (empirically bisected, NOT fixed in hex2dfu per user decision):
+- The m74_9 bootloader is now a second-stage behind the OEM loader (commits
+  2e5fcebaa3c/836e69a5b66): its hex spans 0x08001000..0x08082FB4 (vectors,
+  0x0805FFE0 activation data, code at 0x08080000+). hex2dfu's `-c` placement
+  block mutates `add_crc32` per image (`add_crc32 -= tar_start_address[i]`,
+  persists into the NEXT image). The old bootloader hex never satisfied the
+  `add_crc32 < start+len-256` condition, so the bug was latent; the new hex
+  does -> for the bootloader image add_crc32 becomes 0xF01C -> for the app
+  image it wraps to ~4.16e9 -> `crc32(buf, ~4.16e9)` spins (and the placement
+  writes way out of bounds). Each file alone parses fine; only the merged
+  invocation hangs.
+- The bundle flow (bundle.mk .h2d-sentinel / rusefi.srec rules) assumes the
+  CLASSIC layout (BL @0x08000000, app @0x08008000, rusEFI CRC @vectors+0x1C)
+  - it is the WRONG producer for this board now. The app-only `rusefi.srec`
+  rule still runs hex2dfu `-c` and completes, but its CRC placement is the
+  wrong scheme (overwritten by the OEM merge).
+
+Fix (build default, not hex2dfu):
+- `config/boards/m74_9/compile_m74_9.sh` is now the DEFAULT build = the OEM
+  three-stage flow (main app -> OpenBLT second-stage -> m749_image.py merge
+  into build/rusefi.hex/.srec with CRC-32/MPEG-2 @0x080FFFFC).
+  `compile_m74_9_oem.sh` is a thin alias.
+- Script gotcha hit along the way: `common_script_read_meta_env.inc` dies
+  under `set -u` ('BOARD_DIR: unbound variable' - it references
+  BOARD_DIR/PROJECT_BOARD/POST_BUILD_SCRIPT unguarded); the board script uses
+  `set -eo pipefail`.
+
+Validation: `compile_m74_9.sh` green; build/rusefi.hex/.srec = one image
+0x08001000..0x08100000 (28544 lines), CRC-32/MPEG-2 word 0x264F43E0 @
+0x080FFFFC; the bootloader ELF carries the 2026-10-02 CAN-RX-FIFO flush.
+Open: the bundle/`compile.sh -b` path still exists for this board and still
+hangs (do not use; flagged LEGACY in CLAUDE.md) - removing/gating it is a
+follow-up if CI or tooling ever needs it.
+
 ## 2026-10-02 - openblt_can: response-stream desync fixed (duplicate CONNECT reply on app-jump entry) - station-id handshake + RX drain + verify retry + bootloader FIFO flush
 
 Symptom (three bench runs): flash after `--probe` and flash after a successful
