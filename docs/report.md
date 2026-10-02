@@ -1,5 +1,49 @@
 # Work Report
 
+## 2026-10-02 (2) - m74_9 OpenBLT app-update STILL bricks after the CpuReset fix - the flash state itself is rejected (diagnosis in progress)
+
+Follow-up bench test (user): the CpuReset fix (f284bb55ef5) did NOT change the
+behavior - full hex via M749 works (console connects), then the OpenBLT app
+update (same build, rusefi_app.srec) completes ('Checksum verification passed',
+'Resetting into the new firmware') and the console stays dead. So the direct
+jump was NOT the (only) cause: the reset path now replays the exact chain the
+working M749 flash ends with, and the flash state is still rejected.
+
+VERIFIED FACTS (narrowing the search):
+- The chain itself works: the user's flow always starts with an openblt --probe
+  (CONNECT + PROGRAM_RESET, no flash writes) and the app comes back - the
+  flash's CONNECT found a live app after the probe. So boot-path/reset/счетчики
+  are fine; the problem is what the OpenBLT SESSION WRITES.
+- The app segments are byte-perfect: the flasher's BUILD_CHECKSUM verify
+  (additive byte sum per segment) passed, and it was the SAME build flashed
+  over itself.
+- NvmDone() succeeded (no 'Finalize (PROGRAM size=0) failed'), so
+  FlashWriteChecksum's CRC-sector erase (0x080FF000..0x08100000) and the
+  4-byte CRC write at 0x080FFFFC reported success to the EFL driver.
+- The CRC domains match on paper: m749_image.py, boot_activation.h crcRange
+  and openblt_flash.cpp computeAppCrc all cover 0x08001000..0x08060000 +
+  0x08080000..0x080FFFFC, byte-address order, MPEG-2 poly 0x04C11DB7, init
+  0xFFFFFFFF, no final XOR - identical. The untouched regions (gaps 0xFF from
+  the M749 full flash) are identical in both paths.
+
+REMAINING SUSPECT: the stored CRC word at 0x080FFFFC after the OpenBLT
+session - the only flash difference between the two paths. The app-side
+checkImages (custom_board_InitHardwareEarly -> initM749BootActivation)
+hard-resets on failure, which is exactly the observed 'console dead'.
+
+NEXT DECISIVE STEPS (bench):
+1. After the failed update, run `openblt_can.sh --probe`: if it connects
+   IMMEDIATELY (first attempt), the ECU is stuck in the bootloader -> the
+   boot-time checkImages/NvmVerifyChecksum rejected the flash state.
+2. Read back the stored CRC word: new `--read-word 0xADDR` flasher option
+   (SHORT_UPLOAD 0xF4, this commit) - `openblt_can.sh --read-word 0x080FFFFC`.
+   The expected value from the current build's hex = bytes 42 F6 36 DA
+   (LE word 0xDA36F642, sum byte 0x48). A mismatch pins it to the CRC write
+   path (EFL erase/program at the 0x080FF000 sector); a match means the flash
+   is fine and the rejection is elsewhere (marker/chain state), which then
+   needs the bootloader's !ready path instrumented to report WHICH check
+   failed.
+
 ## 2026-10-02 - m74_9 OpenBLT app-update left the app unreachable (console dead) - PROGRAM_RESET must re-enter through the OEM loader (fixed)
 
 Symptom (user, reproduced since the OEM-loader transition): full-image flash via

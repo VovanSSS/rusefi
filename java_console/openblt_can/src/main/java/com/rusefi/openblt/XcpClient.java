@@ -424,6 +424,18 @@ public class XcpClient {
         return request(cmd, XcpConstants.COMMAND_TIMEOUT_MS);
     }
 
+    /** Reads len bytes at the given address via SHORT_UPLOAD (0xF4). */
+    public XcpResponse shortUpload(int address, int len) throws IOException {
+        if (len < 1 || len > XcpConstants.CTO_LEN - 1) {
+            throw new IllegalArgumentException("SHORT_UPLOAD length must be 1.." + (XcpConstants.CTO_LEN - 1));
+        }
+        byte[] cmd = new byte[XcpConstants.CTO_LEN];
+        cmd[0] = (byte) XcpConstants.CMD_SHORT_UPLOAD;
+        cmd[1] = (byte) len;
+        putLe32(cmd, 4, address);
+        return request(cmd, XcpConstants.COMMAND_TIMEOUT_MS);
+    }
+
     /**
      * Sends one command frame and waits for the matching response.
      *

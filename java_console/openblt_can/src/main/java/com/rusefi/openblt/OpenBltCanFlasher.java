@@ -57,6 +57,13 @@ public class OpenBltCanFlasher {
         boolean batch = true;
         boolean oneMbit = false;
         /**
+         * Diagnostic mode (--read-word 0xADDR): read 4 bytes from the
+         * bootloader's memory via SHORT_UPLOAD and print them - used to
+         * inspect the stored application CRC word at 0x080FFFFC after a
+         * failed boot (m74_9 three-stage chain diagnosis, 2026-10-02).
+         */
+        Integer readWordAddress = null;
+        /**
          * Escape hatch to actually attempt the 1 Mbit switch (--1mbit-force).
          * Disabled by default: the MacCAN/PCAN-USB TX path corrupts frames
          * after the mid-session switch - measured deterministically 2026-08-29
@@ -143,7 +150,39 @@ public class OpenBltCanFlasher {
         this.listener = listener;
     }
 
+    /**
+     * Diagnostic: connect to the (possibly stuck) bootloader and read 4 bytes
+     * at the given address via SHORT_UPLOAD. No session/station handshake and
+     * no reset - the ECU is left untouched. Prints the bytes, the LE word and
+     * the additive-sum byte (to cross-check a BUILD_CHECKSUM probe).
+     */
+    private void readWord(CanLink link, Config cfg) throws IOException, FlashException {
+        listener.log("Opening CAN channel...");
+        link.open();
+        XcpClient xcp = new XcpClient(link, XcpConstants.TX_ID, XcpConstants.EXTENDED,
+                XcpConstants.RX_ID, XcpConstants.COMMAND_TIMEOUT_MS,
+                cfg.verbose ? listener::log : null);
+        XcpResponse connect = connectWithRetries(xcp, cfg);
+        if (connect == null || !connect.isOk()) {
+            throw new FlashException("Bootloader did not answer CONNECT: " + connect);
+        }
+        listener.log("Connected to OpenBLT bootloader.");
+        XcpResponse upload = xcp.shortUpload(cfg.readWordAddress, 4);
+        if (upload == null || !upload.isOk() || upload.data().length < 5) {
+            throw new FlashException("SHORT_UPLOAD failed: " + upload);
+        }
+        byte[] b = upload.data();
+        long word = (b[1] & 0xFFL) | (b[2] & 0xFFL) << 8 | (b[3] & 0xFFL) << 16 | (b[4] & 0xFFL) << 24;
+        int sum = ((b[1] + b[2] + b[3] + b[4]) & 0xFF);
+        listener.log(String.format("0x%08X = %02X %02X %02X %02X (LE word 0x%08X, sum byte 0x%02X)",
+                cfg.readWordAddress, b[1], b[2], b[3], b[4], word, sum));
+    }
+
     public Result flash(CanLink link, Config cfg) throws IOException, FlashException {
+        if (cfg.readWordAddress != null) {
+            readWord(link, cfg);
+            return new Result(0, 0, false, false, 0);
+        }
         long t0 = System.currentTimeMillis();
         pipelineEnabled = cfg.pipeline;
         batchEnabled = cfg.batch;
@@ -835,6 +874,18 @@ public class OpenBltCanFlasher {
                 case "--no-verify" -> cfg.verify = false;
                 case "--no-reset" -> cfg.reset = false;
                 case "--probe" -> cfg.probeOnly = true;
+                case "--read-word" -> {
+                    if (i + 1 >= args.length) {
+                        System.err.println("--read-word requires a hex address");
+                        return null;
+                    }
+                    try {
+                        cfg.readWordAddress = (int) Long.parseLong(args[++i].replaceFirst("^0[xX]", ""), 16);
+                    } catch (NumberFormatException e) {
+                        System.err.println("--read-word requires a hex address, got " + args[i]);
+                        return null;
+                    }
+                }
                 case "--verbose" -> cfg.verbose = true;
                 case "--no-pipeline" -> cfg.pipeline = false;
                 case "--no-batch" -> cfg.batch = false;
@@ -902,6 +953,9 @@ public class OpenBltCanFlasher {
                   --no-verify            skip the post-program checksum verification
                   --no-reset             do not start the new firmware after programming
                   --probe                connect and print bootloader info, do not flash
+                  --read-word 0xADDR     read 4 bytes from the bootloader's memory
+                                         via SHORT_UPLOAD (diagnostic - e.g. the
+                                         stored app CRC word at 0x080FFFFC)
                   --no-pipeline          fall back to one-request-one-reply programming
                                          (slow, useful to isolate link problems)
                   --no-batch             disable deferred-ACK batch programming (plan B),
