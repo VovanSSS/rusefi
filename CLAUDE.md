@@ -48,6 +48,10 @@ firmware/config/boards/m74_9/compile_m74_9.sh
   into `build/rusefi.hex`/`build/rusefi.srec` (one image 0x08001000..0x08100000,
   CRC-32/MPEG-2 @ 0x080FFFFC). Flash those via the M749 CLI (UDS/I865 OEM
   loader), NOT via OpenBLT rusefi.bin.
+- The default build ALSO produces `build/rusefi_app.srec` (app-only, no
+  bootloader, no CRC word - plain `arm-none-eabi-objcopy -O srec
+  build/rusefi.elf`, 2 segments 0x08010000..0x0804F17C +
+  0x08090000..0x080FD398) for the OpenBLT-over-CAN update path.
 - DO NOT run `bash bin/compile.sh -b config/boards/m74_9/meta-info.env` for this
   board anymore: the bundle flow's `.h2d-sentinel`/`rusefi.srec` rules merge
   bootloader+app with hex2dfu, which assumes the CLASSIC layout (bootloader

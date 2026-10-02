@@ -41,4 +41,11 @@ python3 "$SCRIPT_DIR/bin/m749_image.py" \
   --app build/rusefi.elf \
   --format srec build/rusefi.srec
 
+# 4. App-only SREC for the OpenBLT-over-CAN update path (no bootloader, no CRC
+#    word: the bootloader's FlashWriteChecksum erases the 0x080FF000 CRC sector
+#    and writes the OEM CRC itself). Two segments:
+#    0x08010000..0x0804F17C + 0x08090000..0x080FD398.
+arm-none-eabi-objcopy -O srec build/rusefi.elf build/rusefi_app.srec
+
 echo "M74.9 three-stage image written: build/rusefi.hex build/rusefi.srec"
+echo "OpenBLT app-update image written: build/rusefi_app.srec"
