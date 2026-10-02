@@ -139,6 +139,17 @@ extern "C" void CanInit(void) {
 
 	canStart(&OPENBLT_CAND, cfg);
 
+	/* Drop anything that may already sit in the RX FIFOs. A frame received in
+	 * the window between canStart() and the XCP main loop (e.g. the host's
+	 * CONNECT arriving while the bootloader is still initializing) would be
+	 * processed IN ADDITION to the host's session frames: one extra response
+	 * desyncs the host's request/response stream for the whole session (every
+	 * request then reads the previous command's reply - the session dies at
+	 * the first BUILD_CHECKSUM with a stale 1-byte ACK). The host re-sends
+	 * CONNECT on retry, so dropping pre-session frames is always safe. */
+	OPENBLT_CAND.can->RF0R = CAN_RF0R_RFOM0;
+	OPENBLT_CAND.can->RF1R = CAN_RF1R_RFOM1;
+
 	baudSwitchTime = chVTGetSystemTime();
 	canTrafficSinceSwitch = BLT_FALSE;
 }

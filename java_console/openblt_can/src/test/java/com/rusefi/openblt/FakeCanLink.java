@@ -38,6 +38,12 @@ public class FakeCanLink implements CanLink {
     private int batchCount;
     private int setBaudrateCount;
     private int lastBaudrate = XcpConstants.BAUD_500K;
+    /** When true, GET_ID answers with the CONNECT-response bytes instead of
+     *  the station id - reproduces the observed desynced-stream failure mode. */
+    private boolean garbageStationId;
+    /** Number of extra 1-byte positive ACKs to emit before the real
+     *  BUILD_CHECKSUM response - reproduces the stale-SET_MTA-ACK shift. */
+    private int staleAcksBeforeChecksum;
     // ECU-side link speed: the bootloader reboots into the requested rate
     // after answering SET_CAN_BAUDRATE (the switch is a reboot on real
     // hardware), and falls back to 500k on its own when no valid traffic
@@ -88,6 +94,16 @@ public class FakeCanLink implements CanLink {
     /** The ECU never answers CONNECT while its link is at the given rate. */
     public void dropConnectsAt(int rateCode) {
         this.dropConnectsAt = rateCode;
+    }
+
+    /** GET_ID replies with garbage (the CONNECT response) instead of the id. */
+    public void setGarbageStationId(boolean garbage) {
+        this.garbageStationId = garbage;
+    }
+
+    /** Emit N extra 1-byte ACKs before each BUILD_CHECKSUM response. */
+    public void setStaleAcksBeforeChecksum(int n) {
+        this.staleAcksBeforeChecksum = n;
     }
 
     public int ecuBaudrate() {
@@ -216,9 +232,19 @@ public class FakeCanLink implements CanLink {
 
         switch (cmd) {
             case XcpConstants.CMD_GET_STATUS -> respond(new byte[]{(byte) XcpConstants.PID_RES, 0, 0, 0, 0, 0});
-            case XcpConstants.CMD_GET_ID -> respond(new byte[]{
-                    (byte) XcpConstants.PID_RES, 0, 0, 0,
-                    (byte) "rusefi.m74_9".length(), 0, 0, 0});
+            // mirrors xcp.c XcpCmdSynch: a NEGATIVE response by design
+            case XcpConstants.CMD_SYNCH -> respond(new byte[]{(byte) XcpConstants.PID_ERR, (byte) XcpConstants.ERR_CMD_SYNCH});
+            case XcpConstants.CMD_GET_ID -> {
+                if (garbageStationId) {
+                    // the observed failure: the bootloader answered the host's
+                    // GET_ID with a second CONNECT response (desynced stream)
+                    respond(new byte[]{(byte) XcpConstants.PID_RES, 0x08, 0x00, 0x08, 0x00, 0x08, 0x01, 0x01});
+                    return;
+                }
+                respond(new byte[]{
+                        (byte) XcpConstants.PID_RES, 0, 0, 0,
+                        (byte) "rusefi.m74_9".length(), 0, 0, 0});
+            }
             case XcpConstants.CMD_SET_MTA -> {
                 if (data.length >= 8) {
                     mta = le32(data, 4);
@@ -334,6 +360,12 @@ public class FakeCanLink implements CanLink {
                 int sum = 0;
                 for (int i = 0; i < len; i++) {
                     sum = (sum + (flash[mta - XcpConstants.APP_BASE + i] & 0xFF)) & 0xFF;
+                }
+                while (staleAcksBeforeChecksum > 0) {
+                    staleAcksBeforeChecksum--;
+                    // a stale 1-byte positive ACK from an earlier command -
+                    // the host must drain and re-issue instead of failing
+                    respond(new byte[]{(byte) XcpConstants.PID_RES});
                 }
                 respond(new byte[]{
                         (byte) XcpConstants.PID_RES, (byte) XcpConstants.CS_ADD11, 0, 0,

@@ -143,6 +143,63 @@ public class XcpClient {
         return request(new byte[]{(byte) XcpConstants.CMD_GET_ID}, defaultTimeoutMs);
     }
 
+    /**
+     * SYNCH stream-sync point. This bootloader answers SYNCH with a NEGATIVE
+     * response (ERR_CMD_SYNCH = 0x00) BY DESIGN, which makes it the only
+     * command whose reply cannot be mistaken for a stale positive ACK: a
+     * POSITIVE response here proves a frame from an earlier exchange is still
+     * queued and the request/response stream is desynced.
+     *
+     * @return true when the expected negative response arrived (stream aligned).
+     */
+    public boolean synch() throws IOException {
+        XcpResponse res = request(new byte[]{(byte) XcpConstants.CMD_SYNCH}, defaultTimeoutMs);
+        return res != null && !res.isOk() && res.errorCode() == XcpConstants.ERR_CMD_SYNCH;
+    }
+
+    /**
+     * Reads and discards bootloader reply frames until the receive queue stays
+     * quiet for {@code quietMs} milliseconds. Returns the number of discarded
+     * replies.
+     *
+     * request() accepts ANY positive/negative response on the bootloader's TX
+     * id, so one extra or late response (e.g. a duplicated CONNECT reply after
+     * the app-side jump into the bootloader) shifts every subsequent command's
+     * response by one and desyncs the whole session. Calling this between
+     * phases removes such stragglers.
+     */
+    public int drainRx(int quietMs) throws IOException {
+        int drained = 0;
+        long deadline = System.currentTimeMillis() + quietMs;
+        while (true) {
+            int remaining = (int) (deadline - System.currentTimeMillis());
+            if (remaining <= 0) {
+                return drained;
+            }
+            CanFrame frame = link.readFrame(Math.min(remaining, 50));
+            if (frame == null) {
+                // queue stayed quiet for the whole remaining window
+                return drained;
+            }
+            // Foreign traffic (the app's dash frames etc.) does not desync us:
+            // only replies on the bootloader's TX id extend the quiet window.
+            if (frame.id() != rxId || frame.extended() != extended) {
+                continue;
+            }
+            byte[] data = frame.data();
+            if (data.length == 0) {
+                continue;
+            }
+            int pid = data[0] & 0xFF;
+            if (pid == XcpConstants.PID_RES || pid == XcpConstants.PID_ERR) {
+                drained++;
+                // a reply arrived: require quietMs of silence AGAIN so a burst
+                // of stale replies is fully consumed
+                deadline = System.currentTimeMillis() + quietMs;
+            }
+        }
+    }
+
     /** The '?' probe: bootloader answers with its plain-text version banner
      *  when the frame is exactly one byte. */
     public XcpResponse probeVersion() throws IOException {

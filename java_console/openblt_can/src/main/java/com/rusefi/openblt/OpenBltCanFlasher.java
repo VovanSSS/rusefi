@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.locks.LockSupport;
 
@@ -177,12 +178,8 @@ public class OpenBltCanFlasher {
             }
             listener.log("Connected to OpenBLT bootloader.");
 
-            // ---- optional station-id sanity check ----
-            XcpResponse id = xcp.getId();
-            if (id != null && id.isOk() && id.data().length >= 8) {
-                int stationIdLen = le32(id.data(), 4);
-                listener.log("Bootloader station id length: " + stationIdLen + " bytes");
-            }
+            // ---- validated station-id handshake - see stationIdHandshake() ----
+            stationIdHandshake(xcp);
 
             			if (cfg.probeOnly) {
             				listener.log("Probe complete.");
@@ -300,6 +297,73 @@ public class OpenBltCanFlasher {
         } finally {
             link.close();
         }
+    }
+
+    /**
+     * GET_ID station-id lengths produced by the rusEFI bootloader builds:
+     * XCP GET_ID replies with XCP_STATION_ID_STRING ("OpenBLT", 7 bytes); the
+     * 0xBF board probe replies with the board station id ("rusefi.m74_9",
+     * 12 bytes). Anything else means the response stream is desynced - the
+     * observed garbage values (e.g. 16842760) are actually the CONNECT
+     * response parsed as the station-id length.
+     */
+    private static final int[] KNOWN_STATION_ID_LENGTHS = {7, 12};
+    private static final int STATION_ID_MAX_ATTEMPTS = 3;
+    private static final int DRAIN_QUIET_MS = 50;
+
+    /**
+     * Verifies the link state after CONNECT and refuses to flash on a desynced
+     * response stream.
+     *
+     * One extra or late reply from the bootloader (observed after entering it
+     * from a running app via the CAN trigger: a duplicated CONNECT response)
+     * shifts every subsequent request's response by one. The erase and program
+     * phases cannot detect that - all their replies are the same 1-byte
+     * positive ACK - and the session then dies at the first 8-byte
+     * BUILD_CHECKSUM response (a stale 1-byte ACK) after the image has already
+     * been erased. GET_ID is the one early response with a recognizable shape
+     * (the station-id length), and SYNCH is answered NEGATIVELY by design, so
+     * a positive reply to SYNCH likewise proves a stale frame is queued.
+     * Both are validated here, with a queue drain between attempts.
+     */
+    private void stationIdHandshake(XcpClient xcp) throws IOException, FlashException {
+        for (int attempt = 1; attempt <= STATION_ID_MAX_ATTEMPTS; attempt++) {
+            int drained = xcp.drainRx(DRAIN_QUIET_MS);
+            if (drained > 0) {
+                listener.log("Drained " + drained + " stale bootloader frame(s) before the station-id check");
+            }
+
+            boolean synchOk = xcp.synch();
+            XcpResponse id = xcp.getId();
+            if (!synchOk) {
+                listener.log(String.format(
+                        "Station-id handshake attempt %d: SYNCH answered unexpectedly (stream desynced), retrying",
+                        attempt));
+                continue;
+            }
+            if (id == null || !id.isOk() || id.data().length < 8) {
+                listener.log(String.format(
+                        "Station-id handshake attempt %d: GET_ID has no valid response (%s), retrying",
+                        attempt, id));
+                continue;
+            }
+
+            int stationIdLen = le32(id.data(), 4);
+            listener.log("Bootloader station id length: " + stationIdLen + " bytes");
+            for (int known : KNOWN_STATION_ID_LENGTHS) {
+                if (stationIdLen == known) {
+                    return;
+                }
+            }
+            listener.log(String.format(
+                    "Station-id handshake attempt %d: unexpected length %d (expected %s) - stale/duplicated "
+                            + "bootloader reply, retrying",
+                    attempt, stationIdLen, Arrays.toString(KNOWN_STATION_ID_LENGTHS)));
+        }
+
+        throw new FlashException("Bootloader station-id handshake failed: the response stream is desynced "
+                + "(stale or duplicated bootloader frames on the bus). Re-run the flash - entering the "
+                + "bootloader from a running app can leave one extra CONNECT response queued.");
     }
 
     private XcpResponse connectWithRetries(XcpClient xcp, Config cfg) throws IOException {
@@ -658,6 +722,15 @@ public class OpenBltCanFlasher {
             for (int off = 0; off < data.length; off += XcpConstants.ERASE_CHUNK) {
                 int len = Math.min(XcpConstants.ERASE_CHUNK, data.length - off);
 
+                // A stale positive ACK queued from the program phase would be
+                // mistaken for the BUILD_CHECKSUM reply below (the observed
+                // "RES [FF]" failure): drain the link before each chunk.
+                int drained = xcp.drainRx(20);
+                if (drained > 0) {
+                    listener.log("Drained " + drained + " stale bootloader frame(s) before verify chunk 0x"
+                            + String.format("%08X", seg.base() + off));
+                }
+
                 XcpResponse mta = xcp.setMta(seg.base() + off);
                 if (mta == null || !mta.isOk()) {
                     throw new FlashException(String.format(
@@ -665,8 +738,23 @@ public class OpenBltCanFlasher {
                 }
                 XcpResponse checksum = xcp.buildChecksum(len);
                 if (checksum == null || !checksum.isOk() || checksum.data().length < 8) {
-                    throw new FlashException(String.format(
-                            "BUILD_CHECKSUM(0x%08X, %d) failed: %s", seg.base() + off, len, checksum));
+                    // A short positive response is a stale 1-byte ACK from a
+                    // previous command - the shift-by-one signature. Drain and
+                    // re-issue the pair once before giving up.
+                    listener.log(String.format(
+                            "BUILD_CHECKSUM(0x%08X, %d) got an unexpected response (%s) - draining and retrying once",
+                            seg.base() + off, len, checksum));
+                    xcp.drainRx(DRAIN_QUIET_MS);
+                    mta = xcp.setMta(seg.base() + off);
+                    if (mta == null || !mta.isOk()) {
+                        throw new FlashException(String.format(
+                                "SET_MTA(0x%08X) failed on retry: %s", seg.base() + off, mta));
+                    }
+                    checksum = xcp.buildChecksum(len);
+                    if (checksum == null || !checksum.isOk() || checksum.data().length < 8) {
+                        throw new FlashException(String.format(
+                                "BUILD_CHECKSUM(0x%08X, %d) failed: %s", seg.base() + off, len, checksum));
+                    }
                 }
                 int remoteSum = le32(checksum.data(), 4) & 0xFF;
                 int localSum = 0;

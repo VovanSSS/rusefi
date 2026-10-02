@@ -1,5 +1,65 @@
 # Work Report
 
+## 2026-10-02 - openblt_can: response-stream desync fixed (duplicate CONNECT reply on app-jump entry) - station-id handshake + RX drain + verify retry + bootloader FIFO flush
+
+Symptom (three bench runs): flash after `--probe` and flash after a successful
+flash both failed with `FATAL: BUILD_CHECKSUM(0x08010000, 32768) failed: RES [FF]`
+and printed `Bootloader station id length: 16842760 bytes`; the flash between them
+(bootloader already running) succeeded. So the failure tracks the ENTRY PATH, not
+"after the first write": it appears whenever the session enters the bootloader from
+a running app via the CONNECT-trigger jump (can_rx.cpp DLC=2 trigger ->
+jump_to_openblt), and never when the bootloader is already running or entered
+from a fresh power-on.
+
+Root cause chain (byte-exact):
+- `16842760` = 0x01010008 = LE-32 of a CONNECT response parsed as the GET_ID
+  station-id length. rusEFI builds with BOOT_CPU_BYTE_ORDER_MOTOROLA=0, so
+  XCP_MOTOROLA_FORMAT=0 (INTEL) and the CONNECT response bytes 4..7 are
+  [max_dto_lo=0x08, max_dto_hi=0x00, proto_msb=0x01, transport_msb=0x01].
+  `RES [FF]` = a stale 1-byte SET_MTA/ACK reply where the 8-byte BUILD_CHECKSUM
+  response was required.
+- XcpClient.request() accepts ANY positive/negative response on the bootloader's
+  TX id with no correlation to the command sent. One extra CONNECT response at
+  session start therefore shifts every subsequent request/response pair by one.
+  The erase and program phases cannot detect it (all their replies are identical
+  1-byte [FF] ACKs - stale replies pass the isOk() check), so the session
+  survives until the first 8-byte-response command (BUILD_CHECKSUM) reads the
+  stale 1-byte ACK and the length check fires - AFTER the image was erased.
+- The extra CONNECT response is emitted only on the app-jump entry. Stale-RX-FIFO
+  survival is REFUTED as the mechanism: hal_lld_init (AT32 port) resets APB1 incl.
+  CAN1 on every bootloader boot, and one received frame = one XcpPacketReceived =
+  one response. The exact emission path is still open - one `--verbose` capture
+  (logs every TX/RX frame) settles it; candidates: the bootloader processing two
+  CONNECT frames (host retry + a frame received during the boot window), or a
+  second OpenBLT node on the bus answering the same ids.
+
+Fixes:
+- Host (java_console/openblt_can): station-id handshake after CONNECT -
+  drainRx() + SYNCH (answered NEGATIVELY by design, so a positive reply proves a
+  stale frame is queued) + GET_ID length validation against {7 = XCP
+  "OpenBLT", 12 = board "rusefi.m74_9"}, 3 attempts, then REFUSE to flash (the
+  image is never erased on a desynced stream). verifySegments drains before each
+  chunk and re-issues SET_MTA+BUILD_CHECKSUM once on a short/unexpected reply.
+  New XcpConstants: CMD_SYNCH 0xFC, ERR_CMD_SYNCH 0x00. New regression tests in
+  OpenBltCanFlasherTest (recoversFromDuplicateConnectResponse,
+  recoversFromStaleAckBeforeChecksum, refusesToFlashOnDesyncedStationId) +
+  FakeCanLink hooks (garbageStationId, staleAcksBeforeChecksum, SYNCH support).
+- Bootloader (firmware/bootloader/openblt_chibios/openblt_can.cpp CanInit): after
+  canStart, release both RX FIFOs (RF0R=RFOM0, RF1R=RFOM1) so any frame received
+  between canStart and the XCP main loop cannot be answered alongside the host's
+  session frames. The host re-sends CONNECT on retry, so dropping pre-session
+  frames is safe.
+
+Validation: `./gradlew :openblt_can:test` green (18 tests in
+OpenBltCanFlasherTest incl. the 3 new ones); m74_9 bootloader build green
+(bootloader/blbuild/openblt_m74_9.bin, RFOM flush verified in the .list). NOT
+bench/car-tested: the next bench run should be flash-after-probe and
+flash-after-flash - both must now print a clean 7-byte station id and verify, and
+on a genuinely desynced stream the tool must refuse before erasing. Open: the
+--verbose capture to name the extra-frame emitter; also noted: the 0xBF board
+signature reply is truncated to 7 chars over CAN (BOOT_COM_CAN_TX_MAX_DATA=8 -
+1 PID byte), so "rusefi.m74_9" does not fit over CAN.
+
 ## 2026-10-01 - M74.9 OEM-loader CLI ported into rusefi (`:m749`), PCAN-on-macOS enabled, read/write validated 1:1 against an openocd dump
 
 Ported the fw-m74.9 M749 tool (flashes/reads through the OEM I812/I865 resident loader

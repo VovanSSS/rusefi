@@ -415,4 +415,63 @@ class OpenBltCanFlasherTest {
         assertTrue(result.verified);
         assertArrayEquals(seg1, link.flashAt(SEG1_BASE, 40));
     }
+
+    @Test
+    void recoversFromDuplicateConnectResponse() throws Exception {
+        // The observed m74_9 failure mode: entering the bootloader from a
+        // running app (the CONNECT-trigger jump) leaves a second CONNECT
+        // response in the queue. getId() used to parse it as a station id of
+        // 16842760 bytes and desync the whole session; the handshake must
+        // drain it and continue.
+        byte[] seg1 = pattern(40, 21);
+        Path srec = writeImage(new ArrayList<>(SrecTestUtil.image(SEG1_BASE, seg1)));
+
+        FakeCanLink link = new FakeCanLink();
+        link.injectFrame(new CanFrame(XcpConstants.RX_ID, XcpConstants.EXTENDED,
+                new byte[]{(byte) XcpConstants.PID_RES, 0x08, 0x00, 0x08, 0x00, 0x08, 0x01, 0x01}));
+        OpenBltCanFlasher flasher = new OpenBltCanFlasher(new OpenBltCanFlasher.Listener() {
+        });
+
+        OpenBltCanFlasher.Result result = flasher.flash(link, config(srec, true, true));
+
+        assertTrue(result.verified);
+        assertArrayEquals(seg1, link.flashAt(SEG1_BASE, 40));
+    }
+
+    @Test
+    void recoversFromStaleAckBeforeChecksum() throws Exception {
+        // A stale 1-byte ACK in front of the first BUILD_CHECKSUM response
+        // used to abort the flash with "RES [FF]" (the shift-by-one
+        // signature); the verify phase now drains and re-issues the request.
+        byte[] seg1 = pattern(40, 22);
+        Path srec = writeImage(new ArrayList<>(SrecTestUtil.image(SEG1_BASE, seg1)));
+
+        FakeCanLink link = new FakeCanLink();
+        link.setStaleAcksBeforeChecksum(1);
+        OpenBltCanFlasher flasher = new OpenBltCanFlasher(new OpenBltCanFlasher.Listener() {
+        });
+
+        OpenBltCanFlasher.Result result = flasher.flash(link, config(srec, true, true));
+
+        assertTrue(result.verified);
+        assertArrayEquals(seg1, link.flashAt(SEG1_BASE, 40));
+    }
+
+    @Test
+    void refusesToFlashOnDesyncedStationId() throws Exception {
+        // GET_ID that keeps answering with the CONNECT response (a desynced
+        // stream) must abort the flash BEFORE erasing: flashing on a shifted
+        // stream erases the image and then dies at the verify phase.
+        byte[] seg1 = pattern(40, 23);
+        Path srec = writeImage(new ArrayList<>(SrecTestUtil.image(SEG1_BASE, seg1)));
+
+        FakeCanLink link = new FakeCanLink();
+        link.setGarbageStationId(true);
+        OpenBltCanFlasher flasher = new OpenBltCanFlasher(new OpenBltCanFlasher.Listener() {
+        });
+
+        assertThrows(OpenBltCanFlasher.FlashException.class,
+                () -> flasher.flash(link, config(srec, true, true)));
+        assertEquals(0, link.programClearCount());
+    }
 }

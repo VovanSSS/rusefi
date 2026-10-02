@@ -17,6 +17,7 @@ public final class XcpConstants {
     public static final int CMD_CONNECT = 0xFF;
     public static final int CMD_DISCONNECT = 0xFE;
     public static final int CMD_GET_STATUS = 0xFD;
+    public static final int CMD_SYNCH = 0xFC;
     public static final int CMD_GET_ID = 0xFA;
     public static final int CMD_SET_MTA = 0xF6;
     public static final int CMD_SHORT_UPLOAD = 0xF4;
@@ -39,6 +40,7 @@ public final class XcpConstants {
     public static final int BAUD_1M = 1;
 
     /** Error codes we care about (xcp.h). */
+    public static final int ERR_CMD_SYNCH = 0x00;
     public static final int ERR_CMD_BUSY = 0x10;
     public static final int ERR_CMD_UNKNOWN = 0x20;
     public static final int ERR_OUT_OF_RANGE = 0x22;
