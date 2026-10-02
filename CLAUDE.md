@@ -111,7 +111,13 @@ key 0x08274000, marker page, MFS untouched), ends 11 01 +
 awaitOemApplication (stock app in session 01). Cold power-cycle after the
 restore re-validates. The OpenBLT reset-loop latch does NOT block the
 rollback: the handoff reset re-enters through the OEM loader before OpenBLT
-ever runs.
+ever runs. BENCH-VALIDATED 2026-10-02 from the running-app state (identify
+F1A4/F1A0 answered, --check-target preflight, --upload <I865 fullflash.bin>
+-> "application session 01 confirmed after reset", ~80 s for 1 MiB / 255
+pages; journal slot 0 was consumed by the rusEFI install, slot 1/15 was the
+restore). The OpenBLT-state path (boardCanListener) is still bench-pending.
+After a restore the ECU is stock again: returning to rusEFI needs --upload
+build/rusefi.hex --immo-backup (the stock app requires IMMO again).
 
 Build gotcha (2026-10-02): board.mk DDEFS/LDSCRIPT changes do NOT trigger a
 rebuild of the bootloader objects (gmake -C bootloader does not track

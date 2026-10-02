@@ -1,5 +1,32 @@
 # Work Report
 
+## 2026-10-02 (7) - m74_9: откат rusEFI -> OEM через OEM loader BENCH-VALIDATED end-to-end (пользователь)
+
+Пользователь прогнал полную процедуру на стенде (PCAN_USBBUS1, билд
+a3ace96211b2-dirty):
+
+1. m749_can.sh --identify из работающего rusEFI app: ответили F1A4
+   (72 45 46 49 = 'rEFI' - новый DID из записи (6)) и F1A0 (4D 74 01 01 =
+   M749_READY); OEM DIDs F186/F189/F192 ожидаемо в таймаут. Identify из
+   app-состояния валидирован.
+2. m749_can.sh --check-target <fullflash.bin>: preflight прошёл - 10 02
+   принят приложением БЕЗ --immo-backup (подтверждено: IMMO нужен только
+   стоковому app), loader auth (seed/key), I865 sentinels совпали,
+   programming-history slot 1/15 свободен (slot 0 занят установкой rusEFI
+   от 10-01), никаких записей во flash не было.
+3. m749_can.sh --upload <fullflash.bin>: полный OEM restore -
+   1044480 байт (255 страниц): erase + transfer ~80 c, verify 16-битными
+   суммами, метаданные, 11 01 -> "application session 01 confirmed after
+   reset" - стоковый app запустился.
+
+Итог: откат rusEFI -> OEM полностью рабочий по пути 10 02 ->
+ProgrammingToken -> OEM loader -> штатный поток CLI. Открыто: (a) identify
+и откат из СОСТОЯНИЯ OpenBLT (листенер из записи (6)) на стенде не
+прогонялись - ЭБУ был в app-состоянии; (b) холодный power-cycle после
+restore (CLI: "Cold boot still requires validation"); (c) после отката ЭБУ
+снова сток - возврат на rusEFI = --upload build/rusefi.hex --immo-backup
+(стоковый app снова требует IMMO).
+
 ## 2026-10-02 (6) - m74_9: UDS handoff из OpenBLT + F1A4 identity в app - IMPLEMENTED (build-validated, не прошито на стенде)
 
 Реализован план из записи (5): identify и откат rusEFI/OpenBLT -> OEM через
