@@ -73,6 +73,55 @@ firmware/config/boards/m74_9/compile_m74_9.sh
   bootloader's FlashWriteChecksum erases the 0x080FF000 CRC sector and writes
   the OEM CRC itself (commit 836e69a5b66, car-verified).
 
+### m74_9 OEM rollback + UDS identify (landed 2026-10-02, see docs/report.md 2026-10-02 (5)+(6))
+
+The M749 CLI talks UDS on CAN 7E0/7E8 (500 kbit/s, PCAN). The OEM loader
+contract has TWO persistent states: the marker page 0x08200000 (0x43A0C212
+normal / 0x2548A4D2 programming - the loader's boot decision) and the SRAM
+boot-intent word at 0x20000000 (0x4DF9123B ProgrammingToken = enter
+programming mode at next boot, 0xF9C74A52 ReturnToken = the app normalizes
+the marker after an upload). Both survive reset; only POR/NRST clears SRAM.
+
+Who answers UDS in each ECU state (durable matrix):
+- OEM loader (programming mode): F186/F189/F192 -> CLI says OEM; full
+  upload/read works.
+- Stock OEM app: F186.. -> OEM; 10 02 rejected NRC 22 until IMMO unlock
+  (--immo-backup).
+- rusEFI app: F1A0 activation ('Mt' 01 01 ready / 01 00 not), F1A1 SW CRC,
+  F1A2 CAL CRC, F1A3 marker, F1A4 'rEFI' identity
+  (bootloader_handoff.cpp processDiagnosticRequest); 10 02 accepted only
+  when the engine is stopped -> 50 02 -> ProgrammingToken + reset into the
+  OEM loader.
+- OpenBLT (XCP mode, incl. the reset-loop latch): same DIDs + 10 02 via
+  boardCanListener (board_bootloader.cpp, BOOTLOADER_CAN_LISTENER from
+  board.mk; non-XCP frames reach it through openblt_can.cpp
+  CanReceivePacket's "wrong:" branch).
+- NEVER answer F186/F189/F192 from rusEFI/OpenBLT: M749EcuProbe treats any
+  of them as "OEM firmware detected" (a lie when rusEFI is installed) and
+  --read-flash's prepareRead would then skip its own 10 02 (it checks the
+  F186 session byte first). --read-flash therefore does NOT work from the
+  rusEFI app state; from OpenBLT it needs the 10 02 handoff entry.
+
+Rollback rusEFI/OpenBLT -> stock: m749_can.sh --upload
+<Read_FULLFLASH_*.bin> --channel PCAN_USBBUS1, engine stopped, NO
+--immo-backup (IMMO gates only the STOCK app). The CLI validates the BIN
+(loader CRC I812/I865 + SW/CAL CRC + vectors; refuses rusEFI-containing
+BINs), writes only 08001000..080FFFFF (SW+CAL; loader, identity, pairing
+key 0x08274000, marker page, MFS untouched), ends 11 01 +
+awaitOemApplication (stock app in session 01). Cold power-cycle after the
+restore re-validates. The OpenBLT reset-loop latch does NOT block the
+rollback: the handoff reset re-enters through the OEM loader before OpenBLT
+ever runs.
+
+Build gotcha (2026-10-02): board.mk DDEFS/LDSCRIPT changes do NOT trigger a
+rebuild of the bootloader objects (gmake -C bootloader does not track
+board.mk as an object dependency) - the link silently succeeds with STALE
+objects. After editing board.mk: gmake -C bootloader clean + rebuild (or
+touch the affected sources). Also LTO inlines boardCanListener into the
+bootloader main(), so arm-none-eabi-nm shows no such symbol - verify the
+listener in the ELF via objdump constants (0x72454649 'rEFI', 0x4d740101,
+0x4df9123b, 0x7e0/0x7e8).
+
 ### m74_9 bundle build (LEGACY, do not use - kept for reference)
 
 The bundle flow below is the OLD first-stage-OpenBLT flow. It no longer matches

@@ -1,5 +1,123 @@
 # Work Report
 
+## 2026-10-02 (6) - m74_9: UDS handoff из OpenBLT + F1A4 identity в app - IMPLEMENTED (build-validated, не прошито на стенде)
+
+Реализован план из записи (5): identify и откат rusEFI/OpenBLT -> OEM через
+OEM resident loader теперь достижимы из ЛЮБОГО состояния ЭБУ.
+
+Изменения:
+- board.mk (ветка IS_RE_BOOTLOADER): DDEFS += -DBOOTLOADER_CAN_LISTENER -
+  включает boardCanListener в bootloader-сборке m74_9.
+- board_bootloader.cpp: boardCanListener() - обрабатывает не-XCP кадры из
+  CanReceivePacket (openblt_can.cpp, ветка wrong:). Отвечает на 22 F1A0-F1A3
+  (активация 'Mt' 01 01/01 00, SW CRC, CAL CRC, маркер - данные реальные:
+  boot_activation.cpp собран в bootloader) и F1A4 'r','E','F','I'; на 10 02
+  отвечает 50 02 (P2=50 мс, P2*=5000 мс), ждёт 10 мс ухода кадра, затем
+  m749BootIntent = ProgrammingToken + NVIC_SystemReset - тот же вход в OEM
+  loader, что использует приложение. При неудаче TX сброса нет.
+- bootloader_handoff.cpp (app): F1A4 'r','E','F','I' добавлен в
+  processDiagnosticRequest (диапазон DIDs расширен до 0xA4) - classify
+  теперь видит RUSEFI явно (раньше только M749_READY по F1A0).
+- boot_activation.h: extern volatile uint32_t m749BootIntent перенесён в
+  общий заголовок (локальный extern из bootloader_handoff.cpp убран).
+
+Итог по состояниям: OpenBLT теперь отвечает на identify (M749_READY /
+M749_NOT_READY / RUSEFI) и принимает 10 02 (ручной вход в OEM loader) -
+закрывает единственное состояние, из которого раньше не работали ни
+identify, ни откат. Откат из app и OpenBLT выполняется штатным путём CLI:
+m749_can.sh --upload <fullflash.bin> --channel PCAN_USBBUS1 (без
+--immo-backup - IMMO нужен только стоковому app).
+
+GETCHA (в CLAUDE.md): правка board.mk НЕ триггерит пересборку объектов
+bootloader - gmake -C bootloader не отслеживает board.mk как зависимость
+объектов. Первая сборка после добавления DDEFS слинковалась БЕЗ
+листенера (stale openblt_can.o/board_bootloader.o). Чистая пересборка
+bootloader (gmake -C bootloader clean + make) обязательна после изменения
+DDEFS/LDSCRIPT в board.mk. Проверка: arm-none-eabi-nm по ELF - символы
+могут отсутствовать из-за LTO-inlining (boardCanListener влит в main),
+проверять константы в objdump (0x72454649, 0x4df9123b, 0x7e0/0x7e8).
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL (app + bootloader + merged
+hex/srec; bootloader flash1 12144 -> 12712 B, 19.4%); в ELF bootloader
+подтверждены константы листенера и путь сброса (str 0x4df9123b->
+[0x20000000], dsb, NVIC_SystemReset); в app ELF подтверждён 0x72454649 в
+processDiagnosticRequest. НЕ проверено на стенде/машине: identify из
+OpenBLT (в т.ч. в latch-состоянии), --check-target/--upload из OpenBLT,
+откат end-to-end.
+
+## 2026-10-02 (5) - m74_9: откат rusEFI/OpenBLT -> OEM через OEM-загрузчик + identify из OpenBLT - АНАЛИЗ (код не менялся)
+
+Разобраны два запроса пользователя: (1) процедура отката с rusEFI/OpenBLT
+обратно на сток через OEM resident loader, (2) чтобы m749_can.sh --identify
+отвечал в состояниях OpenBLT/rusEFI (или пробрасывал запрос загрузчику).
+
+Матрица состояний (из кода, без изменений):
+- OEM loader (режим программирования): отвечает F186/F189/F192 -> CLI
+  классифицирует OEM; --upload работает.
+- Стоковый OEM app: F186.. -> OEM; 10 02 отклоняется NRC 22 без IMMO
+  (нужен --immo-backup).
+- rusEFI app: отвечает F1A0 (M749ACT ready 4D740101 -> M749_READY), F1A1
+  (SW CRC), F1A2 (CAL CRC), F1A3 (маркер) через bootloader_handoff.cpp
+  processDiagnosticRequest; 10 02 при заглушенном двигателе -> 50 02 ->
+  m749BootIntent=ProgrammingToken (0x4DF9123B @ 0x20000000) -> сброс -> OEM
+  loader входит в режим программирования. F1A4 ("rEFI") молчит: EFI_UDS в
+  этом дереве отсутствует целиком (open follow-up 2026-10-01).
+- OpenBLT (XCP-режим, в т.ч. после окирпичивания app-update и reset-loop
+  latch): на 7E0/7E8 тишина - CanReceivePacket принимает только
+  BOOT_COM_CAN_RX_MSG_ID (0x10667 ext), остальные кадры уходят в ветку
+  wrong: -> boardCanListener, которого в m74_9-сборке bootloader нет
+  (BOOTLOADER_CAN_LISTENER не определён). Единственное состояние, из
+  которого сегодня нельзя ни identify, ни откат по UDS.
+
+Откат в CLI уже реализован: --upload <fullflash.bin> -> M749Image.Domain.OEM
+(валидация loader CRC I812/I865 + SW/CAL CRC, отказ от rusEFI-содержащих
+bin), пишет только 08001000..080FFFFF (SW+CAL), сохраняет
+loader/identity/pairing/storage, завершается 11 01 + awaitOemApplication
+(22 F1 86, сессия 01). Вход в loader из rusEFI app (10 02) в направлении
+отката end-to-end не прогнан (сессия 2026-10-01 шла в обратную сторону:
+OEM -> rusEFI).
+
+План (согласовать с пользователем, не реализовано):
+1. OpenBLT: BOOTLOADER_CAN_LISTENER + boardCanListener в bootloader-сборке
+   m74_9 (board.mk DDEFS + board_bootloader.cpp): отвечать на 22 F1A0-F1A3
+   (данные уже есть: boot_activation.cpp собран в bootloader,
+   m749ActivationReady/SoftwareCrc/CalibrationCrc) и F1A4 'r','E','F','I';
+   на 10 02 отвечать 50 02 (после физического завершения TX) ->
+   m749BootIntent=ProgrammingToken -> NVIC_SystemReset (та же механика, что
+   в bootloader_handoff.cpp). Итог: identify из OpenBLT -> M749_READY /
+   M749_NOT_READY, откат из OpenBLT тем же путём CLI.
+2. rusEFI app: ответ на F1A4 'r','E','F','I' в bootloader_handoff.cpp
+   (маленький DID-ответ в стиле существующих) - classify покажет RUSEFI
+   явно; F1A0 уже покрывает M749_READY.
+3. Вариант "пробрасывать identify к загрузчику" отклонён: сброс на чистый
+   identify деструктивен, а классификация показала бы "OEM firmware
+   detected" при установленном rusEFI - ложь. Отвечать на месте, в loader
+   уходить только по 10 02 (ровно контракт CLI).
+
+Процедура отката (после п.1-2, двигатель заглушен, PCAN):
+- m749_can.sh --check-target <fullflash.bin> --channel PCAN_USBBUS1
+  (dry run, без записи).
+- m749_can.sh --upload <fullflash.bin> --channel PCAN_USBBUS1 - БЕЗ
+  --immo-backup: rusEFI app/OpenBLT принимают 10 02 без IMMO (IMMO нужен
+  только стоковому app).
+- После успеха CLI подтверждает сессию 01 (OEM app); затем холодный
+  power-cycle, identify должен показать OEM DIDs.
+
+Нюансы:
+- Reset-loop latch OpenBLT (wd/sw counters) откату не мешает: handoff-сброс
+  проходит через OEM loader, который входит в программирование до OpenBLT.
+- Маркер-страница 0x08200000 при откате не трогается; нормализацию маркера
+  после upload делает загрузившийся app (сток - по своему контракту).
+- Журнал программирования (0x0824E000, 16 слотов) должен иметь свободный
+  слот; полный журнал - отказ CLI без записи.
+- --read-flash из состояния rusEFI app не работает (CLI ждёт 22 F1 86,
+  которого app не отвечает) - полный бекап rusEFI-состояния возможен
+  только после входа в loader или через openocd.
+- В OpenBLT-листенере не копировать transmitCompleted из
+  bootloader_handoff.cpp (окно владения mailbox 50 мс - известный источник
+  CAN1 critical error после boot, запись 2026-10-02); достаточно
+  canTransmitTimeout + chThdSleepMilliseconds(5).
+
 ## 2026-10-02 (4) - m74_9 OpenBLT app-update BENCH-VALIDATED: the flush-first CRC fix works end-to-end
 
 Closed the (3) entry. User-verified on the bench with the exact reproduction

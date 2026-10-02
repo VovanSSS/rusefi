@@ -15,6 +15,12 @@ BOARDCPPSRC = $(BOARD_DIR)/board_configuration.cpp \
 else
 BOARDCPPSRC = $(BOARD_DIR)/board_bootloader.cpp \
   $(BOARD_DIR)/firmware/boot_activation.cpp
+# The OpenBLT CAN driver hands non-XCP frames to boardCanListener (see
+# board_bootloader.cpp): identity DIDs so `m749_can.sh --identify` works
+# from the XCP state, and the UDS 10 02 handoff into the OEM resident
+# loader - the entry that makes the rusEFI/OpenBLT -> OEM rollback
+# reachable while the ECU sits in OpenBLT.
+DDEFS += -DBOOTLOADER_CAN_LISTENER
 endif
 
 DDEFS += -DLED_CRITICAL_ERROR_BRAIN_PIN=Gpio::Unassigned

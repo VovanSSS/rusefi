@@ -4,9 +4,6 @@
 #include "board_overrides.h"
 #include "can.h"
 
-// Defined in boot_activation.cpp (both OpenBLT and main-app builds).
-extern volatile uint32_t m749BootIntent;
-
 // Own CAN1 while awaiting this exact frame's physical completion. The normal
 // HAL return means only "mailbox loaded". Suppress its TX ISR temporarily so
 // TXOK cannot be cleared before we inspect it; RX/error interrupts stay enabled.
@@ -60,11 +57,12 @@ static bool transmitCompleted(const CANTxFrame& frame) {
 static void processDiagnosticRequest(size_t bus, const CANRxFrame& frame, efitick_t) {
     if (bus == 0 && CAN_SID(frame) == 0x7E0 && !CAN_ISX(frame) && !CAN_ISRTR(frame) && frame.DLC >= 4 &&
         frame.data8[0] == 3 && frame.data8[1] == 0x22 && frame.data8[2] == 0xF1 &&
-        frame.data8[3] >= 0xA0 && frame.data8[3] <= 0xA3) {
+        frame.data8[3] >= 0xA0 && frame.data8[3] <= 0xA4) {
         const auto did = frame.data8[3];
         const uint32_t value = did == 0xA0 ? (m749ActivationReady() ? 0x4D740101 : 0x4D740100) :
             did == 0xA1 ? m749SoftwareCrc() : did == 0xA2 ? m749CalibrationCrc() :
-            *reinterpret_cast<const volatile uint32_t*>(m749::MarkerAddress);
+            did == 0xA3 ? *reinterpret_cast<const volatile uint32_t*>(m749::MarkerAddress) :
+            0x72454649;  // F1A4: 'r','E','F','I' - the rusEFI identity DID
         CANTxFrame response = {};
         response.SID = 0x7E8;
         response.DLC = 8;

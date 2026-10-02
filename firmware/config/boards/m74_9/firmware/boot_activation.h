@@ -96,3 +96,10 @@ void initM749BootActivation();
 bool m749ActivationReady();
 uint32_t m749SoftwareCrc();
 uint32_t m749CalibrationCrc();
+
+// Boot intent survives across reset (SRAM 0x20000000, .boot_intent NOLOAD).
+// Defined in boot_activation.cpp; both the OpenBLT and main-app builds own
+// the symbol, and the OEM resident loader reads the word at boot: 0x4DF9123B
+// (ProgrammingToken) enters programming mode, 0xF9C74A52 (ReturnToken) lets
+// the app normalize the marker page after an upload.
+extern volatile uint32_t m749BootIntent;
