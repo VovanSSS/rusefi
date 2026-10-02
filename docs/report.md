@@ -55,7 +55,22 @@ Validation: compile_m74_9.sh green (map: .heap 0x20000008 0x1eff8, bss
 BENCH-CONFIRMED 2026-10-02 (user, 13:09 session): the full boot log arrives on
 connect - 'Reset Cause' onwards, no LOGBUF clobber/mismatch lines, and the Lua
 print reads 'Lua total heap(s) usage: 13402 / 126968' (the new ~124 KiB heap).
-The heap-in-bss theory is thereby proven end-to-end.
+The heap-in-bss theory is thereby proven end-to-end. The .shared move to
+0x20000004 links cleanly in both stages (13:24 build, 13:30 session, POR boot).
+
+TLE9201 diag FLOOD (user, 13:30 session, POR boot): 'TLE9201[0] Diag
+(000000DC/DF): Open Load OK=N / No failure OK=N' repeating - appeared with the
+last build. NOT memory corruption (audited: clean 0xDC/0xDF values, monotonic
+OK counter, no SPI failures; the driver state sits in bss far from the heap).
+Actual chain: the bench chip's open-load flag oscillates 0xC<->0xF on every
+ETB PWM activation with no blade load, and print-on-change flooded the log.
+The previous 13:09 session masked it EXACTLY at onset: its latched CAN1
+critical error (53_168) called limpManager->fatalError(), which cuts the ETB
+-> no PWM -> the open-load test froze at 0xDF -> no flood. The new build boots
+clean, the ETB runs, the flood is visible. FIXED (this commit): the diag
+report is debounced - it prints only after the byte has been stable for
+TLE9201_DIAG_STABLE_POLLS=4 consecutive polls (400 ms); the oscillation never
+settles (silent), a latched fault still reports.
 
 One-off observation (SAME session, first boot after flashing, NOT reproducible
 on the second boot - user): a latched `CRITICAL error: Send: CAN1 device not

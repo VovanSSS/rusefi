@@ -102,6 +102,9 @@ struct Tle9201 {
 	// being silently swallowed because the initial value matches.
 	int detectedRev = -1;
 	uint8_t savedDiag = 0;
+	// Consecutive polls with the diag byte unchanged - the print fires only
+	// after the byte has SETTLED for TLE9201_DIAG_STABLE_POLLS polls.
+	uint8_t stableDiagPolls = 0;
 	// latched warning for the external DIS kill (see process_diag_and_rev)
 	bool warnedOutputsDisabledWhileRunning = false;
 	char name[11];
@@ -180,8 +183,20 @@ void Tle9201::process_diag_and_rev(uint8_t diag, uint8_t rev) {
 		detectedRev = rev;
 	}
 
-	// react on diagnosis byte change
+	// React on diagnosis byte change, DEBOUNCED: with no blade load (bench)
+	// the chip's open-load flag oscillates (0xC <-> 0xF) on every PWM
+	// activation of the ETB, and print-on-every-change flooded the log
+	// (2026-10-02). Report only after the byte has been STABLE for
+	// TLE9201_DIAG_STABLE_POLLS consecutive polls: the oscillation never
+	// settles, while a genuine fault (latched in the chip) still prints.
 	if (diag != savedDiag) {
+		stableDiagPolls = 0;
+		savedDiag = diag;
+	} else if (stableDiagPolls < UINT8_MAX) {
+		stableDiagPolls++;
+	}
+
+	if (stableDiagPolls == TLE9201_DIAG_STABLE_POLLS) {
 		efiPrintf("%s Diag (%08x):", name, diag);
 		// this bit should be always 0
 		if (diag & TLE9201_DIAG_TV) {
@@ -203,8 +218,6 @@ void Tle9201::process_diag_and_rev(uint8_t diag, uint8_t rev) {
 		}
 		// print the status of the outputs
 		efiPrintf("* %s OK=%d", diagDiaOut[statusCode], diagOkCounter);
-
-		savedDiag = diag;
 	}
 
 #if (BOARD_L9779_COUNT > 0)
