@@ -62,15 +62,40 @@ TLE9201 diag FLOOD (user, 13:30 session, POR boot): 'TLE9201[0] Diag
 (000000DC/DF): Open Load OK=N / No failure OK=N' repeating - appeared with the
 last build. NOT memory corruption (audited: clean 0xDC/0xDF values, monotonic
 OK counter, no SPI failures; the driver state sits in bss far from the heap).
-Actual chain: the bench chip's open-load flag oscillates 0xC<->0xF on every
-ETB PWM activation with no blade load, and print-on-change flooded the log.
-The previous 13:09 session masked it EXACTLY at onset: its latched CAN1
-critical error (53_168) called limpManager->fatalError(), which cuts the ETB
--> no PWM -> the open-load test froze at 0xDF -> no flood. The new build boots
-clean, the ETB runs, the flood is visible. FIXED (this commit): the diag
-report is debounced - it prints only after the byte has been stable for
-TLE9201_DIAG_STABLE_POLLS=4 consecutive polls (400 ms); the oscillation never
-settles (silent), a latched fault still reports.
+WHY IT LOOKED CAUSED BY THE MEMORY CHANGE (full chain, worked out under user
+challenge - 'the TLE code was not touched, how can a memory change cause
+this'): the memory change is provably INERT for this path - all ChibiOS
+allocations (memcore + heap provider) go from the TOP (chCoreAllocFromTop),
+and the heap top did not move (0x2001F000 in both builds); no data/bss symbol
+shifted (.data 0x20020600/.bss 0x20020C80 identical, TLE chips @0x2002d080,
+diagOkCounter @0x20045904), only the heap BOTTOM moved 16 bytes (0x20000008 ->
+0x20000018), which nothing allocates from. The heap sizes in the boot logs
+prove it: 13:09 = 126968, 13:30 = 126952 - exactly the 16-byte delta.
+The REAL differences between the sessions: reset type and the limp.
+- 13:09 = soft reset (NVIC_SystemReset or by debugger, right after flashing),
+  13:30 = the first clean POR (Power on/power-down reset) after the rework.
+- 13:09's flood was CUT BY THE LIMP at its onset, deterministically: WDA
+  RECOVERED at 53_168 -> TLE enabled -> first open-load oscillation cycle
+  (DC->DF at 53_168) -> the CAN1 critical error latches at 53_168 (the
+  transmitCompleted window, see the one-off below) -> firmwareError ->
+  limpManager->fatalError() cuts the ETB (electronic_throttle.cpp:556/641
+  gate on allowElectronicThrottle()) -> PWM stops -> the open-load test
+  freezes at 0xF -> no flood.
+- 13:30: clean boot, ETB alive, the PWM dithers the unloaded bench outputs ->
+  the chip's open-load flag oscillates 0xC<->0xF on every 100 ms poll ->
+  print-on-change floods.
+- The 12:36 session (old build) would have shown the flood too, but the
+  heap-in-bss bug truncated the log at 'confirmation_set date' - ~0.5 s
+  before the flood starts.
+- The August sessions (LOG.txt) had no flood because the bench THEN had the
+  blade connected (ETB autocal work): no open load -> constant 0xF.
+Bench verification of the chain (30 s, offered to the user): `soft_fault`
+latches a critical error -> limp cuts the ETB -> the flood STOPS; or connect
+the blade -> the flag stops oscillating. Both prove the flood is ETB-PWM x
+open-load, not RAM. FIXED (commit 24eac1617af): the diag report is debounced -
+it prints only after the byte has been stable for TLE9201_DIAG_STABLE_POLLS=4
+consecutive polls (400 ms); the oscillation never settles (silent), a latched
+fault still reports once it settles.
 
 One-off observation (SAME session, first boot after flashing, NOT reproducible
 on the second boot - user): a latched `CRITICAL error: Send: CAN1 device not
