@@ -18749,3 +18749,129 @@ Validation: compile_m74_9.sh BUILD SUCCESSFUL (three-stage image written,
 new statics present in the ELF); AngleClock unit tests 4/4. The 15 failing
 unit tests are the documented pre-existing injection/trigger scheduling
 class - untouched by this change.
+
+## 2026-10-03 (19:02-19:10) - m74_9: evening lockstats - the capture ring + body maxes give the first decisive reading of the xsec class
+
+Five windows, the FIRST car data with the capture-at-entry instrumentation.
+Per-window overview (each window is a delta since the previous lockstats;
+rpm derived from dwell fired / window length):
+
+| window | ~rpm | dwell fired | xsec sum | maxLateUs | max owner | immediate | close lateArm (all busy) | sched fuel n |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 19:02:40 | 830 | 555 | 79 | 90 | dwell | 9 | 0 | 0 |
+| 19:07:32 | 1690 | 16448 | 2626 | 93 | dwell | 308 | 542 | 659 = 542+117 |
+| 19:07:40 | 2480 | 622 | 99 | 61 | close | 27 | 21 | 27 = 21+6 |
+| 19:09:05 | 1870 | 5201 | 751 | 106 | close | 117 | 244 | 297 = 244+53 |
+| 19:10:38 | 1000 | 3085 | 329 | 56 | close | 13 | 2 | 4 = 2+2 |
+
+Health clean everywhere: dwell/spark lateArm=0, no refusals, tim2clk exact
+(sleep/busy T2d == NTd, ARR=FFFFFFFF, PSC=71), nvic correct, initRate
+40000/40000. The accounting invariant holds EXACTLY in all five windows
+(sched fuel n == open lateArm + close lateArm). Executor composition named
+by addr2line on the flashed ELF: 4x startKnockSampling + 1x onTdcCallback
+per cycle + 1 Hz watchdog (the lean variant-B set; W1 extras are the
+startup timerValidation + prime adapters).
+
+WHAT THE CAPTURE RING SETTLES. All displayed captures are identical in
+shape: imm=0, prim=0, base=0x00, reent=0, dccr-stamp POSITIVE, iabr =
+0x10000000 (TMR2 only) - except a handful with bit19/bit21 (CAN1 TX/RX1)
+where TMR2 PREEMPTED a running CAN ISR (prio 3 beats 12). So the 10-21 us
+class is NOT the handoff, NOT previous-entry serialization (positive stamp
+proves dueCcr matched after the previous entry ended), NOT a visible mask,
+NOT CAN - the CAN co-occurrence is benign preemption in the opposite
+direction of the afternoon hypothesis.
+
+WHAT THE 10-21 us CLASS IS (the unclassified majority, explained): late is
+measured per channel in pass 2 JUST BEFORE its action executes, so a
+spark/open/close that co-fires with dwell in the SAME entry inherits
+dwell's body time - and the ser= stamp only catches CCR-matched-during-
+PREVIOUS-entry, so same-entry co-due lands in 'unclassified'. Evidence:
+xsec spark maxUs (85-91) ~= dwell body max (81) + ~10; close maxUs (56-106)
+~= dwell body max + entry; spark n > dwell n because a co-due pair counts
+spark but not dwell (the pair's dwell late stays <10 us). For dwell itself
+(first channel, nothing to inherit) the 10-21 us captures are a genuine
+~8-18 us entry block: a BASEPRI/PRIMASK window that closed before entry
+(invisible in the capture) - the capture reads only IABR[0], so holders in
+IABR[1] (TIM5/TMR7/SPI1/USART) and IABR[2] (USB/SDIO) are invisible; the
+executor popDue CS spin (<=8 us) and the WDA I-class SPI locks fit the
+~10 us dwell captures.
+
+THE RARE 56-106 us MAXIMA: maxLateUs == the xsec maxUs EXACTLY in all five
+windows - no separate hidden class. The maxima belong to dwell in W1/W2
+(90/93 us: a genuine ~90 us entry block, once per window - dwell is first
+so nothing to inherit) and to close in W3/W4/W5 (56-106 us: co-due tail
+after dwell's up-to-81 us body).
+
+THE BODY MAXIMA (new unexplained fact): the action bodies themselves
+occasionally run ~70-110 us - spark is the heaviest in EVERY window
+(85-111; close 80-108, dwell 69-81, open 55-74) and the max-body fires were
+ON TIME (late=3-5 us), so this is wall time of execute() itself, not entry
+blocking. All four bodies verified light statically (GPIO + float math +
+short CS + TMR2 register writes, no print paths - a C9009 print would be
+hundreds of us). Leading candidate: flash-fetch cost (the action callees
+are NOT TRIGGER_RAM_CODE; flashperf puts flash code ~4-5x slower than RAM
+on this chip) plus cold-cache paths. Open: per-callee split inside the
+bodies.
+
+The close-busy storm is back in the loaded (high-rpm) windows (542/244),
+1:1 to the TIM5 fuel fallbacks, injectors still close, self-clears - the
+documented double-schedule class.
+
+Side observation: W5 (~1000 rpm) shows postDecode 50-100 us on 55% of
+ teeth (the other windows 8-20%) with everything else clean - sub-phase
+attribution pending.
+
+NEXT INSTRUMENTATION (two small additions to angle_clock.cpp + lockstats):
+(1) a max-late LATCH capture - the ring keeps the last 8, so the rare
+~90 us event has rolled out by dump time; keep the capture with the largest
+lateTicks instead; (2) read IABR[1] and IABR[2] into the capture so an
+active executor/WDA/USB/SDIO holder of the invisible mask is named. One
+evening lockstats then either names the ~90 us masker or pins the co-due
+tail.
+
+## 2026-10-03 (19:45:12-19:45:22) - m74_9: the ser= class captured LIVE - negative stamps prove the 36-75 us spikes are same-vector waits on the action bodies
+
+Five windows (~1000-1050 rpm), the second evening session with the capture
+instrumentation. Window 4 (19:45:19) is the money window: the ring caught
+the rare ~50-80 us events BEFORE they rolled out, and their dccr-stamp is
+NEGATIVE (-133..-287 ticks = -33..-72 us): the CCR matched while the
+PREVIOUS TMR2 entry was still executing its action bodies. That is the
+ser= class by definition - same-priority serialization on the single
+shared vector (equal priorities do not preempt each other), the fire waits
+for the previous entry's bodies to finish, late = remaining body time.
+The xsec split of W4 agrees: dwell n=14 ser=11, close n=13 ser=10.
+
+| window | dwell fired | maxLateUs | xsec sum | dwell ser= | close ser= | close busy | sched fuel n |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 19:45:12 | 178 | 72 | 20 | 2 | 0 | 5 | 8 = 3+5 |
+| 19:45:14 | 148 | 25 | 23 | 0 | 0 | 1 | 2 = 1+1 |
+| 19:45:16 | 47 | 24 | 4 | 0 | 0 | 0 | 0 |
+| 19:45:19 | 107 | 76 | 35 | 11 | 10 | 0 | 0 |
+| 19:45:22 | 56 | 17 | 5 | 0 | 0 | 0 | 0 |
+
+The ser= bursts are EVENT bursts (compression windows), not a steady state:
+W1-W3/W5 at the same rpm are mostly the same-entry co-due class (positive
+stamps). Both classes now reduce to ONE root: the action bodies themselves
+run ~50-110 us, not the ~5-15 us assumed in the afternoon static analysis.
+Body maxima are stable across all 10 windows of both sessions - spark is
+the heaviest in EVERY window (85-111 us), dwell 62-92, close 76-89, open
+55-74. The cost scales with the callee-chain length (spark = the longest
+chain, open ~2 calls yet still ~55-74 us), pointing at per-call/per-fetch
+cost, not one heavy callee. The bodies are statically light (verified, no
+print paths), so the leading candidates are (a) flash-fetch penalty - the
+callees are NOT TRIGGER_RAM_CODE and this chip's flash runs ~1/5-1/6 of
+RAM speed (the flashperf saga), and (b) DMA bus contention (SD logging /
+USB bursts) which would also explain the variability and the bursty ser=
+windows. A C9009-style print is ruled out (too large AND log-absent).
+
+Everything else stays clean: dwell/spark lateArm=0, accounting exact in
+every window, tim2clk exact, nvic correct. W1 is an engine-start window
+(prime adapter + timerValidation events, prime body 250 us at executor
+prio 5 - startup, invisible to TMR2); its triggerIsr has the known single
+>1000us postDecode stall.
+
+Next step: per-callee split of the action bodies (record max per major
+callee: getDwell, prepareCylinderIgnitionSchedule, scheduler
+schedule/cancel, recordSparkFire, output open/close) - one evening session
+names the heavy callee; alternatively/additionally a session with SD
+logging disabled tests the DMA-contention candidate.
