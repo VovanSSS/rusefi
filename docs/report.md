@@ -18675,3 +18675,36 @@ still works, but intermittently logs a garbage station-id length
 (16842760 = 0x01010008) instead of 7. Suspects to check: whether OpenBLT
 actually jumps to the main app after reset (CRC/FlashVerifyChecksum), and the
 intermittent GetID mis-parse (station-id length read as le32 at offset 4).
+
+## 2026-10-03 - lockstats delay analysis recorded + user TMR2/CAN stall take
+
+Analysed the 8 lockstats windows from the 16:10-16:17 car session (~850 rpm).
+Created two docs:
+- docs/lockstats_analysis_2026-10-03.md - per-window and global averages,
+  maxima, max-vs-avg difference, accounting identities, health checks.
+- docs/tmr2_can_stall_user_take_2026-10-03.md - the user's hypothesis and
+  observations about the TMR2 delays and the CAN/dash impact.
+
+Key numbers (details in the analysis doc):
+
+| metric | avg, us | max, us | ratio |
+| --- | --- | --- | --- |
+| triggerIsr | 59.3 | 1247 (1 event) / 214 otherwise | 21x / 3.6x |
+| trgPostDecode | 43.5 | >1000 (1 event) / 250 otherwise | 23x / 5.7x |
+| schedulerIsr | 79.2 | 500 | 6.3x |
+| sched exec late | ~10 (mode) | 249 | ~25x in w3 |
+| angclk ISR entry | <10 typical | 95 | ~10x |
+
+The user's take (recorded): TMR2 delays have a 5-10 us baseline that can hold,
+then events/code errors/interrupts/timer glitches push TMR2 to 60-80 us; the
+max spikes (~1188/~960 us) also hit CAN - the console link to the ECU is
+briefly interrupted, and today the dashboard stream stalled (check light on,
+gauges dead). The lockstats data confirms 60-80 us-class TMR2 entry delays
+(xsec maxUs 81-95) and shows they are same-prio serialization (ser >> handoff);
+the causal chain to the CAN stalls is not yet proven - no CAN error counters
+were captured at the stall instants.
+
+Open follow-ups: capture TER/TEC + lockstats immediately after a dash/console
+stall; add per-type TMR2 action-body duration counters to name the ser= tail
+source; cross-check the check-engine event timestamp against the trigger
+histograms.
