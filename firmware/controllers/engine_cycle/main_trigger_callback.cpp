@@ -70,7 +70,7 @@ void endSimultaneousInjection(InjectionEvent* event) {
 	event->update();
 }
 
-void turnInjectionPinLow(InjectionEvent *event) {
+TRIGGER_RAM_CODE void turnInjectionPinLow(InjectionEvent *event) {
 	efitick_t nowNt = getTimeNowNt();
 
 	for (size_t i = 0; i < efi::size(event->outputs); i++) {

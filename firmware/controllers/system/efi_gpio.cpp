@@ -435,11 +435,11 @@ const char *NamedOutputPin::getShortName() const {
 extern bool verboseMode;
 #endif // EFI_UNIT_TEST
 
-void NamedOutputPin::setHigh() {
+TRIGGER_RAM_CODE void NamedOutputPin::setHigh() {
     setHigh(nullptr);
 }
 
-void NamedOutputPin::setHigh(const char *msg) {
+TRIGGER_RAM_CODE void NamedOutputPin::setHigh(const char *msg) {
 #if EFI_UNIT_TEST
 	if (verboseMode) {
 		efiPrintf("pin %s goes high", name);
@@ -457,11 +457,11 @@ void NamedOutputPin::setHigh(const char *msg) {
 #endif /* EFI_ENGINE_SNIFFER */
 }
 
-void NamedOutputPin::setLow() {
+TRIGGER_RAM_CODE void NamedOutputPin::setLow() {
     setLow(nullptr);
 }
 
-void NamedOutputPin::setLow(const char *msg) {
+TRIGGER_RAM_CODE void NamedOutputPin::setLow(const char *msg) {
 #if EFI_UNIT_TEST
 	if (verboseMode) {
 		efiPrintf("pin %s goes low", name);
@@ -591,7 +591,7 @@ void OutputPin::setOnchipValue(int electricalValue) {
 }
 #endif // EFI_PROD_CODE
 
-void OutputPin::setValue(int logicValue, bool isForce) {
+TRIGGER_RAM_CODE void OutputPin::setValue(int logicValue, bool isForce) {
     setValue(nullptr, logicValue, isForce);
 }
 

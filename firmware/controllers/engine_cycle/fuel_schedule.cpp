@@ -16,7 +16,7 @@
 #include "injection_close_hw.h"
 #endif
 
-void turnInjectionPinHigh(scheduler_arg_t const arg) {
+TRIGGER_RAM_CODE void turnInjectionPinHigh(scheduler_arg_t const arg) {
 	auto const nowNt{ getTimeNowNt() };
 
 	auto const taggedPointer{ TaggedPointer<InjectionEvent>::fromRaw(arg) };
@@ -156,7 +156,7 @@ expected<float> InjectionEvent::computeInjectionAngle() const {
 	return openingAngle;
 }
 
-bool InjectionEvent::updateInjectionAngle() {
+TRIGGER_RAM_CODE bool InjectionEvent::updateInjectionAngle() {
 	auto result = computeInjectionAngle();
 
 	if (result) {
@@ -175,7 +175,7 @@ bool InjectionEvent::updateInjectionAngle() {
 /**
  * @returns false in case of error, true if success
  */
-bool InjectionEvent::update() {
+TRIGGER_RAM_CODE bool InjectionEvent::update() {
 	bool updatedAngle = updateInjectionAngle();
 
 	if (!updatedAngle) {

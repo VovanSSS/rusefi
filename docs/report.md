@@ -18875,3 +18875,53 @@ callee: getDwell, prepareCylinderIgnitionSchedule, scheduler
 schedule/cancel, recordSparkFire, output open/close) - one evening session
 names the heavy callee; alternatively/additionally a session with SD
 logging disabled tests the DMA-contention candidate.
+
+## 2026-10-03 - m74_9: flash-fetch check part 1 - STATIC VERDICT + the RAM-relocation experiment (open/close bodies to .fast_text)
+
+The user directive: verify the flash-fetch hypothesis BEFORE adding more
+logging ("everything needed to execute RAM code must be in RAM"). Static
+checks first:
+
+1. Flash config in THIS build is optimal: hal_lld.c stm32_clock_init sets
+   DIVR=/3 (96 MHz flash clock, the F435 limit is 100), CONTR[31]
+   continue-read (prefetch) ON, NZW_BST OFF (it hangs the chip - the
+   2026-08-21 saga). Nothing to fix there.
+2. Placement: the dwell/spark bodies + core helpers (prepareCylinderIgnition-
+   Schedule, SingleTimerExecutor::schedule/cancel, recordSparkFire,
+   wrapAngle, scheduleByAngle, OutputPin::setValue) are already in
+   .fast_text (19.3 KB of a 64 KB ram_fast budget); the OPEN and CLOSE
+   bodies were entirely in flash (turnInjectionPinHigh/Low inlined into
+   their flash trampolines, InjectorOutputPin::open/close, InjectionEvent::
+   update chain, NamedOutputPin::setHigh/Low).
+3. Instruction-count math REFUTES pure flash-fetch as the whole story: the
+   close body is ~350 instructions; its 76-89 us max = ~62-73 cycles per
+   instruction. Even the flashperf-worst flash speed (~6.5 cyc/instr) gives
+   ~8 us; the measured max is ~10x more. The RAM-resident bodies are also
+   ~30-40 cyc/instr (spark ~650 instr at 85-111 us) while the handoff's RAM
+   code runs ~2 cyc/instr (trgPreDecode/decode phases) - the bodies are
+   STALLED ~90% of the time by something static analysis cannot pin.
+4. DMA/preemption refuted for these sessions: only the 6 kHz fast-ADC DMA
+   runs (user: no USB, no SD card, no sniffer, no console binary log); the
+   only ISR above TMR2 is the prio-0 EXTI (~1/ms at 1000 rpm - at most one
+   2-3 us preemption per body); no flash writes while running (gates + no
+   internal storage); no spin/wait in any body callee (executor
+   schedule/cancel are CS-scoped, LogTriggerTooth bails with the sniffer
+   off).
+
+EXPERIMENT (built, not yet bench/car-tested): moved the complete open/close
+chains to .fast_text - turnInjectionPinHigh/Low, InjectorOutputPin::
+open/close/setHigh/setLow, NamedOutputPin::setHigh/setLow, OutputPin::
+setValue (both), InjectionEvent::update/updateInjectionAngle (TRIGGER_RAM_CODE
+adds noinline, so the bodies leave the flash trampolines; the trampolines
+shrank to veneers). .fast_text grew 19.3 -> 20.7 KB (44 KB free). The
+DWELL/SPARK bodies are left untouched as the control group. Predictions for
+the next lockstats (bench self-stim is enough - same code paths, no car):
+- open/close body maxUs collapse from ~55-89 to ~15-30 us -> flash-fetch is
+a major component of the stall -> move the remaining shared callees too;
+- open/close unchanged -> flash largely exonerated -> next step is
+per-callee timing inside the bodies (the stall is localized there, not in
+fetch).
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL (three-stage image written;
+all moved symbols at 0x2005xxxx in the ELF); unit tests build OK;
+AngleClock 4/4.
