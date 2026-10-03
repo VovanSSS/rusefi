@@ -18708,3 +18708,19 @@ Open follow-ups: capture TER/TEC + lockstats immediately after a dash/console
 stall; add per-type TMR2 action-body duration counters to name the ser= tail
 source; cross-check the check-engine event timestamp against the trigger
 histograms.
+
+User refutation recorded the same day: print-based explanations are OUT. The
+whole session has exactly ONE warning (the benign C9009 fall+4) while the
+angclk xsec >=10us counts are hundreds per window (w3: 1599 total) and the
+triggerIsr 100-250us bucket holds thousands of teeth - a formatted ISR print
+cannot mathematically drive the 60-80 us class (second refutation of the
+same class, after 2026-09-25 printGaps; durable rule added to CLAUDE.md).
+The xsec three-way split shows the UNCLASSIFIED remainder (neither handoff
+nor previous-entry serialization) is the majority (w3 dwell: 6 handoff + 52
+ser + 269 unclassified); by the verified ladder and the empty ARMv7-M
+PORT_IRQ_PROLOGUE this class needs a >=10us BASEPRI/PRIMASK window outside
+the handoff, whose in-code inventory is thin - the exact masker is not
+pinned by static reading. Next step: capture-at-entry instrumentation in
+angle_clock dispatch() (per late>=10us fire: channel, lateUs,
+immediate-origin flag, PRIMASK, BASEPRI, triggerReentrant, dueCcr-vs-stamp
+delta) + per-type action-body max durations.

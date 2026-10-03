@@ -75,6 +75,43 @@ Global averages (all 8 windows, ~894k trigger teeth):
   serialization on the shared TMR2 vector, not waiting for the trigger decode.
   Clean windows (w2/w5/w7/w8): handoff=0 ser=0, maxLateUs 24-33 us.
 
+## xsec three-way split - prints are NOT the driver (user-refuted by log
+absence)
+
+The user checked the console log: the whole session has exactly ONE
+warning (C9009 at 16:12:07, the benign fall+4 mode). The xsec >=10us counts
+are hundreds per window (w3: dwell 327 + spark 475 + open 362 + close 435
+= 1599). A print-based explanation is therefore mathematically refuted -
+recorded as a durable rule in CLAUDE.md (2026-10-03).
+
+The per-window xsec entries split three ways (angle_clock.cpp:238-251):
+
+| window | type | n>=10us | handoff= | ser= | unclassified |
+| --- | --- | --- | --- | --- | --- |
+| w3 | dwell | 327 | 6 | 52 | 269 |
+| w3 | spark | 475 | 14 | 179 | 282 |
+| w3 | open | 362 | 5 | 39 | 318 |
+| w3 | close | 435 | 13 | 142 | 280 |
+
+- ser=: the channel's CCR matched while the previous TMR2 entry was still
+executing its action bodies (same-prio, one vector). Print-free bodies are
+~5-15 us each, so a co-due 2-4 body entry (the idle cluster: open/dwell/
+close land ~1 deg apart by tune) gives 10-50 us ser tails without any print.
+- handoff=: entered while the handoff was running. ARMv7-M PORT_IRQ_PROLOGUE
+is EMPTY (ChibiOS chcore.h:662), so a fire preempts an unlocked handoff -
+these entries were masked by one of the explicit BASEPRI/PRIMASK windows
+(m_lastToothTimer CS, angle-queue head-steal CS, executor insertTask/remove
+CS, sparkRingPush __disable_irq, queue-pop __disable_irq) or the executor
+popDue CS spin (up to ~8 us, single_timer_executor.cpp:79).
+- unclassified (the MAJORITY): neither handoff running nor previous-entry
+serialization at entry. By the verified ladder (exti=0, T2=3, handoff=4,
+tim5=5, WDA=6) this class needs a >=10us BASEPRI/PRIMASK window OUTSIDE the
+handoff - the in-code inventory of such windows is thin, so the exact masker
+is NOT pinned by static reading. The discriminating next step is
+capture-at-entry instrumentation in dispatch() (record per late>=10us fire:
+channel, lateUs, immediate-origin flag, PRIMASK, BASEPRI, triggerReentrant,
+dueCcr-vs-stamp delta) plus per-type action-body max durations.
+
 ## Accounting (exact in every window)
 
 - sched fuel n == open lateArm + close lateArm:

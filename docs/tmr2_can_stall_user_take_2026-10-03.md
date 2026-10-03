@@ -10,6 +10,19 @@ delays that can persist for some time; then certain events - errors in code,
 interrupts, timer glitches - begin to misbehave and throw TMR2 up to
 60-80 us.
 
+## The user's refutation of print-based explanations (recorded verbatim-ish,
+2026-10-03)
+
+"If there were warnings, they would be in the log. The growth happens even
+when there are no logs in the console. In the session above there was maybe
+one error the whole time, but there is a lot of lockstats output."
+
+Facts: exactly ONE warning in the whole 16:10-16:17 session (C9009 at
+16:12:07, the benign fall+4 rpm-flap mode), while the xsec >=10us counts
+are hundreds per window (w3: 1599 total) and the triggerIsr 100-250 us
+bucket holds thousands of teeth. Printed diagnostics cannot be the driver
+of the 60-80 us class. Recorded as a durable rule in CLAUDE.md.
+
 ## The user's causal chain (hypothesis)
 
 1. TMR2 delay baseline: 5-10 us, can hold for a while.
