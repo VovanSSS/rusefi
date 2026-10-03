@@ -151,6 +151,42 @@ struct DwellArmRefusal {
     uint32_t lateArmTotal;     // s_lateArm[CH_DWELL] at refusal
 };
 
+// Capture-at-entry instrumentation (2026-10-03): one snapshot per fire with
+// ISR-entry lateness >= 10 us, held in a small ring. The xsec handoff=/ser=
+// split leaves the UNCLASSIFIED remainder as the majority, and by the
+// verified ladder (fires prio 3, unlocked ISRs) that class needs a
+// BASEPRI/PRIMASK window outside the handoff - these snapshots plus the
+// per-type action-body durations name the source on the next lockstats
+// (see docs/tmr2_latency_analysis_2026-10-03.md).
+struct AngleClockLateCapture {
+    uint8_t  ch;                 // 0=dwell 1=spark 2=open 3=close
+    uint8_t  immediate;          // fire armed by the refresh "due now" path
+    uint8_t  primask;            // __get_PRIMASK() at entry
+    uint8_t  basepri;            // __get_BASEPRI() at entry (raw value; 0 = unmasked)
+    int16_t  triggerReentrant;   // trigger handoff running at entry
+    uint32_t lateTicks;          // CNT - dueCcr at entry (4 MHz ticks = 0.25 us)
+    int32_t  dueCcrMinusStamp;   // dueCcr - s_lastHandlerEndTick (the ser= window)
+    uint32_t iabr;               // NVIC->IABR[0]: ISRs active below this fire
+                                 // (bit 31 = I2C1_EV handoff; bit 28 = TMR2 itself)
+};
+
+// Size of the capture ring (the last N late>=10us fires survive to lockstats).
+static constexpr int ANGLE_CLOCK_LATE_CAPTURE_RING = 8;
+
+// Total late>=10us fires captured since the last angleClockResetStats().
+uint32_t angleClockLateCaptureTotal();
+
+// Read one capture, i = 0 is the most recent. Returns false when i is past
+// the end (total or ring capacity).
+bool angleClockLateCaptureGet(int i, AngleClockLateCapture& out);
+
+// Max action-body wall time per event type (4 MHz ticks = 0.25 us), and the
+// entry-late of the fire that produced it (0 when that fire was on time).
+// The body includes any fast-EXTI preemption - it IS the wall time the
+// entry spent executing the action.
+uint32_t angleClockBodyMaxTicks(int ch);
+uint32_t angleClockBodyMaxLateTicks(int ch);
+
 // Arm the dwell-start channel (CC1) by engine angle.
 // `earlyWindow` records which caller armed it (true = early window, false =
 // current window) - diagnostic only, the arm logic is identical either way.

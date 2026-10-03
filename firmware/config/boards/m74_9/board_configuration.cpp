@@ -1223,6 +1223,36 @@ void setup_custom_board_overrides() {
 			(unsigned)angleClockLateHandoffCount(ANGLE_CLOCK_CH_CLOSE),
 			(unsigned)angleClockLateSerializedCount(ANGLE_CLOCK_CH_CLOSE),
 			(unsigned)(angleClockLateMaxTicks(ANGLE_CLOCK_CH_CLOSE) / (NT_PER_SECOND / 1000000)));
+		// Capture-at-entry instrumentation (2026-10-03): the xsec handoff=/ser=
+		// split leaves the UNCLASSIFIED remainder as the majority, and by the
+		// verified ladder (fires prio 3, unlocked ISRs) that class needs a
+		// BASEPRI/PRIMASK window outside the handoff. The body maxes name the
+		// ser= tail source; the ring snapshots record what was true at entry of
+		// every late>=10us fire (primask/basepri/mask reads, the handoff via
+		// NVIC IABR bit 31, immediate-origin flag, the ser= window delta) so the
+		// next lockstats pins the masker instead of guessing.
+		efiPrintf("angclk body maxUs dwell=%u late=%u | spark=%u late=%u | open=%u late=%u | close=%u late=%u (action-body wall time incl. EXTI preemption)",
+			(unsigned)(angleClockBodyMaxTicks(ANGLE_CLOCK_CH_DWELL) / (NT_PER_SECOND / 1000000)),
+			(unsigned)(angleClockBodyMaxLateTicks(ANGLE_CLOCK_CH_DWELL) / (NT_PER_SECOND / 1000000)),
+			(unsigned)(angleClockBodyMaxTicks(ANGLE_CLOCK_CH_SPARK) / (NT_PER_SECOND / 1000000)),
+			(unsigned)(angleClockBodyMaxLateTicks(ANGLE_CLOCK_CH_SPARK) / (NT_PER_SECOND / 1000000)),
+			(unsigned)(angleClockBodyMaxTicks(ANGLE_CLOCK_CH_OPEN) / (NT_PER_SECOND / 1000000)),
+			(unsigned)(angleClockBodyMaxLateTicks(ANGLE_CLOCK_CH_OPEN) / (NT_PER_SECOND / 1000000)),
+			(unsigned)(angleClockBodyMaxTicks(ANGLE_CLOCK_CH_CLOSE) / (NT_PER_SECOND / 1000000)),
+			(unsigned)(angleClockBodyMaxLateTicks(ANGLE_CLOCK_CH_CLOSE) / (NT_PER_SECOND / 1000000)));
+		const uint32_t ringTotal = angleClockLateCaptureTotal();
+		const int printCount = (ringTotal < ANGLE_CLOCK_LATE_CAPTURE_RING) ? (int)ringTotal : ANGLE_CLOCK_LATE_CAPTURE_RING;
+		efiPrintf("angclk late>=10us captures=%u (last %d, newest first; imm=refresh due-now arm, iabr bit31=handoff active, bit28=TMR2 itself)",
+			(unsigned)ringTotal, printCount);
+		for (int i = 0; i < printCount; i++) {
+			AngleClockLateCapture e;
+			if (!angleClockLateCaptureGet(i, e)) break;
+			efiPrintf("  ch=%s late=%uus imm=%u prim=%u base=0x%02x reent=%d dccr-stamp=%d iabr=0x%08x",
+				m74_9AngclkChannelName(e.ch),
+				(unsigned)(e.lateTicks / (NT_PER_SECOND / 1000000)),
+				(unsigned)e.immediate, (unsigned)e.primask, (unsigned)e.basepri,
+				(int)e.triggerReentrant, (int)e.dueCcrMinusStamp, (unsigned)e.iabr);
+		}
 		// Refresh write-split telemetry (2026-09-26): skip = armed CCR already
 		// optimal (steady no-op, ~2 x teeth); write = re-anchors that pulled the
 		// event EARLIER by more than the deadband - only real accel/decel

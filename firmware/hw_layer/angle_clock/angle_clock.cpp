@@ -98,6 +98,12 @@ struct AngleClockChannel {
     action_s action;
     float    targetAngle = 0.0f;
     uint32_t ccr = 0;   // shadow of the armed compare value
+    // Set when THIS armed CCR was written by the refresh "due now" path
+    // (past-due event armed for immediate ISR fire). Cleared by every
+    // normal arm (writeChannel). Recorded into the late>=10us capture ring
+    // so an immediate fire that STILL arrived >= 10 us late (blocked by a
+    // mask even after being due) is distinguishable from a normal arm.
+    bool     immediate = false;
 };
 
 static AngleClockChannel s_ch[4];  // dwell / spark / open / close
@@ -152,6 +158,20 @@ static uint32_t s_refreshPending      = 0;  // refresh: left a channel with a pe
 static uint32_t s_lookaheadDwell      = 0;  // early-window dwell arm in [nextNext, nextNext+K) (2026-09-26)
 static uint32_t s_lookaheadOpen       = 0;  // early-window open arm in [nextNext, nextNext+K)
 
+// Capture-at-entry instrumentation (2026-10-03): every fire with ISR-entry
+// lateness >= 10 us writes a snapshot into a small ring, and every fire
+// measures its action-body wall time. The xsec handoff=/ser= split leaves the
+// UNCLASSIFIED remainder as the majority; by the verified ladder a >=10 us
+// entry delay outside the handoff needs a BASEPRI/PRIMASK window - these
+// snapshots name the masker on the next lockstats (see
+// docs/tmr2_latency_analysis_2026-10-03.md). dispatch() runs on the single
+// TMR2 vector (no nesting), so the ring needs no lock.
+static AngleClockLateCapture s_lateCaptureRing[ANGLE_CLOCK_LATE_CAPTURE_RING];
+static uint8_t  s_lateCaptureHead  = 0;   // next write slot
+static uint32_t s_lateCaptureTotal = 0;   // saturating total of captures
+static uint32_t s_bodyMaxTicks[4] = {0, 0, 0, 0};  // max action-body wall time per type
+static uint32_t s_bodyMaxLate[4]  = {0, 0, 0, 0};  // entry-late of the fire with the max body
+
 // Most recent failed dwell arm (diagnostic snapshot, read by lockstats).
 // branch = 0xFF is the "no refusal since last reset" sentinel, set in
 // initAngleClock() - the struct must NOT carry a non-trivial aggregate
@@ -203,6 +223,7 @@ TRIGGER_RAM_CODE static void dispatch() {
     uint32_t sr = ANGLE_TIMER->SR & CC_IF_MASK;
     action_s due[4];
     uint32_t dueCcr[4];
+    uint8_t  dueImmediate[4];
     uint8_t dueMask = 0;
 
     for (int ch = 0; ch < 4; ch++) {
@@ -213,8 +234,9 @@ TRIGGER_RAM_CODE static void dispatch() {
         ANGLE_TIMER->DIER &= ~(STM32_TIM_DIER_CC1IE << ch);
 
         auto& c = s_ch[ch];
-        due[ch]    = c.action;
-        dueCcr[ch] = c.ccr;
+        due[ch]         = c.action;
+        dueCcr[ch]      = c.ccr;
+        dueImmediate[ch] = c.immediate;
         c.action = {};
         dueMask |= static_cast<uint8_t>(1u << ch);
     }
@@ -231,13 +253,15 @@ TRIGGER_RAM_CODE static void dispatch() {
             s_fired[ch]++;
             if (late > 0 && static_cast<uint32_t>(late) > s_maxLateTicks)
                 s_maxLateTicks = static_cast<uint32_t>(late);
-            // Per-kind attribution (lockstats 'angclk xsec'): which channel
-            // floats and whether it waited for the running trigger handoff or
-            // for the previous TMR2 entry's action bodies (single-vector
-            // serialization).
+
+            uint32_t lateU = 0;
             if (late > 0) {
-                const uint32_t lateU = static_cast<uint32_t>(late);
+                lateU = static_cast<uint32_t>(late);
                 if (lateU > s_lateMax[ch]) s_lateMax[ch] = lateU;
+                // Per-kind attribution (lockstats 'angclk xsec'): which channel
+                // floats and whether it waited for the running trigger handoff or
+                // for the previous TMR2 entry's action bodies (single-vector
+                // serialization).
                 if (lateU >= US2NT(10)) {
                     s_lateGt10us[ch]++;
                     if (triggerReentrant > 0) {
@@ -248,9 +272,39 @@ TRIGGER_RAM_CODE static void dispatch() {
                         // on the single shared vector.
                         s_lateSerialized[ch]++;
                     }
+                    // Capture-at-entry (2026-10-03): name the UNCLASSIFIED
+                    // majority. The handoff/ser tests above only classify;
+                    // these fields record what was actually true at entry so
+                    // the next lockstats can pin the masker (PRIMASK/BASEPRI
+                    // windows, the running handoff via NVIC IABR, the
+                    // immediate-origin flag, the ser= window delta).
+                    AngleClockLateCapture& e = s_lateCaptureRing[s_lateCaptureHead];
+                    s_lateCaptureHead = static_cast<uint8_t>(
+                        (s_lateCaptureHead + 1) % ANGLE_CLOCK_LATE_CAPTURE_RING);
+                    if (s_lateCaptureTotal < 0xFFFFFFFFU) s_lateCaptureTotal++;
+                    e.ch                = static_cast<uint8_t>(ch);
+                    e.immediate         = dueImmediate[ch];
+                    e.primask           = static_cast<uint8_t>(__get_PRIMASK());
+                    e.basepri           = static_cast<uint8_t>(__get_BASEPRI());
+                    e.triggerReentrant  = static_cast<int16_t>(triggerReentrant);
+                    e.lateTicks         = lateU;
+                    e.dueCcrMinusStamp  = static_cast<int32_t>(dueCcr[ch] - s_lastHandlerEndTick);
+                    e.iabr              = NVIC->IABR[0];
                 }
             }
+
+            // Per-type action-body wall time: CNT deltas around execute().
+            // A preempting fast EXTI capture is included - it IS time the
+            // entry spent. The max body names the ser= tail source without
+            // any print (the bodies have no heavy print-free paths).
+            const uint32_t bodyStart = ANGLE_TIMER->CNT;
             act.execute();
+            const uint32_t bodyTicks =
+                static_cast<uint32_t>(ANGLE_TIMER->CNT - bodyStart);
+            if (bodyTicks > s_bodyMaxTicks[ch]) {
+                s_bodyMaxTicks[ch] = bodyTicks;
+                s_bodyMaxLate[ch]  = lateU;
+            }
         }
     }
 }
@@ -390,6 +444,7 @@ TRIGGER_RAM_CODE static void writeChannel(int ch, uint32_t atTick,
     c.ccr         = atTick;
     c.targetAngle = targetAngle;
     c.action      = action;
+    c.immediate   = false;   // a normal arm replaces any immediate origin
     ANGLE_TIMER->DIER |= STM32_TIM_DIER_CC1IE << ch;
     s_armedMask |= static_cast<uint8_t>(1u << ch);
 }
@@ -600,6 +655,7 @@ TRIGGER_RAM_CODE static void refreshChannel(int ch) {
             *ccrReg(ANGLE_TIMER, ch) = oldCcr;
         } else {
             c.ccr = nowTick;
+            c.immediate = true;   // this fire was armed by the due-now path
             s_immediate++;
         }
         return;
@@ -661,6 +717,26 @@ uint32_t angleClockLateArmDwellGuard()      { return s_lateArmDwellGuard; }
 uint32_t angleClockLateArmDwellTickPast()   { return s_lateArmDwellTickPast; }
 uint32_t angleClockLateArmOpenGuard()       { return s_lateArmOpenGuard; }
 uint32_t angleClockLateArmOpenTickPast()    { return s_lateArmOpenTickPast; }
+
+uint32_t angleClockLateCaptureTotal() {
+    return s_lateCaptureTotal;
+}
+
+bool angleClockLateCaptureGet(int i, AngleClockLateCapture& out) {
+    if (i < 0 || static_cast<uint32_t>(i) >= s_lateCaptureTotal ||
+        i >= ANGLE_CLOCK_LATE_CAPTURE_RING) {
+        return false;
+    }
+    // i = 0 -> most recent entry (head - 1 wraps backwards).
+    const uint8_t idx = static_cast<uint8_t>(
+        (s_lateCaptureHead + ANGLE_CLOCK_LATE_CAPTURE_RING - 1 -
+         static_cast<uint8_t>(i)) % ANGLE_CLOCK_LATE_CAPTURE_RING);
+    out = s_lateCaptureRing[idx];
+    return true;
+}
+
+uint32_t angleClockBodyMaxTicks(int ch)     { return s_bodyMaxTicks[ch]; }
+uint32_t angleClockBodyMaxLateTicks(int ch) { return s_bodyMaxLate[ch]; }
 const DwellArmRefusal& angleClockDwellRefusal() { return s_dwellRefusal; }
 uint32_t angleClockMaxLateTicks()    { return s_maxLateTicks; }
 uint32_t angleClockImmediateFireCount() { return s_immediate; }
@@ -689,6 +765,12 @@ void angleClockResetStats() {
     s_refreshMaxPullTicks = 0;
     s_refreshPending = 0;
     s_lookaheadDwell = s_lookaheadOpen = 0;
+    s_lateCaptureHead = 0;
+    s_lateCaptureTotal = 0;
+    for (int ch = 0; ch < 4; ch++) {
+        s_bodyMaxTicks[ch] = 0;
+        s_bodyMaxLate[ch] = 0;
+    }
     s_dwellRefusal.branch = 0xFF;  // sentinel: no refusal since last reset
 }
 

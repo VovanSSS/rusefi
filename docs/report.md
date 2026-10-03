@@ -18729,3 +18729,23 @@ Full consolidated top-down analysis of this session (EXTI -> handoff ->
 TMR2 -> executor code budget, mask-window inventory, three-way split, CAN
 impact, proven-vs-open, instrumentation plan) recorded in
 docs/tmr2_latency_analysis_2026-10-03.md.
+
+Implemented the next step (capture-at-entry instrumentation):
+- firmware/hw_layer/angle_clock/angle_clock.h - AngleClockLateCapture struct
+  (ch, immediate-origin flag, PRIMASK, BASEPRI, triggerReentrant, lateTicks,
+  dueCcr-vs-stamp delta, NVIC->IABR[0]) + ANGLE_CLOCK_LATE_CAPTURE_RING=8 +
+  angleClockLateCaptureTotal/Get + angleClockBodyMaxTicks/LateTicks accessors.
+- firmware/hw_layer/angle_clock/angle_clock.cpp - AngleClockChannel gains a
+  bool immediate flag (set by the refresh due-now arm, cleared by
+  writeChannel); dispatch() pushes a capture for every late>=10us fire and
+  measures each action body with CNT deltas around act.execute()
+  (s_bodyMaxTicks/Late per type); reset clears the ring and body maxes.
+- firmware/config/boards/m74_9/board_configuration.cpp - lockstats prints
+  'angclk body maxUs dwell=.. late=.. | spark=.. | open=.. | close=..' and
+  'angclk late>=10us captures=N' + N ring lines 'ch=.. late=..us imm=..
+  prim=.. base=0x.. reent=.. dccr-stamp=.. iabr=0x..' (iabr bit 31 = handoff
+  active below the fire, bit 28 = TMR2 itself).
+Validation: compile_m74_9.sh BUILD SUCCESSFUL (three-stage image written,
+new statics present in the ELF); AngleClock unit tests 4/4. The 15 failing
+unit tests are the documented pre-existing injection/trigger scheduling
+class - untouched by this change.
