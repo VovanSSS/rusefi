@@ -18724,3 +18724,8 @@ pinned by static reading. Next step: capture-at-entry instrumentation in
 angle_clock dispatch() (per late>=10us fire: channel, lateUs,
 immediate-origin flag, PRIMASK, BASEPRI, triggerReentrant, dueCcr-vs-stamp
 delta) + per-type action-body max durations.
+
+Full consolidated top-down analysis of this session (EXTI -> handoff ->
+TMR2 -> executor code budget, mask-window inventory, three-way split, CAN
+impact, proven-vs-open, instrumentation plan) recorded in
+docs/tmr2_latency_analysis_2026-10-03.md.
