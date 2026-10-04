@@ -18925,3 +18925,42 @@ fetch).
 Validation: compile_m74_9.sh BUILD SUCCESSFUL (three-stage image written;
 all moved symbols at 0x2005xxxx in the ELF); unit tests build OK;
 AngleClock 4/4.
+
+## 2026-10-04 (12:57-13:23) - m74_9: flash-fetch CONFIRMED on the car - open/close bodies dropped, control unchanged, residual floor remains
+
+The RAM-move build flashed and driven. Eight lockstats windows.
+
+| body (maxUs) | BEFORE (10 windows) | AFTER (8 windows) | verdict |
+| --- | --- | --- | --- |
+| open (moved) | 55-74 | 34-57 | down ~20 us |
+| close (moved) | 76-89 | 44-56 | down ~30 us |
+| dwell (control) | 62-92 | 67-82 | unchanged |
+| spark (control) | 85-111 | 85-107 | unchanged |
+
+The effect is specific to the moved bodies - flash-fetch is a real, major
+component of the body cost. Bonus: ser= ~0 in the clean windows (the
+shortened bodies no longer overlap the dwell/close pair) and the clean
+angclk maxLateUs is 33-41 us - the best since the investigation started
+(was 56-106).
+
+THE RESIDUAL FLOOR (not flash): fitting all 8 windows gives body ~=
+24-30 us FIXED + ~18 cycles/instruction. The moved open body is ~250 RAM
+instructions with NO critical section and NO executor ops (2 GPIO writes
++ counters + the close arm), ~55 flash instructions left (palWritePad,
+LogTrigger bail, trampoline veneer) - yet it still runs 34-57 us, ~10x its
+code size. The floor is NOT flash, NOT CS/executor (absent in open), NOT
+prints (clean windows are log-clean).
+
+STORM WINDOWS = LOG-VISIBLE PRINTS (the durable rule holds): 13:07:01
+shows dwell body maxUs=295, sched dwell cbmaxUs=253, maxLateUs=784,
+close busy=3546 - and the SAME window has C9009 warnings in the log
+(13:04:48/13:06:51). The 295 us body is the C9009 print path. The
+c9009diag lines (off=2-12, early=0, counter-fall==1, ~1350 rpm) are the
+documented Mode A/B double-schedule - untouched by this experiment.
+Accounting exact again (4324=400+3924, 1013=97+916).
+
+NEXT (zero code): bench self-stim with the SAME build. The bench runs the
+same bodies on the same silicon without the car (no L9779/VRS/electrical,
+no real EXTIs). Same body maxima on the bench -> silicon/code-level floor
+-> per-callee timing on the bench; clean bench (~5-15 us) -> car-side
+(electrical/EXTI) -> investigate there.
