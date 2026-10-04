@@ -233,7 +233,7 @@ void SingleTimerExecutor::executeAllPendingActions() {
  * inserted mid-arm would wait for the later compare (bounded extra latency,
  * self-healed by the next re-arm, but avoided for free by the lock).
  */
-void SingleTimerExecutor::scheduleTimerCallback() {
+TRIGGER_RAM_CODE void SingleTimerExecutor::scheduleTimerCallback() {
 	ScopePerf perf(PE::SingleTimerExecutorScheduleTimerCallback);
 
 	chibios_rt::CriticalSectionLocker csl;

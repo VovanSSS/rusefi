@@ -84,9 +84,7 @@ public:
 	/*
 	 * Get a reading from the specified sensor, or zero if unavailable.
 	 */
-	static float getOrZero(SensorType type) {
-		return Sensor::get(type).value_or(0);
-	}
+	static float getOrZero(SensorType type);
 
 	/*
 	 * Get a reading from the specified sensor, or one of limit values depending on error code.

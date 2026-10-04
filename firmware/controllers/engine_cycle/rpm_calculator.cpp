@@ -35,7 +35,7 @@ bool RpmCalculator::isStopped() const {
 	return state == STOPPED || (state == SPINNING_UP && cachedRpmValue == 0);
 }
 
-bool RpmCalculator::isCranking() const {
+TRIGGER_RAM_CODE bool RpmCalculator::isCranking() const {
 	// Spinning-up with non-zero RPM is suitable for all engine math, as good as cranking
 	return state == CRANKING || (state == SPINNING_UP && cachedRpmValue > 0);
 }

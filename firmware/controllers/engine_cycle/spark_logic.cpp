@@ -200,7 +200,7 @@ static void fireSparkBySettingPinLow(IgnitionEvent *event, IgnitionOutputPin *ou
 	output->setLow();
 }
 
-static void assertPinAssigned(IgnitionOutputPin* output) {
+static TRIGGER_RAM_CODE void assertPinAssigned(IgnitionOutputPin* output) {
 	if (!output->isInitialized()) {
 		warning(ObdCode::CUSTOM_OBD_COIL_PIN_NOT_ASSIGNED, "Pin Not Assigned check configuration #%s", output->getName()); \
 	}

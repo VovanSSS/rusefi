@@ -18985,3 +18985,23 @@ Not taken: warning/firmwareError (print paths). Kernel CS functions are a
 SEPARATE git repo (the ChibiOS fork) and the bootloader linker has no
 .fast_text - needs gating or a fork commit. Planned move list of 11 edits
 recorded in the doc.
+
+## 2026-10-04 - m74_9: flash removal from the TMR2 path IMPLEMENTED (the 11-edit list, see docs/tmr2_flash_inventory_2026-10-04.md)
+
+Moved to .fast_text: Sensor::getOrZero (out-of-line in sensor.cpp - the
+inline header body cannot see the macro), Sensor::get, RpmCalculator::
+isCranking, OutputPin::isInitialized, assertPinAssigned,
+SingleTimerExecutor::scheduleTimerCallback, LogTriggerTooth,
+isBrainPinValid, addEngineSnifferOutputPinEvent, and the action_s
+trampoline templates. .fast_text 20.2 -> 22.3 KB (41.7 KB free). Per-body
+call re-analysis: every taken-path target of all four bodies + prepare +
+update is now RAM (direct calls, no veneers). DROPPED from the list: the
+scaled_channel float ctor (GCC emits the constexpr ctor as an alias and the
+section attribute does not match the target - error for every
+instantiation; explicit instantiation fails the same way). Header-order
+fixes: firmware/global.h TRIGGER_RAM_CODE define moved above the
+single_timer_executor.h include (+#ifndef guard); unit_tests/global.h
+empty define moved above test_executor.h. Remaining flash: the 4-byte
+trampoline stubs, kernel CS (fork), newlib memset, print paths.
+Validation: compile_m74_9.sh BUILD SUCCESSFUL; unit tests 1169/15 (the 15
+pre-existing, nothing new); AngleClock 4/4.

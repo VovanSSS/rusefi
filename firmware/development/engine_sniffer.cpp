@@ -232,7 +232,7 @@ void initWaveChart(WaveChart *chart) {
 
 #endif /* EFI_ENGINE_SNIFFER */
 
-void addEngineSnifferOutputPinEvent(NamedOutputPin *pin, FrontDirection frontDirection) {
+TRIGGER_RAM_CODE void addEngineSnifferOutputPinEvent(NamedOutputPin *pin, FrontDirection frontDirection) {
 	if (!engineConfiguration->engineSnifferFocusOnInputs) {
 		addEngineSnifferEvent(pin->getShortName(), frontDirection == FrontDirection::UP ? PROTOCOL_ES_UP : PROTOCOL_ES_DOWN);
 	}

@@ -179,7 +179,7 @@ static void SetNextCompositeEntry(efitick_t timestamp) {
 #define JSON_TRG_PID 4
 #define JSON_CAM_PID 10
 
-static void LogTriggerTooth(efitick_t timestamp) {
+static TRIGGER_RAM_CODE void LogTriggerTooth(efitick_t timestamp) {
 	// bail if we aren't enabled
 	if (!ToothLoggerEnabled) {
 		return;

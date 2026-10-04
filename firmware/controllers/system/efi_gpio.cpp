@@ -557,7 +557,7 @@ void IgnitionOutputPin::reset() {
 	currentLogicValue = INITIAL_PIN_STATE;
 }
 
-bool OutputPin::isInitialized() const {
+TRIGGER_RAM_CODE bool OutputPin::isInitialized() const {
 #if EFI_GPIO_HARDWARE && EFI_PROD_CODE
 #if (BOARD_EXT_GPIOCHIPS > 0)
 	if (ext)

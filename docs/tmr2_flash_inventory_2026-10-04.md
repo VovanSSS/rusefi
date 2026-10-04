@@ -76,6 +76,43 @@ firmwareError (print paths - not executed when healthy).
 11. firmware/controllers/system/timer/scheduler.h - action_s trampoline +
     trampoline_no_arg templates
 
+## IMPLEMENTED (2026-10-04, commit)
+
+Items 1-8, 10, 11 moved. .fast_text 20.2 -> 22.3 KB (41.7 KB free).
+Per-body call re-analysis of the new ELF: every taken-path target of all
+four bodies + prepare + update is now at 0x2005xxxx (RAM), including the
+direct calls that used to go through veneers (Sensor::getOrZero,
+LogTriggerTooth, assertPinAssigned, isCranking, isInitialized).
+
+Left in flash (documented):
+- scaled_channel float ctor (32 B, one call per spark): item 9 DROPPED -
+  GCC emits the constexpr ctor as an alias to a clone, and the section
+  attribute on the alias does not match the target ("section of alias must
+  match section of its target", reproduced for every instantiation in
+  engine TUs; the explicit-instantiation workaround fails the same way).
+- The 4-byte action_s trampoline stubs (LTO reduced them to b.w veneers
+  into RAM bodies - ~2 flash fetches per fire).
+- Kernel CS functions chSysGetStatusAndLockX/chSysRestoreStatusX (separate
+  ChibiOS repo; the bootloader linker has no .fast_text).
+- newlib memset in dispatch (one call per entry).
+- warning/firmwareError print paths (not taken).
+
+Header-order notes (learned while doing it):
+- scheduler.h is included from global.h BEFORE the TRIGGER_RAM_CODE define
+  - the define block in firmware/global.h was moved above the
+  single_timer_executor.h include (efifeatures.h is already available via
+  common_headers.h) and wrapped in #ifndef (scaled_channel.h-free now, but
+  keep the guard for future header users).
+- unit_tests/global.h defines the empty TRIGGER_RAM_CODE AFTER
+  test_executor.h (which pulls in scheduler.h) - moved above it.
+- sensor.h is included by small TUs without global.h, so the macro cannot
+  be used in sensor.h at all: getOrZero moved from an inline header body to
+  an out-of-line TRIGGER_RAM_CODE definition in sensor.cpp.
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL; unit tests 1169/15 (the
+15 documented pre-existing injection/trigger scheduling failures, nothing
+new); AngleClock tests pass.
+
 ## Expected effect
 
 ~400-500 flash instructions remain on the taken paths at the measured flash

@@ -16,6 +16,25 @@
 // *** IMPORTANT *** from painful experience we know that common_headers.h has to be included AFTER hal.h
 // *** https://github.com/rusefi/rusefi/issues/1007 ***
 #include "common_headers.h"
+
+/**
+ * AT32 trigger fast path: place the per-tooth ISR code (trigger decode +
+ * event scheduling) into the .fast_text section, which the AT32 linker
+ * script loads to flash and the board copies to zero-wait SRAM at boot.
+ * The AT32F435 NZW flash area is too slow for the 60-2 path at high rpm
+ * (~25 cycles per 7-instruction iteration measured at 288 MHz); SRAM is
+ * zero-wait. Enabled per board via EFI_TRIGGER_IN_RAM in efifeatures.h
+ * (included via common_headers.h above, so the macro is usable by
+ * single_timer_executor.h/scheduler.h below).
+ */
+#ifndef TRIGGER_RAM_CODE
+#if EFI_TRIGGER_IN_RAM
+#define TRIGGER_RAM_CODE __attribute__((section(".fast_text"), noinline))
+#else
+#define TRIGGER_RAM_CODE
+#endif
+#endif
+
 #include "single_timer_executor.h"
 
 // for US_TO_NT_MULTIPLIER
@@ -36,20 +55,6 @@
 
 // todo: very odd placement for very weird define, do we even need it? used in SENT
 #define CORE_CLOCK STM32_SYSCLK
-
-/**
- * AT32 trigger fast path: place the per-tooth ISR code (trigger decode +
- * event scheduling) into the .fast_text section, which the AT32 linker
- * script loads to flash and the board copies to zero-wait SRAM at boot.
- * The AT32F435 NZW flash area is too slow for the 60-2 path at high rpm
- * (~25 cycles per 7-instruction iteration measured at 288 MHz); SRAM is
- * zero-wait. Enabled per board via EFI_TRIGGER_IN_RAM in efifeatures.h.
- */
-#if EFI_TRIGGER_IN_RAM
-#define TRIGGER_RAM_CODE __attribute__((section(".fast_text"), noinline))
-#else
-#define TRIGGER_RAM_CODE
-#endif
 
 /**
  * project-wide default thread stack size
