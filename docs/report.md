@@ -19005,3 +19005,15 @@ empty define moved above test_executor.h. Remaining flash: the 4-byte
 trampoline stubs, kernel CS (fork), newlib memset, print paths.
 Validation: compile_m74_9.sh BUILD SUCCESSFUL; unit tests 1169/15 (the 15
 pre-existing, nothing new); AngleClock 4/4.
+
+## 2026-10-04 (19:25-19:28) - m74_9: full flash removal CAR-VERIFIED on six clean windows
+
+Body maxUs across both waves: dwell 62-92 -> 44-53, spark 85-111 ->
+65-75, open 55-74 -> 33-44, close 76-89 -> 41-47 (the callee move cut
+dwell/spark ~20 us each). angclk maxLateUs in clean windows 25-35 us (was
+56-106) - the best of the whole investigation; ser= ~0 in all windows;
+accounting exact; executor trampolines also moved to RAM (bonus). The
+residual floor is ~33-35 us fixed + ~6 cycles/instr plus spark's extra
+~15-20 us - not flash/CS/prints; per-callee timing inside the bodies is
+the next diagnostic. Recorded in docs/tmr2_flash_inventory_2026-10-04.md
+and CLAUDE.md.

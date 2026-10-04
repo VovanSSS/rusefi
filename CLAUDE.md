@@ -1439,3 +1439,16 @@ CODE-VERIFIED FACTS for the print-free 60-80 us ser= class (2026-10-03 static an
 **TMR2 BODY PATH - FULL FLASH INVENTORY (2026-10-04, analysis; see docs/tmr2_flash_inventory_2026-10-04.md):** per-body objdump call analysis of the post-move ELF. Remaining flash on TAKEN paths: every dwell = Sensor::getOrZero (36 B) + LogTriggerTooth (268 B, bails) + scheduleTimerCallback (272 B) + chSysGetStatusAndLockX/chSysRestoreStatusX (kernel, 1-3 CS per body); every spark = LogTriggerTooth + assertPinAssigned (40 B) + scaled_channel<short,50,1> ctor (32 B) + scheduleTimerCallback; every close = OutputPin::isInitialized (16 B) + RpmCalculator::isCranking+thunk (48 B); every pin write = isBrainPinValid (14 B) + addEngineSnifferOutputPinEvent (60 B, inner bail); every dispatch entry = newlib memset (due[] init); every fire = action_s trampoline (4 B flash veneers). NOT taken: warning/firmwareError. SPECIAL: the kernel CS functions live in the ChibiOS fork (separate git repo) and the bootloader linker (m749_openblt.ld) has NO .fast_text - marking them needs a build gate or a fork commit. Move list of 11 edits recorded in the doc.
 
 **FLASH REMOVAL IMPLEMENTED (2026-10-04, commit):** moved Sensor::getOrZero (out-of-line in sensor.cpp - sensor.h is included by TUs without global.h, the inline body cannot see the macro), Sensor::get, RpmCalculator::isCranking, OutputPin::isInitialized, assertPinAssigned, SingleTimerExecutor::scheduleTimerCallback, LogTriggerTooth, isBrainPinValid, addEngineSnifferOutputPinEvent + the action_s trampoline templates; .fast_text 20.2 -> 22.3 KB; per-body re-analysis shows every taken-path target now RAM (direct calls, no veneers). DROPPED: the scaled_channel float ctor - GCC emits constexpr ctors as aliases and the section attribute does not propagate ('section of alias must match section of its target' for every instantiation; explicit instantiation fails the same) - 32 B stays in flash, one call per spark. HEADER-ORDER GOTCHAS (durable): scheduler.h is included from global.h BEFORE the TRIGGER_RAM_CODE define -> the define block must sit above the single_timer_executor.h include (efifeatures.h available via common_headers.h) with an #ifndef guard; unit_tests/global.h defines the empty macro AFTER test_executor.h (which pulls in scheduler.h) -> must sit above it; NEVER use TRIGGER_RAM_CODE in headers included before global.h (sensor.h, scaled_channel.h) - move the function out-of-line instead. Validation: compile_m74_9.sh OK; unit tests 1169/15 (the 15 pre-existing, nothing new); AngleClock 4/4.
+
+## 2026-10-04 (19:25-19:28) - m74_9: full flash removal CAR-VERIFIED (six clean windows, ~1000-1400 rpm)
+
+Body maxUs: dwell 62-92 -> 44-53, spark 85-111 -> 65-75, open 55-74 ->
+33-44, close 76-89 -> 41-47 (across BOTH waves; the callee move cut
+ dwell/spark ~20 us each). angclk maxLateUs in clean windows 25-35 us - the
+best of the investigation (was 56-106); ser= ~0 everywhere; accounting
+exact; bonus: the executor callback trampolines moved to RAM too (the
+action_s template section). Residual: ~33-35 us fixed + ~6 cyc/instr +
+spark's extra ~15-20 us (scaled_channel ctor + longest chain) - the fixed
+floor is NOT flash/CS/prints (the moved open body with no CS and no
+executor still runs 33-44 us); per-callee timing inside the bodies is the
+next diagnostic.

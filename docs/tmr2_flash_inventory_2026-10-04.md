@@ -113,6 +113,37 @@ Validation: compile_m74_9.sh BUILD SUCCESSFUL; unit tests 1169/15 (the
 15 documented pre-existing injection/trigger scheduling failures, nothing
 new); AngleClock tests pass.
 
+## 2026-10-04 (19:25-19:28) - m74_9: full flash removal CAR-VERIFIED - the second wave cut dwell/spark ~20 us each
+
+Six clean windows (~1000-1400 rpm, no storm, accounting exact).
+
+| body (maxUs) | original | after move 1 (bodies) | after move 2 (callees) |
+| --- | --- | --- | --- |
+| dwell | 62-92 | 67-82 | 44-53 |
+| spark | 85-111 | 85-107 | 65-75 |
+| open | 55-74 | 34-57 | 33-44 |
+| close | 76-89 | 44-56 | 41-47 |
+
+The callee move cut dwell/spark ~20 us each (they were the control group
+of move 1 but still carried the flash callees); open/close shed a few more.
+Total across both waves: dwell -25, spark -28, open -25, close -35 us.
+
+Derived metrics - the best of the whole investigation:
+- angclk maxLateUs in clean windows 25-35 us (was 56-106 originally,
+  33-41 after move 1).
+- ser= ~0 in all six windows (the shortened bodies no longer overlap the
+  next entry); captures 10-27 us, no masks, no handoff, TMR2-only.
+- Bonus: the executor callback trampolines (startKnockSampling/onTdc/
+  watchdog) also landed in RAM (action_s template section) - their
+  maxDurUs dropped (startKnock 128 -> 79-99).
+
+The residual floor is now clean: ~33-35 us FIXED + ~6 cycles/instruction,
+plus spark carries an extra ~15-20 us (its remaining flash tail: the
+scaled_channel ctor + the longest chain). The floor is NOT flash, NOT CS,
+NOT prints - the moved open body (250 RAM instructions, no CS, no
+executor) still runs 33-44 us. The mechanism is still open; the next
+diagnostic is per-callee timing inside the bodies.
+
 ## Expected effect
 
 ~400-500 flash instructions remain on the taken paths at the measured flash
