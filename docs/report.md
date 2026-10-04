@@ -18964,3 +18964,24 @@ same bodies on the same silicon without the car (no L9779/VRS/electrical,
 no real EXTIs). Same body maxima on the bench -> silicon/code-level floor
 -> per-callee timing on the bench; clean bench (~5-15 us) -> car-side
 (electrical/EXTI) -> investigate there.
+
+## 2026-10-04 - m74_9: FULL flash inventory of the TMR2 body path (analysis, see docs/tmr2_flash_inventory_2026-10-04.md)
+
+Per-body disassembly call analysis (objdump bl/b.w targets classified by
+section) of the post-move ELF. Remaining flash on TAKEN paths:
+- every dwell: Sensor::getOrZero (36 B), LogTriggerTooth (268 B, bails),
+  scheduleTimerCallback (272 B, via the overdwell insert),
+  chSysGetStatusAndLockX + chSysRestoreStatusX (56+36 B kernel, 1-3 CS).
+- every spark: LogTriggerTooth, assertPinAssigned (40 B),
+  scaled_channel<short,50,1> float ctor (32 B, getDwell input),
+  scheduleTimerCallback (knock insert).
+- every close: OutputPin::isInitialized (16 B), RpmCalculator::isCranking
+  + thunk (48 B).
+- every pin write: isBrainPinValid (14 B), addEngineSnifferOutputPinEvent
+  (60 B, inner sniffer-off bail).
+- every dispatch entry: newlib memset (due[] init).
+- every fire: action_s trampoline instantiations (4 B flash veneers).
+Not taken: warning/firmwareError (print paths). Kernel CS functions are a
+SEPARATE git repo (the ChibiOS fork) and the bootloader linker has no
+.fast_text - needs gating or a fork commit. Planned move list of 11 edits
+recorded in the doc.
