@@ -1,0 +1,2 @@
+custom LadaCanbusProfile 1 bits, U08, @OFFSET@, [0:1], "Disabled", "Largus", "Niva / Granta", "INVALID"
+LadaCanbusProfile ladaCanbusProfile;Select the vehicle CAN profile on CAN1. Largus: I835LB52/I865LB52. Niva / Granta: I812NA01/I812TA01/I832GA01. Diagnostics remain available in every profile.

@@ -681,10 +681,10 @@
          1.19
          1.12
          1.1
-         1.06
-         1.06
-         1.03
-         1.01
+         1.0
+         1.0
+         1.0
+         1.0
          1.0
          1.0
          1.0
@@ -1130,7 +1130,7 @@
         <constant digits="0" name="fan2MinPwm" units="%">5</constant>
         <constant digits="0" name="fan2OffTemperature" units="C">96</constant>
         <constant digits="0" name="fan2OnTemperature" units="C">98</constant>
-        <constant name="fan2Pin">"FAN 2 relay"</constant>
+        <constant name="fan2Pin">"FAN 1 relay"</constant>
         <constant name="fan2PinMode">"default"</constant>
         <constant name="fan2PwmEnabled">"no"</constant>
         <constant digits="0" name="fan2PwmFrequency" units="Hz">250</constant>
@@ -1155,9 +1155,9 @@
          110
          115
 </constant>
-        <constant digits="0" name="fanOffTemperature" units="C">97</constant>
-        <constant digits="0" name="fanOnTemperature" units="C">99</constant>
-        <constant name="fanPin">"FAN 1 relay"</constant>
+        <constant digits="0" name="fanOffTemperature" units="C">100</constant>
+        <constant digits="0" name="fanOnTemperature" units="C">102</constant>
+        <constant name="fanPin">"FAN 2 relay"</constant>
         <constant name="fanPinMode">"default"</constant>
         <constant digits="2" name="finalGearRatio" units="ratio">1.0</constant>
         <constant digits="0" name="finalIgnitionCutPercentBeforeLaunch" units="%">0</constant>
@@ -1719,7 +1719,7 @@
         <constant name="i2c4_speed">"Standart mode 100K"</constant>
         <constant digits="1" name="iacByTpsDecayTime" units="seconds">0.0</constant>
         <constant digits="1" name="iacByTpsHoldTime" units="seconds">0.0</constant>
-        <constant digits="0" name="iacByTpsTaper" units="percent">1</constant>
+        <constant digits="0" name="iacByTpsTaper" units="percent">0</constant>
         <constant cols="1" digits="1" name="iacCoasting" rows="16" units="%">
          6.0
          5.0
@@ -2886,9 +2886,10 @@
         <constant name="luaOutputPins8">"NONE"</constant>
         <constant name="m74_9ImmoEnabled">"no"</constant>
         <constant name="m74_9ImmoOff">"yes"</constant>
+        <constant name="ladaCanbusProfile">"Largus"</constant>
         <constant name="m74_9LinAltEnabled">"Enabled"</constant>
         <constant digits="0" name="m74_9LinAltFeedbackSel" units="">2</constant>
-        <constant digits="0" name="m74_9LinAltMapOffKpa" units="">90</constant>
+        <constant digits="0" name="m74_9LinAltMapOffKpa" units="">98</constant>
         <constant digits="0" name="m74_9LinAltMapOffMaxSeconds" units="">60</constant>
         <constant digits="0" name="m74_9LinAltMaxRpm" units="">5000</constant>
         <constant digits="0" name="m74_9LinAltMinRpm" units="">300</constant>
@@ -3368,12 +3369,12 @@
          400
 </constant>
         <constant cols="14" digits="2" name="postCrankingFactor" rows="6" units="mult">
-         1.5 1.46 1.43 1.39 1.35 1.32 1.29 1.25 0.0 0.0 0.0 0.0 0.0 0.0
-         1.32 1.29 1.27 1.25 1.22 1.2 1.17 1.15 0.0 0.0 0.0 0.0 0.0 0.0
          1.2 1.18 1.16 1.14 1.12 1.1 1.09 1.08 0.0 0.0 0.0 0.0 0.0 0.0
-         1.12 1.1 1.09 1.08 1.06 1.05 1.04 1.04 0.0 0.0 0.0 0.0 0.0 0.0
-         1.06 1.05 1.04 1.04 1.03 1.02 1.02 1.01 0.0 0.0 0.0 0.0 0.0 0.0
-         1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0
+         1.2 1.18 1.16 1.14 1.12 1.1 1.09 1.08 0.0 0.0 0.0 0.0 0.0 0.0
+         1.2 1.18 1.16 1.14 1.12 1.1 1.09 1.08 0.0 0.0 0.0 0.0 0.0 0.0
+         1.0 1.0 1.0 1.0 1.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0
+         1.0 1.0 1.0 1.0 1.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0
+         1.0 1.0 1.0 1.0 1.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0
 </constant>
         <constant digits="1" name="ppsExpAverageAlpha" units="percent">0.4</constant>
         <constant digits="1" name="ppsSecondaryMaximum" units="%">0.0</constant>
@@ -5108,11 +5109,11 @@
          6250
 </constant>
         <constant cols="30" digits="1" name="veTable" rows="16" units="%">
-         49.6 42.6 44.2 45.9 58.5 60.2 61.8 63.5 65.1 66.7 67.9 69.0 69.9 67.3 69.0 71.8 76.3 80.2 81.5 74.3 73.5 72.6 71.6 70.7 69.8 68.9 68.1 62.6 61.8 61.6
-         51.8 45.0 46.2 47.9 60.6 59.1 60.8 62.4 64.2 66.3 68.2 69.4 70.8 68.3 69.5 72.6 75.7 78.6 83.5 76.7 76.8 74.9 69.2 68.3 72.9 66.7 65.9 70.5 64.5 64.5
-         53.0 46.6 47.8 46.9 58.9 60.6 62.3 64.1 67.7 69.3 68.2 71.8 71.2 71.2 71.5 74.1 74.5 80.1 74.7 73.9 73.0 72.2 71.3 70.5 69.6 68.7 67.9 71.7 66.4 66.0
-         54.1 42.4 43.3 48.8 60.6 63.6 65.8 65.5 69.3 68.7 70.0 73.6 73.7 73.9 76.3 77.6 76.5 77.0 76.7 75.9 75.0 74.1 73.2 72.4 71.5 70.6 69.7 68.9 68.2 67.5
-         55.7 46.3 47.5 51.3 61.9 63.8 67.5 67.3 69.1 70.6 74.5 75.6 78.5 77.6 80.0 80.9 83.2 84.1 78.9 78.1 82.3 76.2 75.3 74.4 73.5 72.6 71.7 70.8 70.1 69.6
+         49.6 46.6 48.2 49.9 58.5 60.2 61.8 63.5 65.1 66.7 67.9 69.0 69.9 67.3 69.0 71.8 76.3 80.2 81.5 74.3 73.5 72.6 71.6 70.7 69.8 68.9 68.1 62.6 61.8 61.6
+         51.8 49.0 50.2 51.9 60.6 59.1 60.8 62.4 64.2 66.3 68.2 69.4 70.8 68.3 69.5 72.6 75.7 78.6 83.5 76.7 76.8 74.9 69.2 68.3 72.9 66.7 65.9 70.5 64.5 64.5
+         53.0 50.6 51.8 50.9 58.9 60.6 62.3 64.1 67.7 69.3 68.2 71.8 71.2 71.2 71.5 74.1 74.5 80.1 74.7 73.9 73.0 72.2 71.3 70.5 69.6 68.7 67.9 71.7 66.4 66.0
+         54.1 46.4 47.3 52.8 60.6 63.6 65.8 65.5 69.3 68.7 70.0 73.6 73.7 73.9 76.3 77.6 76.5 77.0 76.7 75.9 75.0 74.1 73.2 72.4 71.5 70.6 69.7 68.9 68.2 67.5
+         55.7 50.3 51.5 55.3 61.9 63.8 67.5 67.3 69.1 70.6 74.5 75.6 78.5 77.6 80.0 80.9 83.2 84.1 78.9 78.1 82.3 76.2 75.3 74.4 73.5 72.6 71.7 70.8 70.1 69.6
          54.9 56.0 59.1 60.2 63.7 65.5 67.4 71.4 73.1 74.7 76.3 77.7 78.1 81.6 83.7 85.3 81.1 86.3 86.8 80.4 79.5 78.5 77.6 76.6 75.7 74.7 73.8 72.9 72.2 71.7
          56.3 58.6 60.6 61.9 65.7 67.4 71.4 73.4 75.2 76.9 76.1 79.8 83.8 83.9 91.6 82.3 88.3 88.8 83.6 82.8 81.8 85.4 79.9 78.9 77.9 76.9 76.0 75.0 74.3 73.8
          59.8 60.3 61.5 63.6 69.8 72.1 74.0 75.9 78.3 80.4 82.4 83.3 87.9 87.1 89.1 90.5 85.9 86.4 86.0 85.2 84.2 83.2 82.1 81.1 80.1 79.1 78.1 77.2 81.6 75.9
@@ -5332,8 +5333,8 @@
 </constant>
         <constant name="yesUnderstandLocking">"no"</constant>
     </page>
-    <versionInfo firmwareInfo="20260929" nPages="1" signature="rusEFI maccan-tx-fix.2026.09.29.m74_9.4273509233" version="5.0"/>
-    <bibliography author="rusEFI 20260929" writeDate="date"/>
+    <versionInfo firmwareInfo="20261008" nPages="1" signature="rusEFI maccan-tx-fix.2026.10.08.m74_9.3796215110" version="5.0"/>
+    <bibliography author="rusEFI 20261008" writeDate="date"/>
     <settings/>
     <userComments/>
 </msq>

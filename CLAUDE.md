@@ -255,6 +255,7 @@ For detailed technical documentation intended for AI assistants, see:
 - `firmware/integration/rusefi_config.txt` defines the parameters stored in persistent configuration (both "configuration", ie which pins do what, and the "calibration" or "tune", like the VE table, timing, etc.). This is the primary input that describes the main `engine_configuration_s` struct and the top-level persistent config layout.
 - `firmware/integration/config_page_*.txt` files define additional TunerStudio memory pages, each containing its own struct (e.g. `page2_s`, `page3_s`, `page4_s`). These pages hold data that lives outside the main configuration image — for example, high-speed scatter offsets (`page2_s` / TS page 2), long-term fuel trim tables (`page3_s` / TS page 3), and secondary VE tables with blend controls (`page4_s` / TS page 4). The struct and file numbers match the TunerStudio page numbers.
 - A board can append extra fields to `engine_configuration_s` by providing `board_engine_configuration.txt` in its board directory (picked up by `gen_config_common.sh`); e.g. the `can3BaudRate`/`can3RxPin`/`can3TxPin` fields exist only on boards that declare them there, guarded in shared C++ by `#if (EFI_CAN_BUS_COUNT >= 3)` with the count itself raised via the board's `prepend.txt`. Note: adding/renaming these board `.txt` inputs may not trigger config regeneration on the next `make` - `touch firmware/integration/rusefi_config.txt` to force it.
+- **`board_config.txt` fields land in `persistent_config_s`, NOT `engine_configuration_s`** (verified in the generated structures: e.g. hellen's `boardUseTempPullUp` and m74_9's `ladaCanbusProfile` sit after `persistent_config_s`'s `engineConfiguration` member + TMF tables, at global offsets past the `sizeof(engine_configuration_s) == 4284` static_assert). Access them via `config->` (the `persistent_config_s*` from `engine_configuration.h`), while `board_engine_configuration.txt` fields are `engineConfiguration->`. The fw-m74.9 fork's generator appends both into `engine_configuration_s` - do NOT copy its accessor style. A board-only enum type for a `custom TYPE` declaration goes in the board's own `board_types.h` (shadows the `controllers/algo/board_types.h` placeholder because `$(BOARDINC)` precedes `$(ALLINC)` in `INCDIR`).
 - Both `rusefi_config.txt` and the `config_page_*.txt` files are processed by the Java tool at `java_tools/configuration_definition` to generate several outputs. It is critical that these match, so that each part of the system can communicate and agree about the in-memory config format.
   - C/C++ headers in `firmware/controllers/generated/` — the main config produces `engine_configuration_generated_structures.h`, while each config page produces a corresponding `page_N_generated.h`.
   - Along with `firmware/tunerstudio/tunerstudio.template.ini`, generates the ini file used by TunerStudio to communicate with the ECU. All tuner-adjustable parameters **MUST** appear in these input files to be useful.
@@ -879,6 +880,31 @@ Every "MFS: Writing storage ID 1/2 (17544 bytes)" in the 10:04/10:52 logs is a f
 - Board gate: `m74_9IgnitionGatePeriodic()` in the 20 Hz slow callback (SysTick ISR - flags/GPIO only): on `isIgnVoltage()` change it flips PB13 (TLE9201 bridge enable) and calls `l9779_setPowerStage()`. Key-on-at-boot costs one extra PSOFF write + ~100 ms (KEY cache latency) before the stages arm. Dash CAN (`m74_9_can.cpp sendPeriodic`) returns immediately when `!isIgnVoltage()` - stock = total ECU CAN silence at ign-off, the BCM drops the main relay on the 0x0189 heartbeat timeout; the console ISO-TP path is unaffected.
 
 - **Decision (user, 2026-08-24): NO on-the-fly VRS re-config / ramp re-jerking while running.** The L9779 must run without resets (hardware/power fix owns the reset root cause); firmware must NOT compensate with runtime VRS rewrites. The only firmware-side WDA hardening is the executor feed above.
+
+## m74_9 / vehicle CAN architecture (2026-10-08: dash TX moved to m74_9_vehicle_can.cpp, profiles added)
+
+The dash/vehicle stream was ported from the fw-m74.9 board repo and merged
+with the car-derived encodings below. NEW LAYOUT: `m74_9_vehicle_can.{h,cpp}`
+owns the dash TX (driven once per 5 ms CAN worker tick via
+`custom_board_update_dash = updateM749VehicleCan`, which applies the
+ignition gate and the serial-session 1/4-rate throttle) and the vehicle
+speed RX (`M749VehicleSpeedSensor`: 0x29A Largus with alive counter +
+ones-complement checksum / 0x28C Niva/Granta -> SensorType::VehicleSpeed
+-> 0x217[3:4] 12-bit 0.1 km/h indicated speed). The profile selector is
+`config->ladaCanbusProfile` (custom U08 enum in `board_config.txt`, enum
+class in the board's `board_types.h`, TS dialog in `board_options.ini`;
+field lives in `persistent_config_s` -> access via `config->`, NOT
+`engineConfiguration->`). Largus live fields ported from fw-m74.9:
+0x5DA[0] = CLT+40 (was CLT x2 - CONFLICT, the port takes CLT+40, flip one
+line to revert), 0x65C[0] bits 7:1 = (IAT+40)<<1, 0x5DA[1] = idleTarget/8
+(was Vbatt x10), 0x5DA[4] = rpmHardLimit/32, 0x1F6[2] state bits, frame
+suppression on invalid CLT/IAT. KEPT from the old stream (fw-m74.9 lacks
+these): 0x186[0:1] fuel flow mL/h x16 (the dash BC hourly-consumption
+source; fw puts rpm x8 there - dropped), live rpm x16 + tach byte +
+throttle-X + Vbatt + rolling counter + advance + angle accumulator +
+hour-meter, ignition gating, IMMO. Niva/Granta profile is fw verbatim.
+The encodings below (derived from the stock captures) remain the
+reference for the merged fields.
 
 ## m74_9 / stock-ECU CAN frame encodings for the dash (reverse-engineered from orig_1/2/3.trc, 2026-08-25)
 

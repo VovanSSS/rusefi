@@ -6,6 +6,7 @@
 #include "drivers/gpio/l9779.h"
 #include "drivers/gpio/tle9201.h"
 #include "m74_9_can.h"
+#include "m74_9_vehicle_can.h"
 #include "m74_9_tooth_diag.h"
 #include "m74_9_vr_model.h"
 #include "m74_9_lin.h"
@@ -190,6 +191,10 @@ static void m74_9_boardDefaultConfiguration() {
 	 * only - the stored tune keeps its own value. */
 	engineConfiguration->enableSoftwareKnock = true;
 
+	/* Vehicle CAN profile: this board's dash contract is the Largus family
+	 * (I835LB52/I865LB52). The stored tune may carry its own selection. */
+	config->ladaCanbusProfile = LadaCanbusProfile::Largus;
+
 	/* 21129-family engines: 82 mm bore, resonant knock sensors peak at ~7 kHz.
 	 * Explicit frequency (Hz) with the single harmonic - the sensors have no
 	 * usable output at the second harmonic, so do not use the double-frequency
@@ -260,6 +265,15 @@ static void m74_9_boardConfigOverrides() {
 	 * 2.8..0.85 + crankingCycleBaseFuel 6x8) - the old forced default curve
 	 * here was silently reverting the tune on every boot, which is also why
 	 * the console kept re-restoring crankingFuelCoef on every tune load. */
+
+	/* Dash CAN profile migration: stored tunes predate the ladaCanbusProfile
+	 * field (added with the fw-m74.9 profile port), so it reads Disabled (0)
+	 * there. This board's dash contract is the Largus family - force Largus
+	 * until the tune carries the field explicitly. To allow a permanent
+	 * Disabled, edit the condition (or set the field in TS once and burn). */
+	if (config->ladaCanbusProfile == LadaCanbusProfile::Disabled) {
+		config->ladaCanbusProfile = LadaCanbusProfile::Largus;
+	}
 
 	/* IMMO is force-disabled (physical bypass answers the BCM): the ECU-side
 	 * challenge-response algorithm is not implemented, so the 0x0713/0x0714
@@ -884,6 +898,14 @@ void setup_custom_board_overrides() {
 	custom_board_InitHardware = m74_9_boardInitHardware;
 	custom_board_DefaultConfiguration = m74_9_boardDefaultConfiguration;
 	custom_board_ConfigOverrides = m74_9_boardConfigOverrides;
+#if EFI_CAN_SUPPORT
+	// Vehicle CAN: speed receive + dash transmit. The transmitter runs on the
+	// shared 5 ms CAN worker (updateDash), the speed sensor is re-evaluated on
+	// start/stop hardware (live config apply releases the fallback slot).
+	custom_board_update_dash = updateM749VehicleCan;
+	custom_board_StartHardware = startM749VehicleCan;
+	custom_board_StopHardware = stopM749VehicleCan;
+#endif // EFI_CAN_SUPPORT
 	// The first trigger sync point has no tooth count to validate against, and
 	// on this engine a stretched tooth pair (gap0 1.7-2.0 vs the real 3.9 gap)
 	// false-syncs the decoder mid-crank - firing from it backfires through the

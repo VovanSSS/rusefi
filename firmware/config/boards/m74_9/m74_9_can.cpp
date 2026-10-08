@@ -8,24 +8,21 @@
  * BCM -> ECU (receive):
  *   0x0350 (100 ms) - BCM state machine; byte 4 encodes IGN/crank/relay/running state
  *   0x0303 (100 ms) - BCM relay status; byte 5 bit 1 = starter relay active
+ *   0x0714           - IMMO challenge (see the IMMO section below)
  *
- * ECU -> BCM (transmit, emulating the original ECU):
- *   0x01F6 (10 ms)  - ECU engine state
- *   0x0189 (10 ms)  - RPM primary
- *   0x0186 (10 ms)  - RPM aux
- *   0x018A (10 ms)  - RPM aux2
- *   0x0217 (10 ms)  - ECU status
- *   0x02A9 (10 ms)  - Heartbeat
- *   0x02C6 (20 ms)  - Static frame
- *   Burst  (100 ms) - ECU identification / status (11 frames)
+ * ECU -> BCM (transmit):
+ *   0x0713           - IMMO trigger / response
+ *
+ * The dash/vehicle stream (0x01F6/0x0189/0x0186/0x018A/0x0217/0x02A9/0x02C6,
+ * the 100 ms burst group and the 1 s keepalive, both LadaCanbusProfile
+ * layouts) moved to m74_9_vehicle_can.cpp, driven by the
+ * custom_board_update_dash hook. This file keeps the BCM RX, the IMMO
+ * handshake and the ignition gating around the IMMO tick.
  *
  * Timing
  * ------
- * request() is called every 5 ms by CanWrite::PeriodicTask(). m_counter is
- * incremented once per call and used as:
- *   m_counter % 2  == 0  ->  10 ms group
- *   m_counter % 4  == 0  ->  20 ms group
- *   m_counter % 20 == 0  -> 100 ms burst group
+ * request() is called every 5 ms by CanWrite::PeriodicTask() and drives the
+ * IMMO state machine (1 tick = 5 ms).
  *
  * @date    2026-08-12
  */
@@ -35,6 +32,7 @@
 #if EFI_CAN_SUPPORT
 
 #include "m74_9_can.h"
+#include "m74_9_vehicle_can.h"
 #include "can_listener.h"
 #include "can_msg_tx.h"
 #include "ignition_controller.h"
@@ -79,215 +77,6 @@ static constexpr uint32_t IMMO_TRIGGER_DELAY_MS = 1000u;
 static constexpr uint32_t IMMO_CHALLENGE_WINDOW_MS = 5u;
 // How long after receiving a challenge before sending the response
 static constexpr uint32_t IMMO_RESPONSE_DELAY_MS = 15u;
-
-// ---------------------------------------------------------------------------
-// Frame IDs - ECU -> BCM (transmit)
-// ---------------------------------------------------------------------------
-static constexpr uint32_t ECU_ENGINE_STATE_ID = 0x01F6;
-static constexpr uint32_t ECU_RPM_PRIMARY_ID  = 0x0189;
-static constexpr uint32_t ECU_RPM_AUX_ID      = 0x0186;
-static constexpr uint32_t ECU_RPM_AUX2_ID     = 0x018A;
-static constexpr uint32_t ECU_STATUS_ID        = 0x0217;
-static constexpr uint32_t ECU_HEARTBEAT_ID     = 0x02A9;
-static constexpr uint32_t ECU_STATIC_ID        = 0x02C6;
-
-// Periodic keepalive (1000 ms)
-static constexpr uint32_t ECU_KEEPALIVE_ID  = 0x05E2;
-
-// Burst group (100 ms)
-static constexpr uint32_t BURST_ID_05DA = 0x05DA;
-static constexpr uint32_t BURST_ID_036E = 0x036E;
-static constexpr uint32_t BURST_ID_03A5 = 0x03A5;
-static constexpr uint32_t BURST_ID_0511 = 0x0511;
-static constexpr uint32_t BURST_ID_06FD = 0x06FD;
-static constexpr uint32_t BURST_ID_0648 = 0x0648;
-static constexpr uint32_t BURST_ID_041A = 0x041A;
-static constexpr uint32_t BURST_ID_066A = 0x066A;
-static constexpr uint32_t BURST_ID_0522 = 0x0522;
-static constexpr uint32_t BURST_ID_065C = 0x065C;
-static constexpr uint32_t BURST_ID_041D = 0x041D;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Encode RPM as RPM*16 big-endian uint16_t (per BCM protocol).
- * High byte -> [0], low byte -> [1].
- *
- * When RPM is zero (engine not rotating) the original ECU still broadcasts
- * ~0x3200 (800 RPM * 16) in the bytes of 0x0189/0x0186/0x018A that carry
- * this value.  BCM treats the non-zero baseline as "ECU calibration loaded
- * and ready"; a zero value triggers BCM error state CF and prevents the
- * starter relay from physically closing.  Use the original idle-target
- * baseline (0x3200) whenever the engine is not yet spinning.
- */
-static inline uint16_t encodeRpmOrBaseline(float rpm) {
-    if (rpm < 1.0f) {
-        // 800 * 16 = 0x3200 — matches original firmware idle-target baseline
-        return 0x3200u;
-    }
-    return (uint16_t)(rpm * 16.0f);
-}
-
-/**
- * Instantaneous fuel flow for the dash BC (бортовой компьютер), 16x mL/h
- * (i.e. 0.0625 mL/h per unit).
- *
- * 2026-08-29 captures: 0x04B0..0x09D4 while cranking -> /16 = 75..157 mL/h
- * (realistic cranking flows), ~0x3A4C at warm idle -> /16 = 933 mL/h, 0 during
- * DFCO. The field is fuel FLOW, not rpm and not pulse width (both would not
- * zero out in DFCO while rpm rises).
- */
-static inline uint16_t encodeFuelFlowMlPerHour() {
-#ifdef MODULE_ODOMETER
-	float gPerSecond = engine->module<TripOdometer>()->getConsumptionGramPerSecond();
-#else
-	float gPerSecond = 0;
-#endif // MODULE_ODOMETER
-
-	// Fuel cut: zero flow. The original ECU does exactly this - the flow
-	// field drops to 0x0000 during DFCO even while rpm is still climbing.
-	if (engine->module<DfcoController>()->cutFuel()) {
-		gPerSecond = 0;
-	}
-
-	// The trip-odometer rate is per-injection-event and spiky; the 10 ms CAN
-	// sampling would otherwise freeze one event's instantaneous rate between
-	// cycles and feed the dash garbage. EMA-smooth it towards a steady value
-	// (~200 ms time constant at the 10 ms send rate).
-	static float smoothedGps = 0;
-	smoothedGps += 0.05f * (gPerSecond - smoothedGps);
-
-	// g/s -> mL/h: *3600 (s->h), /0.745 g/mL (gasoline density), *16 (stock
-	// field scale: mL/h in 1/16 units).
-	float mlPerHour = smoothedGps * 3600.0f / 0.745f * 16.0f;
-	return (uint16_t)clampF(0.0f, mlPerHour, 65535.0f);
-}
-
-/**
- * Dash tach byte - 0x0186 byte 4. Stock fit (orig_1/2/3): tach = rpm - 768
- * EXACTLY (slope 1.0 across every captured point, 702-912 rpm): 775 -> 0x07,
- * 800 -> 0x20, 889 -> 0x79; 0x20 at rest (800 rpm baseline).
- *
- * The dash needle itself follows the 16-bit rpm fields (0x0189[0:1] =
- * rpm*16); byte 4 is a PLAUSIBILITY CROSS-CHECK: the cluster compares it
- * against its own rpm estimate and ignores/holds the needle when it
- * diverges. Evidence (on the car): the old clamp(rpm-768) firmware read
- * correctly at idle but showed ~700-800 at a real 2500 (byte saturated at
- * 255 vs the stock's wrapped 196); the rpm/16-18 default showed ~100-200
- * at idle (byte 35 vs the stock's 82). Sending the stock formula for the
- * whole range keeps the check passing and the needle live.
- *
- * Mode 4 = the stock formula with u8 wrap-around ((uint8_t)(int32_t)
- * (rpm - 768)) - at 2500 rpm it wraps to 196, matching what a C-compiled
- * stock ECU computes. Modes 0-3 are the old on-car A/B candidates, kept
- * behind 'cantach' until mode 4 is validated on the road.
- */
-static int s_tachEncoding = 4;
-
-static const char* tachEncodingDescription(int mode) {
-	switch (mode) {
-		case 1: return "rpm - 768 clamped (caps at 1023, old)";
-		case 2: return "rpm/8 - 68 (caps at 2584)";
-		case 3: return "rpm/32 + 7 (covers ~7900)";
-		case 4: return "rpm - 768, u8 wrap (stock formula)";
-		default: return "rpm/16 - 18 (capture fit, caps at ~4368)";
-	}
-}
-
-static uint8_t encodeTachByte(float rpm) {
-	if (rpm < 1.0f) {
-		// rest baseline - all modes agree at the 800 rpm point (0x20 = 32)
-		return 0x20;
-	}
-
-	switch (s_tachEncoding) {
-		case 1: return (uint8_t)clampF(0.0f, rpm - 768.0f, 255.0f);
-		case 2: return (uint8_t)clampF(0.0f, rpm / 8.0f - 68.0f, 255.0f);
-		case 3: return (uint8_t)clampF(0.0f, rpm / 32.0f + 7.0f, 255.0f);
-		case 4: return (uint8_t)(int32_t)(rpm - 768.0f); // u8 wrap, stock formula
-		default: return (uint8_t)clampF(0.0f, rpm / 16.0f - 18.0f, 255.0f);
-	}
-}
-
-static void setTachEncoding(const char* arg) {
-	if (arg == nullptr || arg[0] == 0) {
-		efiPrintf("cantach: current=%d (%s). 0=rpm/16-18 1=rpm-768clamp 2=rpm/8-68 3=rpm/32+7 4=rpm-768wrap",
-			s_tachEncoding, tachEncodingDescription(s_tachEncoding));
-		return;
-	}
-
-	int mode = atoi(arg);
-	if (mode < 0 || mode > 4) {
-		efiPrintf("cantach: bad mode %d (0..4)", mode);
-		return;
-	}
-
-	s_tachEncoding = mode;
-	efiPrintf("cantach: mode=%d (%s)", mode, tachEncodingDescription(mode));
-}
-
-/**
- * Battery voltage, little-endian millivolts - 0x0189 bytes 2-3.
- * orig traces: 0x3220 LE = 12832 mV = 12.83 V at rest, 0x38CD..0x3CE9 LE
- * (14.5..15.6 V) while the alternator/bench supply charges.
- */
-static inline uint16_t encodeBatteryMillivoltsLE() {
-    float volts = Sensor::getOrZero(SensorType::BatteryVoltage);
-    return (uint16_t)clampF(0.0f, volts * 1000.0f, 65535.0f);
-}
-
-/**
- * Coolant temperature for the dash - 0x05DA byte 0, in 0.5 degC units
- * (CLT * 2). Confirmed across all captures: orig_1 0x40->0x41 = 32->32.5 C,
- * orig_3 0x43->0x44 = 33.5->34 C, 2026-08-29 19:14 0x5C->0x61 = 46->48.5 C,
- * 19:27 0x75->0x79 = 58.5->60.5 C (the car sat 13 min between sessions,
- * so the second session starts warmer - exactly the observed offset).
- * The old 0x066A[3:4] = CLT interpretation was wrong: those bytes are a
- * 100 ms fuel-gated counter (see encodeEngineTimeCounter), not a gauge value.
- */
-static inline uint8_t encodeCltHalfDegC() {
-    float clt = Sensor::getOrZero(SensorType::Clt);
-    return (uint8_t)clampF(0.0f, clt * 2.0f, 255.0f);
-}
-
-/**
- * Battery voltage in 0.1 V units - 0x05DA byte 1.
- * orig_1: 0x9D = 15.7 V right after start (charging), 0x90 = 14.4 V settled;
- * 19:14/19:27: 0x89 = 13.7 V at IGN, sagging to 0x70 = 11.2 V while cranking.
- */
-static inline uint8_t encodeBatteryTenthsVolt() {
-    float volts = Sensor::getOrZero(SensorType::BatteryVoltage);
-    return (uint8_t)clampF(0.0f, volts * 10.0f, 255.0f);
-}
-
-/**
- * Throttle-position byte X - 0x0186 byte 5 (also mirrored by the original
- * ECU's BC machinery). 0.1 % units: 0x09..0x0E (0.9..1.4 %) at warm idle,
- * 0x4C (7.6 %) during a rev blip, 0 when the throttle is closed (also during
- * the catch - the stock holds it shut). Cold-start captures (orig_1/3, CLT
- * ~32 C) show X = 0 even at 900 rpm - the idle controller keeps the blade
- * closed until warm. The dash uses X as its "fuel is flowing" gate: its own
- * consumption integrators (0x029A/0x029C) only run while X > 0.
- */
-static inline uint8_t encodeThrottleXByte() {
-    float tps = Sensor::getOrZero(SensorType::Tps1);
-    return (uint8_t)clampF(0.0f, tps * 10.0f, 255.0f);
-}
-
-/**
- * Ignition-advance byte - 0x018A byte 4: 256 - 2*advance while running.
- * orig_1 trace: 0xFA (250 -> 3 deg) at the catch, decaying to 0xE2 (226 ->
- * 15 deg) at warm idle, retarding back to ~0xF2 (242 -> 7 deg) during the DFCO
- * blip, 0x02 cranking and 0x00 at IGN-on.  That is exactly the stock warm-up
- * advance curve (7 deg at catch -> 15 deg warm idle) with the DFCO retard.
- */
-static inline uint8_t encodeIgnitionAdvanceByte(float timingAdvanceDeg) {
-    // 256 - 2*advance; clamp so the byte stays in [0x02, 0xFE]
-    float encoded = 256.0f - 2.0f * timingAdvanceDeg;
-    return (uint8_t)clampF(2.0f, encoded, 254.0f);
-}
 
 // ---------------------------------------------------------------------------
 // IMMO response computation
@@ -394,10 +183,15 @@ public:
             || ((id == IMMO_BCM_ID) && !config->m74_9ImmoOff);
     }
 
-    // Called every 5 ms by CanWrite::PeriodicTask()
+    // Called every 5 ms by CanWrite::PeriodicTask(). Only the IMMO state
+    // machine lives here; the dash/vehicle stream moved to
+    // m74_9_vehicle_can.cpp (custom_board_update_dash hook). The ignition
+    // gate mirrors the old sendPeriodic() behavior: no IMMO processing while
+    // the key is off (the BCM sends nothing then anyway).
     CanListener* request() override {
-        sendPeriodic();
-        m_counter++;
+        if (isIgnVoltage()) {
+            tickImmo();
+        }
         return getNext();
     }
 
@@ -486,7 +280,7 @@ private:
     }
 
     /**
-     * Periodic IMMO state-machine tick, called from sendPeriodic().
+     * Periodic IMMO state-machine tick, called from request().
      * Manages delays and sends 0x0713 trigger/response at the right time.
      */
     void tickImmo() {
@@ -590,418 +384,6 @@ private:
     }
 
     // -----------------------------------------------------------------------
-    // Transmit helpers - one method per CAN frame
-    // -----------------------------------------------------------------------
-
-    /**
-     * 0x01F6 - ECU engine state (10 ms, 8 bytes)
-     *   byte 0: 0x00
-     *   byte 1: 0x00 (IGN on) / 0x20 (running)
-     *   byte 2: 0x02 (ECU active, always) | 0x40 (cranking) | 0x80 (running)
-     *   byte 3: 0x2D (fixed battery-derived constant)
-     *   bytes 4-7: 0x00
-     */
-    void send0x01F6(bool isRunning, bool isCranking) {
-        CanTxMessage msg(CanCategory::NBC, ECU_ENGINE_STATE_ID, 8, DEFAULT_BUS_INDEX);
-        msg[0] = 0x00;
-        msg[1] = isRunning ? 0x20 : 0x00;
-        msg[2] = 0x02
-               | (isCranking ? 0x40 : 0x00)
-               | (isRunning  ? 0x80 : 0x00);
-        msg[3] = 0x1A;  // stock constant while running (was 0x2D in old rusEFI)
-        msg[4] = 0x00;
-        msg[5] = 0x00;
-        msg[6] = 0x00;
-        msg[7] = 0x00;
-    }
-
-    /**
-     * 0x0189 - RPM primary (10 ms, 8 bytes)
-     *   bytes 0-1: RPM*16 big-endian (or 0x3200 baseline when engine stopped)
-     *   bytes 2-3: battery voltage, little-endian millivolts (live)
-     *   byte 4:   0x00 (no RPM) / rolling 0x10-step counter (running) -
-     *             the original advances it ~5 steps/s in 0x10 increments
-     *   byte 5:   0xB9 at IGN-only, 0xBA while running (2026-08-29 captures)
-     *   bytes 6-7: 0x00
-     *
-     * NOTE: bytes 0-1 must not be 0x0000 even when stopped — BCM uses the
-     * non-zero baseline (0x3200) as "ECU calibration loaded" confirmation.
-     * Sending 0x0000 causes BCM error state CF and blocks the starter relay.
-     */
-    void send0x0189(uint16_t rpmEncoded, bool isRunning) {
-        CanTxMessage msg(CanCategory::NBC, ECU_RPM_PRIMARY_ID, 8, DEFAULT_BUS_INDEX);
-        msg[0] = (uint8_t)(rpmEncoded >> 8);
-        msg[1] = (uint8_t)(rpmEncoded & 0xFF);
-        // battery voltage, little-endian millivolts (orig: 0x3220 = 12.83 V
-        // at rest, 0x3CE9 = 15.59 V while charging)
-        uint16_t vbattMv = encodeBatteryMillivoltsLE();
-        msg[2] = (uint8_t)(vbattMv & 0xFF);
-        msg[3] = (uint8_t)(vbattMv >> 8);
-        // byte 4: rolling counter while running (the cluster treats a frozen
-        // value as stale), 0x00 at rest. The stock steps it by 0x10.
-        msg[4] = isRunning ? m_dashCounter : 0x00;
-        m_dashCounter += 0x10;
-        if (m_dashCounter == 0) {
-            m_dashCounter = 0x10;
-        }
-        // byte 5: 0xB9 at IGN-only, 0xBA while running (2026-08-29 captures)
-        msg[5] = isRunning ? 0xBA : 0xB9;
-        msg[6] = 0x00;
-        msg[7] = 0x00;
-    }
-
-    	/**
-    	 * 0x0186 - RPM aux / fuel flow (10 ms, 7 bytes)
-    	 *   bytes 0-1: instantaneous fuel flow, 16x mL/h big-endian (0 when
-    	 *             stopped or in DFCO; ~0x3A4C = 933 mL/h at warm idle with
-    	 *             the alternator loaded)
-    	 *   bytes 2-3: RPM*16 big-endian (or 0x3200 baseline when stopped)
-    	 *   byte 4:   rpm - 768 (u8 wrap) - exact fit vs the stock captures
-    	 *             (775 -> 0x07, 800 -> 0x20, 889 -> 0x79)
-    	 *   byte 5:   throttle position x10 (0.9..1.4 at idle, 0 when closed
-    	 *             or during DFCO) - the stock's "fuel flowing" signal the
-    	 *             dash gates its consumption integrators on
-    	 *   byte 6:   0x20
-    	 *
-    	 * NOTE: bytes 2-3 carry the same RPM baseline as 0x0189[0:1].
-    	 */
-    	void send0x0186(uint16_t rpmEncoded, float rpm, bool isRunning, uint8_t throttleX) {
-    		CanTxMessage msg(CanCategory::NBC, ECU_RPM_AUX_ID, 7, DEFAULT_BUS_INDEX);
-    		uint16_t fuelFlowMlPerHour = encodeFuelFlowMlPerHour();
-    		msg[0] = (uint8_t)(fuelFlowMlPerHour >> 8);
-    		msg[1] = (uint8_t)(fuelFlowMlPerHour & 0xFF);
-    		msg[2] = (uint8_t)(rpmEncoded >> 8);
-    		msg[3] = (uint8_t)(rpmEncoded & 0xFF);
-    		msg[4] = encodeTachByte(rpm);
-    		msg[5] = isRunning ? throttleX : 0x00;
-    		msg[6] = 0x20;
-    	}
-
-    /**
-     * 0x018A - RPM aux2 (10 ms, 6 bytes)
-     *   bytes 0-1: RPM*16 big-endian (or 0x3200 baseline when stopped)
-     *   bytes 2-3: crank-angle counter, big-endian 16-bit, 2 deg/unit
-     *             quantized to 128-deg (64-unit) steps - advances at
-     *             3 x rpm units/s while the throttle is open, frozen
-     *             otherwise (the stock freezes it at closed throttle/DFCO).
-     *             The dash mirrors this accumulator into its own 0x029C/
-     *             0x029A frames (its BC consumption integrator).
-     *   byte 4:   ignition advance: 256 - 2*advance while running, 0x02
-     *             cranking, 0x00 at IGN-on
-     *   byte 5:   0x00
-     *
-     * NOTE: byte 0 must be 0x32 even when stopped — same baseline rule as
-     * 0x0189/0x0186.  Original sends 0x32 0x00 = 0x3200 at rest.
-     */
-    void send0x018A(uint16_t rpmEncoded, bool isRunning, bool isCranking,
-                    float timingAdvanceDeg, uint16_t angleCounter) {
-        CanTxMessage msg(CanCategory::NBC, ECU_RPM_AUX2_ID, 6, DEFAULT_BUS_INDEX);
-        msg[0] = (uint8_t)(rpmEncoded >> 8);
-        msg[1] = (uint8_t)(rpmEncoded & 0xFF);
-        msg[2] = (uint8_t)(angleCounter >> 8);
-        msg[3] = (uint8_t)(angleCounter & 0xFF);
-        msg[4] = isRunning ? encodeIgnitionAdvanceByte(timingAdvanceDeg)
-                           : (isCranking ? 0x02 : 0x00);
-        msg[5] = 0x00;
-    }
-
-    /**
-     * 0x0217 - ECU status (10 ms, 8 bytes)
-     *   bytes 0-1: 0x00 0x00
-     *   byte 2:   0x00 (IGN on only) / 0x70 (cranking or running)
-     *   bytes 3-6: 0x00
-     *   byte 7:   0x88 (constant)
-     */
-    void send0x0217(bool isEngineActive) {
-        CanTxMessage msg(CanCategory::NBC, ECU_STATUS_ID, 8, DEFAULT_BUS_INDEX);
-        msg[0] = 0x00;
-        msg[1] = 0x00;
-        msg[2] = isEngineActive ? 0x70 : 0x00;
-        msg[3] = 0x00;
-        msg[4] = 0x00;
-        msg[5] = 0x00;
-        msg[6] = 0x00;
-        msg[7] = 0x88;
-    }
-
-    /**
-     * 0x02A9 - Heartbeat (10 ms, 1 byte): 0xF4
-     */
-    void send0x02A9() {
-        CanTxMessage msg(CanCategory::NBC, ECU_HEARTBEAT_ID, 1, DEFAULT_BUS_INDEX);
-        msg[0] = 0xF4;
-    }
-
-    /**
-     * 0x05E2 - ECU keepalive (1000 ms, 2 bytes): 0x00 0x00
-     * Present in original firmware at ~1 Hz; absent from rusEFI caused BCM
-     * to log an ECU communication fault on longer timescales.
-     */
-    void send0x05E2() {
-        CanTxMessage msg(CanCategory::NBC, ECU_KEEPALIVE_ID, 2, DEFAULT_BUS_INDEX);
-        msg[0] = 0x00;
-        msg[1] = 0x00;
-    }
-
-    /**
-     * 0x02C6 - Static frame (20 ms, 6 bytes): 0x00 0x00 0x00 0x40 0x00 0x00
-     */
-    void send0x02C6() {
-        CanTxMessage msg(CanCategory::NBC, ECU_STATIC_ID, 6, DEFAULT_BUS_INDEX);
-        msg[0] = 0x00;
-        msg[1] = 0x00;
-        msg[2] = 0x00;
-        msg[3] = 0x40;
-        msg[4] = 0x00;
-        msg[5] = 0x00;
-    }
-
-    /**
-     * Burst group (100 ms) - ECU identification and status frames.
-     * Emulates the original ECU's 100 ms broadcast to keep BCM happy.
-     */
-    void sendBurst(bool isRunning, float rpm, uint8_t throttleX) {
-        // 0x05DA - ECU identification / dash coolant temperature
-        // byte 0: CLT * 2 (0.5 degC units) - THE dash temp source
-        // byte 1: battery voltage * 10 (0.1 V units)
-        {
-            CanTxMessage msg(CanCategory::NBC, BURST_ID_05DA, 8, DEFAULT_BUS_INDEX);
-            msg[0] = encodeCltHalfDegC();
-            msg[1] = encodeBatteryTenthsVolt();
-            msg[2] = 0x00;
-            msg[3] = 0x00;
-            msg[4] = 0xB9;
-            msg[5] = 0xFF;
-            msg[6] = 0xFF;
-            msg[7] = 0x00;
-        }
-
-        // 0x036E - Static identification
-        {
-            CanTxMessage msg(CanCategory::NBC, BURST_ID_036E, 4, DEFAULT_BUS_INDEX);
-            msg[0] = 0x09;
-            msg[1] = 0x99;
-            msg[2] = 0x09;
-            msg[3] = 0x99;
-        }
-
-        // 0x03A5 - Static
-        {
-            CanTxMessage msg(CanCategory::NBC, BURST_ID_03A5, 3, DEFAULT_BUS_INDEX);
-            msg[0] = 0x00;
-            msg[1] = 0x00;
-            msg[2] = 0x00;
-        }
-
-        // 0x0511 - Static (7 bytes, all zeros)
-        {
-            CanTxMessage msg(CanCategory::NBC, BURST_ID_0511, 7, DEFAULT_BUS_INDEX);
-            msg[0] = 0x00;
-            msg[1] = 0x00;
-            msg[2] = 0x00;
-            msg[3] = 0x00;
-            msg[4] = 0x00;
-            msg[5] = 0x00;
-            msg[6] = 0x00;
-        }
-
-        // 0x06FD - ECU mode indicator
-        // byte 3: 0x20 (IGN on) / 0x00 (running)
-        {
-            CanTxMessage msg(CanCategory::NBC, BURST_ID_06FD, 4, DEFAULT_BUS_INDEX);
-            msg[0] = 0x00;
-            msg[1] = 0x00;
-            msg[2] = 0x99;
-            msg[3] = isRunning ? 0x00 : 0x20;
-        }
-
-        // 0x0648 - Static calibration marker
-        {
-            CanTxMessage msg(CanCategory::NBC, BURST_ID_0648, 8, DEFAULT_BUS_INDEX);
-            msg[0] = 0xC3;
-            msg[1] = 0xFF;
-            msg[2] = 0xF0;
-            msg[3] = 0x00;
-            msg[4] = 0x00;
-            msg[5] = 0x7F;
-            msg[6] = 0xFE;
-            msg[7] = 0x18;
-        }
-
-        // 0x041A - ECU init status
-        // IGN on: {0x00, 0x03, 0x00, ...}  running: all zeros
-        {
-            CanTxMessage msg(CanCategory::NBC, BURST_ID_041A, 8, DEFAULT_BUS_INDEX);
-            msg[0] = 0x00;
-            msg[1] = isRunning ? 0x00 : 0x03;
-            msg[2] = 0x00;
-            msg[3] = 0x00;
-            msg[4] = 0x00;
-            msg[5] = 0x00;
-            msg[6] = 0x00;
-            msg[7] = 0x00;
-        }
-
-        // 0x066A - ECU operating state + fuel-gated 100 ms counter
-        // bytes 3-4: engine-time counter - the stock advances it 1 per 100 ms
-        // while fuel is flowing (throttle open) at up to ~820 rpm and 2 per
-        // 100 ms above that; it pauses at closed throttle (DFCO). It keeps its
-        // value across key cycles (the stock's cumulative hour-meter).
-        // IGN on:  {0x08, 0xFF, 0x00, <ctr>, <ctr>, 0xC0, 0x00, 0x00}
-        // running: {0x00, 0xFF, 0x00, <ctr>, <ctr>, 0xC0, 0x00, 0x00}
-        {
-            if (throttleX > 0) {
-                m_engineTimeCounter += (rpm > 820.0f) ? 2 : 1;
-            }
-            CanTxMessage msg(CanCategory::NBC, BURST_ID_066A, 8, DEFAULT_BUS_INDEX);
-            msg[0] = isRunning ? 0x00 : 0x08;
-            msg[1] = 0xFF;
-            msg[2] = 0x00;
-            msg[3] = m_engineTimeCounter;
-            msg[4] = m_engineTimeCounter;
-            msg[5] = 0xC0;
-            msg[6] = 0x00;
-            msg[7] = 0x00;
-        }
-
-        // 0x0522 - Static (all zeros)
-        {
-            CanTxMessage msg(CanCategory::NBC, BURST_ID_0522, 8, DEFAULT_BUS_INDEX);
-            msg[0] = 0x00;
-            msg[1] = 0x00;
-            msg[2] = 0x00;
-            msg[3] = 0x00;
-            msg[4] = 0x00;
-            msg[5] = 0x00;
-            msg[6] = 0x00;
-            msg[7] = 0x00;
-        }
-
-        // 0x065C - Calibration checksum indicator
-        // IGN on: {0x7A, 0xFF, 0x00}  running: {0x78, 0xFF, 0x00}
-        {
-            CanTxMessage msg(CanCategory::NBC, BURST_ID_065C, 3, DEFAULT_BUS_INDEX);
-            msg[0] = isRunning ? 0x78 : 0x7A;
-            msg[1] = 0xFF;
-            msg[2] = 0x00;
-        }
-
-        // 0x041D - Static identification tail
-        {
-            CanTxMessage msg(CanCategory::NBC, BURST_ID_041D, 4, DEFAULT_BUS_INDEX);
-            msg[0] = 0x48;
-            msg[1] = 0xFE;
-            msg[2] = 0xFF;
-            msg[3] = 0x00;
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Periodic scheduler (called from request() every 5 ms)
-    // -----------------------------------------------------------------------
-
-    void sendPeriodic() {
-        // Stock behavior: with ignition off the ECU's CAN node is COMPLETELY
-        // silent (verified in ignoff.trc - zero ECU frames of any kind; the
-        // remaining traffic is dash/cluster chatter). The BCM drops the main
-        // relay when the 0x0189 heartbeat dies - if we keep streaming with
-        // the key off, the BCM treats the ECU as alive and the relay never
-        // drops. So the whole dash/IMMO/keepalive stream stops until ignition
-        // returns. The console ISO-TP path is a separate protocol (rx-driven)
-        // and is unaffected. isIgnVoltage() reads the L9779 KEY_ON cache
-        // (DIA_REG9), false for the first ~100 ms after boot - safe default.
-        if (!isIgnVoltage()) {
-            return;
-        }
-
-        // Snapshot engine state once per call. The dash rpm is the LIVE sensor
-        // value - exactly what the Java console shows, no holding/filtering:
-        // the console rpm has no dropouts, so any dash dropout is an encoding
-        // problem, not a sensor problem.
-        float rpm = Sensor::getOrZero(SensorType::Rpm);
-        bool isRunning      = (rpm > engineConfiguration->cranking.rpm);
-        bool isCranking     = (rpm > 0) && !isRunning;
-        bool isEngineActive = isRunning || isCranking;
-
-        // Use idle-target baseline (0x3200) when engine is not rotating.
-        // BCM checks this field as "ECU calibration loaded" confirmation;
-        // 0x0000 triggers BCM error state CF and blocks the starter relay.
-        uint16_t rpmEncoded = encodeRpmOrBaseline(rpm);
-
-        // Snapshot the current spark advance once per call (used by 0x018A[4])
-        float timingAdvanceDeg = engine->engineState.timingAdvance[0];
-
-        // Throttle byte X (0.1 % units) - the stock's "fuel is flowing" gate.
-        uint8_t throttleX = encodeThrottleXByte();
-
-        // Crank-angle accumulator (0x018A[2:3]): 2 deg/unit, i.e. 3 x rpm
-        // units/s, advanced only while the throttle is open (the stock freezes
-        // it at closed throttle / DFCO). Published quantized to 64 units
-        // (128 deg) per the stock's burst behaviour.
-        if (throttleX > 0) {
-            m_angleCounter2 += rpm * 0.03f; // rpm * 3 units/s over 10 ms
-            if (m_angleCounter2 >= 65536.0f) {
-                m_angleCounter2 -= 65536.0f;
-            }
-        }
-        uint16_t angleCounter = (uint16_t)(((uint32_t)m_angleCounter2 & 0xFFC0u) + 6u);
-
-        // IMMO state machine: tick every 5ms call. Kept outside the serial-session gate
-        // below so the one-shot trigger/response handshake still completes even while
-        // TS is connected (only 2 frames per ignition-on cycle, negligible traffic).
-        tickImmo();
-
-        		// While a serial (ISO-TP/TS) session is active:
-        		//   - engine off: mute the BCM emulation entirely. It sends ~660 frames/s,
-        		//     which contends with TS responses for CAN mailboxes (truncated
-        		//     multi-frame responses = "Got only N bytes" on the host) and floods
-        		//     the host's CAN reader during a tune write.
-        		//   - engine running: the BCM needs these frames (IMMO/fuel pump/dash),
-        		//     so keep sending, but at 1/4 rate. The serial response bursts are
-        		//     ~150 frames per output-channels poll; at full flood rate the BCM
-        		//     frames keep the 3 TX mailboxes occupied through the serial frames'
-        		//     1s per-frame transmit timeout and the burst dies mid-stream (the
-        		//     "gauges dead while the engine runs" failure - the ECU keeps
-		//     sending BCM frames, only the 720 responses stop). 1/4 rate is ~165
-		//     frames/s, which the dash/IMMO/pump logic tolerates for the 10 s
-		//     pause window.
-        		bool serialSessionActive = (engine->pauseCANdueToSerialUntil > getTimeNowNt());
-        		if (serialSessionActive) {
-        			if (!isEngineActive) {
-        				return;
-        			}
-        			if ((m_counter & 3) != 0) {
-        				return;
-        			}
-        		}
-
-        // 10 ms group: every 2nd tick
-        if ((m_counter % 2) == 0) {
-    	        send0x01F6(isRunning, isCranking);
-    	        send0x0189(rpmEncoded, isRunning);
-    	        send0x0186(rpmEncoded, rpm, isRunning, throttleX);
-    	        send0x018A(rpmEncoded, isRunning, isCranking, timingAdvanceDeg, angleCounter);
-            send0x0217(isEngineActive);
-            send0x02A9();
-        }
-
-        // 20 ms group: every 4th tick
-        if ((m_counter % 4) == 0) {
-            send0x02C6();
-        }
-
-        // 100 ms burst group: every 20th tick
-        if ((m_counter % 20) == 0) {
-            sendBurst(isRunning, rpm, throttleX);
-        }
-
-        // 1000 ms keepalive: every 200th tick
-        if ((m_counter % 200) == 0) {
-            send0x05E2();
-        }
-    }
-
-    // -----------------------------------------------------------------------
     // State
     // -----------------------------------------------------------------------
 
@@ -1009,22 +391,6 @@ private:
     bool m_starterActive = false;
     // True when BCM relay status frame confirms relay active (0x0303 byte 5 bit 1)
     bool m_relayActive   = false;
-
-    // Counter incremented once per 5 ms call to request(); drives timing logic
-    uint32_t m_counter = 0;
-
-    // Rolling 0x10-step counter embedded in 0x0189[4] while running (the
-    // cluster may use it as a frame-freshness check; a frozen value makes it
-    // treat the frames as stale).
-    uint8_t m_dashCounter = 0xF0;
-
-    // Crank-angle accumulator for 0x018A[2:3] (2 deg/unit, throttle-gated).
-    // Starts at 6 - the residual the stock ECU also shows at rest/closed throttle.
-    float m_angleCounter2 = 6.0f;
-
-    // Fuel-gated 100 ms counter for 0x066A[3:4] (the stock's hour-meter:
-    // 1 per 100 ms below ~820 rpm, 2 above, paused at closed throttle).
-    uint8_t m_engineTimeCounter = 0;
 
     // -----------------------------------------------------------------------
     // IMMO state
@@ -1070,7 +436,9 @@ bool m74_9_isImmobilizerBlocking() {
 
 void initM74_9Can() {
     registerCanListener(m74_9BcmListener);
-    addConsoleActionS("cantach", setTachEncoding);
+    // Vehicle-speed receive + dash transmit live in m74_9_vehicle_can.cpp.
+    initM749VehicleCan();
+    addConsoleActionS("cantach", setM749TachEncoding);
 }
 
 #endif // EFI_CAN_SUPPORT

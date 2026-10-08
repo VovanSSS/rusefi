@@ -19017,3 +19017,74 @@ residual floor is ~33-35 us fixed + ~6 cycles/instr plus spark's extra
 ~15-20 us - not flash/CS/prints; per-callee timing inside the bodies is
 the next diagnostic. Recorded in docs/tmr2_flash_inventory_2026-10-04.md
 and CLAUDE.md.
+
+## 2026-10-08 - m74_9: vehicle CAN ported from fw-m74.9 (profiles, speed RX, dash TX merge)
+
+Ported the fw-m74.9 board repo's vehicle CAN layer into
+firmware/config/boards/m74_9/ per user directive: port everything the
+other repo has, keep what it lacks. The dash stream moved out of
+m74_9_can.cpp into m74_9_vehicle_can.{h,cpp} (driven by the shared 5 ms
+CAN worker via custom_board_update_dash); m74_9_can.cpp keeps the BCM RX,
+the IMMO handshake and the ignition gating.
+
+Change inventory:
+
+| Area | File | Change |
+| --- | --- | --- |
+| config | board_types.h | new: LadaCanbusProfile enum (Disabled/Largus/NivaGranta) |
+| config | board_config.txt | new: custom type + ladaCanbusProfile field |
+| config | board_options.ini | new: "M74.9 CANbus" TS dialog |
+| code | m74_9_vehicle_can.{h,cpp} | new: speed RX + merged dash TX for both profiles |
+| code | m74_9_can.cpp | dash frames removed, IMMO/BCM RX kept, speed RX init + cantach re-wired |
+| code | board_configuration.cpp | update_dash/Start/StopHardware hooks, profile default + legacy migration |
+| build | board.mk | m74_9_vehicle_can.cpp added |
+| tune | 21129.msq | ladaCanbusProfile="Largus" |
+
+What the profiles add (from fw-m74.9):
+- ladaCanbusProfile selector: Disabled / Largus / Niva / Granta
+- speed: RX 0x29A (Largus, 0.01 km/h, alive counter + ones-complement
+  checksum) or 0x28C (Niva/Granta, plain 2 bytes) -> SensorType::
+  VehicleSpeed -> 0x217[3:4] 12-bit 0.1 km/h indicated speed (gain ~1.02,
+  offset ~1.95 km/h)
+- temperature: 0x5DA[0] = CLT+40, 0x65C[0] bits 7:1 = (IAT+40)<<1, the
+  frame is suppressed while its sensor is invalid; Niva/Granta CLT in
+  0x551[1] = CLT+40
+- 0x5DA[1] = idle target / 8, 0x5DA[4] = rpmHardLimit / 32
+- 0x1F6[2] bits 7:6 = 0/1/2 state (same bit layout as before)
+- the full Niva/Granta profile: 0x180 rpm x8, counters in
+  0x1F9[0]/0x35D[6]/0x551[5]
+
+Kept from the original stream (fw-m74.9 does not carry these):
+- 0x186[0:1] = fuel flow mL/h x16 + EMA + DFCO-zero (the dash BC hourly
+  consumption source; fw puts rpm x8 there - dropped because consumption
+  has no other home and rpm stays live in the x16 fields)
+- live rpm x16 in 0x189[0:1]/0x186[2:3]/0x18A[0:1], tach byte 0x186[4],
+  throttle-X 0x186[5], battery mV 0x189[2:3], rolling freshness counter
+  0x189[4], 0x189[5] = 0xB9/0xBA, advance byte 0x18A[4], throttle-gated
+  angle accumulator 0x18A[2:3], fuel-gated hour-meter 0x66A[3:4],
+  0x41A[1]/0x6FD[3] state bytes
+- ignition gating (dash silence at key-off so the BCM drops the main
+  relay on the 0x189 heartbeat timeout) and the serial-session 1/4-rate
+  throttle
+- IMMO 0x713/0x714 state machine (stays in m74_9_can.cpp)
+
+Decisions and gotchas:
+- Fields declared in board_config.txt land in persistent_config_s in this
+  repo (accessed via config->, the hellen precedent) - NOT in
+  engine_configuration_s like in the fw fork's generator.
+  board_engine_configuration.txt appends to engine_configuration_s
+  (engineConfiguration->). The port uses config->ladaCanbusProfile.
+- Legacy stored tunes: the new byte field reads Disabled (0) there; board
+  ConfigOverrides migrates Disabled -> Largus on every boot until the
+  tune carries the field (selecting Disabled is pinned for now - edit the
+  override to allow it).
+- Storage impact: the config grows by 1 byte; the MFS read fails the size
+  check -> the stored tune resets to defaults on the first boot after
+  flashing. Re-upload 21129.msq (now carries ladaCanbusProfile="Largus").
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL (three-stage rusefi.hex/
+rusefi.srec + app-only rusefi_app.srec); unit tests 1166 passed / 15
+failed (the documented pre-existing injection/trigger class, unchanged);
+the ini carries the field at offset 18056 + the dialog. NOT
+car/bench-tested - the dash verdict (temp scale CLT+40 vs the old CLT x2,
+speed, profiles) is the first drive.
