@@ -899,8 +899,16 @@ field lives in `persistent_config_s` -> access via `config->`, NOT
 line to revert), 0x65C[0] bits 7:1 = (IAT+40)<<1, 0x5DA[1] = idleTarget/8
 (was Vbatt x10), 0x5DA[4] = rpmHardLimit/32, 0x1F6[2] state bits, frame
 suppression on invalid CLT/IAT. KEPT from the old stream (fw-m74.9 lacks
-these): 0x186[0:1] fuel flow mL/h x16 (the dash BC hourly-consumption
-source; fw puts rpm x8 there - dropped), live rpm x16 + tach byte +
+these): 0x186[0:1] multiplexed like the stock - rpm x8 while the throttle
+is open (X > 0, THE dash tach source, car-verified 2026-10-08 at 1/8
+slope), fuel flow mL/h x16 at closed throttle (BC display, DFCO-zeroed);
+the dash keeps the rpm16 needle mode at X == 0, which is why the stock's
+flow-like idle values in 0x186[0:1] never moved the needle - and why a
+nonzero closed-throttle X (the rusEFI 0.4% TPS offset) flipped our dash
+into the tach-from-flow mode (2000 rpm at idle / 7000+ at 1900).
+encodeThrottleXByte now subtracts the 0.4% offset so a shut blade reads
+X == 0; 0x1F6[3] = battery volts x3.75 (fitted, was fixed 0x1A); live rpm
+x16 + tach byte +
 throttle-X + Vbatt + rolling counter + advance + angle accumulator +
 hour-meter, ignition gating, IMMO. Niva/Granta profile is fw verbatim.
 The encodings below (derived from the stock captures) remain the
@@ -941,7 +949,7 @@ Corrected facts (implemented):
 - **0x0186[5] = X = throttle position x 10** (0.1 %/unit) - NOT the old "0x06 while running". 0x09..0x0E (0.9..1.4 %) at warm idle, 0x4C (7.6 %) at a rev blip, 0 at closed throttle/DFCO/cranking; 0 even at 900 rpm on COLD starts (CLT ~32 C - the stock's idle controller keeps the blade shut until warm). The dash gates its own consumption integrators on X > 0.
 - **0x018A[2:3] = 16-bit BE crank-angle counter, 2 deg/unit (3 x rpm units/s), published in 128-deg (64-unit) steps, advanced ONLY while the throttle is open** (frozen at 0x0006 for 5+ s with X = 0; +1152 units over 489 ms at 785 rpm = exactly 3 x rpm). The dash mirrors this accumulator into its own 0x029C/0x029A frames.
 - **0x066A[3:4] = fuel-gated 100 ms engine-time counter, NOT temperature**: +1/100 ms while fuel flows up to ~820 rpm, +2/100 ms above, paused at closed throttle; persists across key cycles (the stock's cumulative hour-meter). orig_1's 0x35->0x5F over 10 s was this counter, not a 53->95 C ramp - the car sat at 32 C per 0x05DA. The "CLT sensor open, byte = 255" reading of the 19:14/19:27 captures was also this counter wrapping.
-- **0x0186[0:1] = fuel flow in 1/16 mL/h units** (cranking 0x04B0..0x09D4 = 75..157 mL/h, warm idle ~0x3A4C = 933 mL/h). The old plain-mL/h reading is what produced the phantom "10.7 L/h idle".
+- **0x0186[0:1] = fuel flow in 1/16 mL/h units** (cranking 0x04B0..0x09D4 = 75..157 mL/h, warm idle ~0x3A4C = 933 mL/h). The old plain-mL/h reading is what produced the phantom "10.7 L/h idle". **CORRECTED 2026-10-08 (car-verified): this byte pair is MULTIPLEXED - rpm x8 while the throttle is open (X > 0), the flow value at closed throttle (X == 0). The dash reads it as rpm x8 for the needle whenever X > 0, which is exactly why the stock's flow-like idle values never moved the needle (X = 0 at idle -> the dash stays in the rpm16 needle mode) and why a nonzero closed-throttle X from the rusEFI TPS offset (0.4% at the stop) drove our needle to flow/8 (2000 rpm at idle, 7000+ at 1900, then 0 on plausibility). rusEFI now sends the same multiplex and subtracts the closed-stop offset in encodeThrottleXByte.**
 - 0x029A[0:1] = 0x029C[0:1] = the DASH's consumption integrator: climbs ~2 units per 20 ms at idle, decays to 0 on its own "stall" detection, stays frozen at 0 when the ECU stream is not accepted.
 
 **OPEN (recorded 2026-08-29, inferred but NOT proven):**

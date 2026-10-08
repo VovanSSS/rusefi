@@ -19088,3 +19088,47 @@ failed (the documented pre-existing injection/trigger class, unchanged);
 the ini carries the field at offset 18056 + the dialog. NOT
 car/bench-tested - the dash verdict (temp scale CLT+40 vs the old CLT x2,
 speed, profiles) is the first drive.
+
+## 2026-10-08 (2) - m74_9: dash tach re-derived - 0x186[0:1] IS the needle source (rpm x8)
+
+User report: console 800-900 rpm, dash tach ~2000; opening the throttle to
+~1900 rpm pegs the needle at 7000+ and then it drops to zero (the cluster
+rejects the stream). All in-repo stock captures are idle-only (771-889 rpm,
+real rpm - nothing is hardcoded), so the scale had to come from the live
+observations plus the idle data.
+
+Per-byte correlation of the stock captures (orig_1/2/3 + ignon_and_start,
+4583 running samples) against the live rpm16 of 0x189[0:1]:
+- 0x186[4] corr +1.000 - the tach byte, (rpm - 768) mod 256 (fits the whole
+  idle band exactly; the wrap formula at high rpm is the stock's own
+  behavior, cannot be re-derived from idle-only data)
+- 0x189[0:1] / 0x18A[0:1] = rpm x16 (0x31E2 @ 798, high byte corr +0.82..0.97)
+- 0x186[2:3] = rpm x16 (same values)
+- 0x186[0:1] corr NEGATIVE, swings 0x0000..0x3470 at constant 800 rpm - NOT
+  rpm in any scale. It is the flow/load signal: 0 at DFCO/closed throttle,
+  cranking 0x04B0..0x09D4, spiky at idle. It equals rpm x8 in only 21/4583
+  samples.
+- 0x1F6[3] = battery volts x3.75 (12832 mV -> 0x30, 12.0 V -> 0x2D); rusEFI
+  sent a fixed 0x1A there - fixed.
+
+The dash needle reads OUR 0x186[0:1] as rpm x8: idle flow ~1.0 L/h -> x16 =
+16000 -> /8 = 2000 rpm (the observed idle reading); 1900 rpm light-throttle
+flow ~3.5 L/h -> 56000 -> /8 = 7000+ (the observed peg); flow > 4.1 L/h
+saturates the field at 65535 -> 8191 rpm -> plausibility vs the tach byte
+fails -> needle 0. The stock never breaks because at closed throttle its X
+byte (0x0186[5]) is 0, so the dash stays in the rpm16 needle mode and the
+flow value in [0:1] feeds only the BC consumption display.
+
+Fixes (m74_9_vehicle_can.cpp):
+- 0x186[0:1] multiplexed like the stock: rpm x8 while X > 0 (the dash tach
+  source), fuel flow mL/h x16 at closed throttle (BC display, DFCO zeroed).
+- encodeThrottleXByte subtracts the ~0.4% closed-stop offset (rusEFI autozero
+  reads 0.4% at the stop) so a shut blade sends X = 0 - the dash then keeps
+  the rpm16 needle mode at idle and the consumption/angle/hour-meter gates
+  stop running at idle (stock parity).
+- 0x1F6[3] = battery volts x3.75 (was fixed 0x1A).
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL. Car verdict pending: idle
+needle must read console rpm, 1900 rpm must read 1900, and the BC hourly
+consumption display must stay alive (if it dies, the [0:1] flow side of the
+multiplex is consumed by the tach too - fallback is rpm x8 unconditionally).

@@ -12,11 +12,17 @@
  *
  * What was kept from the original m74_9_can.cpp stream (the profile
  * implementation does not carry these):
- *  - fuel flow for the dash BC in 0x186[0:1] (mL/h x16, EMA-smoothed,
- *    zeroed during DFCO) - the dash hourly-consumption source
+ *  - 0x186[0:1] multiplexed like the stock: rpm x8 while the throttle is
+ *    open (X > 0) - the dash tach source, car-verified at 1/8 slope - and
+ *    the instantaneous fuel flow mL/h x16 (EMA-smoothed, zeroed in DFCO)
+ *    at closed throttle for the dash BC hour-meter/consumption display
  *  - live rpm x16 in 0x189[0:1] / 0x186[2:3] / 0x18A[0:1]
- *  - tach cross-check byte 0x186[4], throttle-X 0x186[5]
- *  - battery voltage 0x189[2:3], 0x189[4] rolling freshness counter,
+ *  - tach cross-check byte 0x186[4], throttle-X 0x186[5] with the
+ *    closed-stop offset subtracted (X == 0 at a shut blade - the stock
+ *    behavior; a nonzero closed-throttle X flips the dash into the
+ *    fuel-flowing mode and the tach starts reading 0x186[0:1])
+ *  - battery voltage 0x189[2:3] + 0x1F6[3] (volts x3.75, fitted from the
+ *    stock captures), 0x189[4] rolling freshness counter,
  *    0x189[5] = 0xB9/0xBA
  *  - advance byte 0x18A[4], angle accumulator 0x18A[2:3]
  *  - fuel-gated engine-time counter 0x66A[3:4], 0x41A[1]/0x6FD[3] state
@@ -311,12 +317,20 @@ uint16_t encodeBatteryMillivoltsLE() {
  * Throttle-position byte X - 0x0186 byte 5. 0.1 % units: 0x09..0x0E
  * (0.9..1.4 %) at warm idle, 0x4C (7.6 %) during a rev blip, 0 when the
  * throttle is closed (also during the catch - the stock holds it shut).
- * The dash uses X as its "fuel is flowing" gate: its own consumption
- * integrators (0x029A/0x029C) only run while X > 0.
+ *
+ * The board reads ~0.4% at the closed stop (rusEFI autozero offset vs the
+ * stock: real closed stop = -0.4% in rusEFI). The dash gates its tach
+ * source selection and its consumption integrators on X > 0 - a nonzero
+ * closed-throttle X flips the dash into the "fuel flowing" mode at idle
+ * and the tach starts reading 0x186[0:1] as rpm x8 (the flow value, i.e.
+ * the user-visible "2000 rpm at idle / 7000+ at light throttle" bug).
+ * Subtract the closed-stop offset so a shut blade reads exactly 0.
  */
 uint8_t encodeThrottleXByte() {
 	float tps = Sensor::getOrZero(SensorType::Tps1);
-	return (uint8_t)clampF(0.0f, tps * 10.0f, 255.0f);
+	// Closed-throttle offset measured on the board (see above).
+	float x = (tps - 0.4f) * 10.0f;
+	return (uint8_t)clampF(0.0f, x, 255.0f);
 }
 
 /**
@@ -410,21 +424,29 @@ void M749VehicleCanTransmitter::update() {
 			break;
 		}
 		case 0x186: {
-			// Largus: merged layout - fuel flow [0:1] (kept from the original
-			// stream: the dash hourly-consumption source), live rpm x16 [2:3],
-			// tach cross-check [4], throttle-X [5]. Niva / Granta keeps the
-			// profile baseline (0x186[0:1] stays zero there by contract).
+			// Largus: merged layout. [0:1] is multiplexed like the stock: while
+			// the throttle is open (X > 0) it carries live rpm x8 - THE dash
+			// tach source (car-verified: the needle tracks this field at exactly
+			// 1/8 slope; the stock's flow-like values at idle are only shown
+			// while the dash is in its rpm16 mode, i.e. closed throttle X == 0);
+			// at closed throttle it carries the instantaneous fuel flow for the
+			// dash BC (мл/ч x16). [2:3] = rpm x16, [4] = tach cross-check,
+			// [5] = throttle-X. Niva / Granta keeps the profile baseline
+			// (0x186[0:1] stays zero there by contract).
 			if (!largus) {
 				break;
 			}
-			const uint16_t fuelFlowMlPerHour = encodeFuelFlowMlPerHour();
+			const uint8_t throttleX = encodeThrottleXByte();
+			const uint16_t b01 = (state == 2 && throttleX > 0)
+				? (uint16_t)(rpm * 8.0f)
+				: encodeFuelFlowMlPerHour();
 			const uint16_t rpmEncoded = encodeRpmOrBaseline(rpm);
-			msg[0] = (uint8_t)(fuelFlowMlPerHour >> 8);
-			msg[1] = (uint8_t)(fuelFlowMlPerHour & 0xFF);
+			msg[0] = (uint8_t)(b01 >> 8);
+			msg[1] = (uint8_t)(b01 & 0xFF);
 			msg[2] = (uint8_t)(rpmEncoded >> 8);
 			msg[3] = (uint8_t)(rpmEncoded & 0xFF);
 			msg[4] = encodeTachByte(rpm);
-			msg[5] = state == 2 ? encodeThrottleXByte() : 0x00;
+			msg[5] = state == 2 ? throttleX : 0x00;
 			break;
 		}
 		case 0x189: {
@@ -473,11 +495,12 @@ void M749VehicleCanTransmitter::update() {
 		}
 		case 0x1F6:
 			// Engine state bits 7:6 = 0 stopped / 1 cranking / 2 running.
-			// Byte 1 (0x20 running) and byte 3 (0x1A stock constant) are the
-			// car-derived fields kept from the original stream.
+			// Byte 1 (0x20 running) and byte 3 (battery volts x3.75: the stock
+			// reads 0x30 at 12.83 V, 0x2D at 12.0 V - fitted from the captures)
+			// are the car-derived fields kept from the original stream.
 			msg[2] = (msg[2] & 0x3F) | (state << 6);
 			msg[1] = state == 2 ? 0x20 : 0x00;
-			msg[3] = 0x1A;
+			msg[3] = (uint8_t)clampF(0.0f, Sensor::getOrZero(SensorType::BatteryVoltage) * 3.75f, 255.0f);
 			break;
 		case 0x217: {
 			// Indicated speed, 0.1 km/h, 12 bits: byte 3 = bits 11:4, byte 4
