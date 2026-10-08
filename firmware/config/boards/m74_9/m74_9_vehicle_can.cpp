@@ -12,15 +12,13 @@
  *
  * What was kept from the original m74_9_can.cpp stream (the profile
  * implementation does not carry these):
- *  - 0x186[0:1] multiplexed like the stock: rpm x8 while the throttle is
- *    open (X > 0) - the dash tach source, car-verified at 1/8 slope - and
- *    the instantaneous fuel flow mL/h x16 (EMA-smoothed, zeroed in DFCO)
- *    at closed throttle for the dash BC hour-meter/consumption display
+ *  - 0x186[0:1] = live rpm x8 - the dash tach source (car-verified at
+ *    1/8 slope; the old fuel-flow encoding there made the dash show
+ *    flow/8 as rpm - the needle must never depend on throttle/load)
  *  - live rpm x16 in 0x189[0:1] / 0x186[2:3] / 0x18A[0:1]
  *  - tach cross-check byte 0x186[4], throttle-X 0x186[5] with the
  *    closed-stop offset subtracted (X == 0 at a shut blade - the stock
- *    behavior; a nonzero closed-throttle X flips the dash into the
- *    fuel-flowing mode and the tach starts reading 0x186[0:1])
+ *    behavior)
  *  - battery voltage 0x189[2:3] + 0x1F6[3] (volts x3.75, fitted from the
  *    stock captures), 0x189[4] rolling freshness counter,
  *    0x189[5] = 0xB9/0xBA
@@ -229,49 +227,15 @@ uint16_t encodeRpmOrBaseline(float rpm) {
 }
 
 /**
- * Instantaneous fuel flow for the dash BC (бортовой компьютер), 16x mL/h
- * (i.e. 0.0625 mL/h per unit). 0x186 bytes 0-1.
- *
- * 2026-08-29 captures: 0x04B0..0x09D4 while cranking -> /16 = 75..157 mL/h,
- * ~0x3A4C at warm idle -> /16 = 933 mL/h, 0 during DFCO. The field is fuel
- * FLOW, not rpm and not pulse width (both would not zero out in DFCO while
- * rpm rises).
- */
-uint16_t encodeFuelFlowMlPerHour() {
-#ifdef MODULE_ODOMETER
-	float gPerSecond = engine->module<TripOdometer>()->getConsumptionGramPerSecond();
-#else
-	float gPerSecond = 0;
-#endif // MODULE_ODOMETER
-
-	// Fuel cut: zero flow. The original ECU does exactly this - the flow
-	// field drops to 0x0000 during DFCO even while rpm is still climbing.
-	if (engine->module<DfcoController>()->cutFuel()) {
-		gPerSecond = 0;
-	}
-
-	// The trip-odometer rate is per-injection-event and spiky; the 10 ms CAN
-	// sampling would otherwise freeze one event's instantaneous rate between
-	// cycles and feed the dash garbage. EMA-smooth it towards a steady value
-	// (~200 ms time constant at the 10 ms send rate).
-	static float smoothedGps = 0;
-	smoothedGps += 0.05f * (gPerSecond - smoothedGps);
-
-	// g/s -> mL/h: *3600 (s->h), /0.745 g/mL (gasoline density), *16 (stock
-	// field scale: mL/h in 1/16 units).
-	float mlPerHour = smoothedGps * 3600.0f / 0.745f * 16.0f;
-	return (uint16_t)clampF(0.0f, mlPerHour, 65535.0f);
-}
-
-/**
  * Dash tach byte - 0x0186 byte 4. Stock fit (orig_1/2/3): tach = rpm - 768
  * EXACTLY (slope 1.0 across every captured point, 702-912 rpm): 775 -> 0x07,
  * 800 -> 0x20, 889 -> 0x79; 0x20 at rest (800 rpm baseline).
  *
- * The dash needle itself follows the 16-bit rpm fields (0x0189[0:1] =
- * rpm*16); byte 4 is a PLAUSIBILITY CROSS-CHECK: the cluster compares it
- * against its own rpm estimate and ignores/holds the needle when it
- * diverges. Mode 4 = the stock formula with u8 wrap-around
+ * The dash needle has two rpm sources: the 16-bit rpm fields (0x0189[0:1]
+ * etc. = rpm x16) and 0x0186[0:1] = rpm x8 (the field this board's old
+ * fuel-flow encoding broke). Byte 4 is the plausibility cross-check: the
+ * cluster compares it against its own rpm estimate and ignores/holds the
+ * needle when it diverges. Mode 4 = the stock formula with u8 wrap-around
  * ((uint8_t)(int32_t)(rpm - 768)) - at 2500 rpm it wraps to 196, matching
  * what a C-compiled stock ECU computes. Modes 0-3 are the old on-car A/B
  * candidates, kept behind 'cantach' until mode 4 is validated on the road.
@@ -424,29 +388,25 @@ void M749VehicleCanTransmitter::update() {
 			break;
 		}
 		case 0x186: {
-			// Largus: merged layout. [0:1] is multiplexed like the stock: while
-			// the throttle is open (X > 0) it carries live rpm x8 - THE dash
-			// tach source (car-verified: the needle tracks this field at exactly
-			// 1/8 slope; the stock's flow-like values at idle are only shown
-			// while the dash is in its rpm16 mode, i.e. closed throttle X == 0);
-			// at closed throttle it carries the instantaneous fuel flow for the
-			// dash BC (мл/ч x16). [2:3] = rpm x16, [4] = tach cross-check,
-			// [5] = throttle-X. Niva / Granta keeps the profile baseline
-			// (0x186[0:1] stays zero there by contract).
+			// Largus: merged layout. [0:1] = live rpm x8 - the dash tach source.
+			// Car-verified 2026-10-08: the needle tracks this field at exactly
+			// 1/8 slope - with the fuel-flow value there (the old encoding) the
+			// dash showed flow/8 (2000 rpm at idle, 7000+ at 1900, then 0 when
+			// the field saturated). The RPM must not depend on throttle/load:
+			// this field always carries rpm, nothing else. [2:3] = rpm x16,
+			// [4] = tach cross-check, [5] = throttle-X. Niva / Granta keeps the
+			// profile baseline (0x186[0:1] stays zero there by contract).
 			if (!largus) {
 				break;
 			}
-			const uint8_t throttleX = encodeThrottleXByte();
-			const uint16_t b01 = (state == 2 && throttleX > 0)
-				? (uint16_t)(rpm * 8.0f)
-				: encodeFuelFlowMlPerHour();
 			const uint16_t rpmEncoded = encodeRpmOrBaseline(rpm);
-			msg[0] = (uint8_t)(b01 >> 8);
-			msg[1] = (uint8_t)(b01 & 0xFF);
+			const uint16_t rpm8 = (uint16_t)(rpm * 8.0f);
+			msg[0] = (uint8_t)(rpm8 >> 8);
+			msg[1] = (uint8_t)(rpm8 & 0xFF);
 			msg[2] = (uint8_t)(rpmEncoded >> 8);
 			msg[3] = (uint8_t)(rpmEncoded & 0xFF);
 			msg[4] = encodeTachByte(rpm);
-			msg[5] = state == 2 ? throttleX : 0x00;
+			msg[5] = state == 2 ? encodeThrottleXByte() : 0x00;
 			break;
 		}
 		case 0x189: {

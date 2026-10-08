@@ -19120,12 +19120,16 @@ byte (0x0186[5]) is 0, so the dash stays in the rpm16 needle mode and the
 flow value in [0:1] feeds only the BC consumption display.
 
 Fixes (m74_9_vehicle_can.cpp):
-- 0x186[0:1] multiplexed like the stock: rpm x8 while X > 0 (the dash tach
-  source), fuel flow mL/h x16 at closed throttle (BC display, DFCO zeroed).
+- 0x186[0:1] = rpm x8 UNCONDITIONALLY (final decision, user-corrected: the
+  RPM must not depend on throttle/load - the first cut multiplexed rpm x8 vs
+  flow on the X byte, but that still fed the dash a throttle-dependent value
+  in a field it reads as rpm; the flow encoding was removed entirely. The
+  dash BC consumption display is driven by the dash's own rpm-gated
+  integrator; if the instant L/h readout at idle turns out to need the flow
+  value, it needs a different home than this byte pair).
 - encodeThrottleXByte subtracts the ~0.4% closed-stop offset (rusEFI autozero
-  reads 0.4% at the stop) so a shut blade sends X = 0 - the dash then keeps
-  the rpm16 needle mode at idle and the consumption/angle/hour-meter gates
-  stop running at idle (stock parity).
+  reads 0.4% at the stop) so a shut blade sends X = 0 (stock parity; the
+  consumption/angle/hour-meter gates then freeze at idle like the stock).
 - 0x1F6[3] = battery volts x3.75 (was fixed 0x1A).
 
 Validation: compile_m74_9.sh BUILD SUCCESSFUL. Car verdict pending: idle
