@@ -85,11 +85,10 @@ static constexpr float MAX_TICKS_PER_DEGREE = US2NT(2000);
 static constexpr float FROM_NOW_SENTINEL = 780.0f;
 
 static constexpr uint32_t CC_IF_MASK =
-    STM32_TIM_SR_CC1IF | STM32_TIM_SR_CC2IF |
-    STM32_TIM_SR_CC3IF | STM32_TIM_SR_CC4IF;
+    STM32_TIM_SR_CC1IF | STM32_TIM_SR_CC2IF | STM32_TIM_SR_CC3IF;
 
-// Refresh only touches the two angle-domain channels; the from-now channels
-// (spark, close) are skipped by their sentinel.
+// Refresh only touches the two angle-domain channels; the from-now channel
+// (spark) is skipped by its sentinel.
 static constexpr uint8_t REFRESH_MASK =
     (1u << ANGLE_CLOCK_CH_DWELL) | (1u << ANGLE_CLOCK_CH_OPEN);
 
@@ -106,7 +105,7 @@ struct AngleClockChannel {
     bool     immediate = false;
 };
 
-static AngleClockChannel s_ch[4];  // dwell / spark / open / close
+static AngleClockChannel s_ch[3];  // dwell / spark / open (the close lives on the TIM5 CC2 mini-queue)
 static uint8_t s_armedMask = 0;    // bit per channel holding a pending action
 
 // ── Per-tooth state (shared, written only by handoff prio 4) ─────────────
@@ -124,9 +123,9 @@ static float    s_cycleDeg       = 720.0f;
 static float    s_ticksPerDegree = 0.0f;
 
 // ── Telemetry ─────────────────────────────────────────────────────────────
-static uint32_t s_fired[4]       = {0, 0, 0, 0};
-static uint32_t s_lateArm[4]     = {0, 0, 0, 0};
-static uint32_t s_lateArmBusy[4] = {0, 0, 0, 0};
+static uint32_t s_fired[3]       = {0, 0, 0};
+static uint32_t s_lateArm[3]     = {0, 0, 0};
+static uint32_t s_lateArmBusy[3] = {0, 0, 0};
 // Per-channel ISR-ENTRY lateness attribution (2026-09-30): s_maxLateTicks is
 // the pooled max (angclk maxLateUs) and cannot say WHICH channel floats; these
 // counters do. The handoff split uses triggerReentrant (the trigger_central
@@ -139,10 +138,10 @@ static uint32_t s_lateArmBusy[4] = {0, 0, 0, 0};
 // dominant 60-76 us class (the injection-close action recomputes the model in
 // the prio-3 ISR). Everything else is the fast EXTI, short kernel-CS sections
 // and same-entry channel ordering.
-static uint32_t s_lateGt10us[4] = {0, 0, 0, 0};
-static uint32_t s_lateMax[4]    = {0, 0, 0, 0};
-static uint32_t s_lateHandoff[4] = {0, 0, 0, 0};
-static uint32_t s_lateSerialized[4] = {0, 0, 0, 0};
+static uint32_t s_lateGt10us[3] = {0, 0, 0};
+static uint32_t s_lateMax[3]    = {0, 0, 0};
+static uint32_t s_lateHandoff[3] = {0, 0, 0};
+static uint32_t s_lateSerialized[3] = {0, 0, 0};
 static uint32_t s_lastHandlerEndTick = 0;
 static uint32_t s_lateArmDwellGuard    = 0;  // dwell armGuard refusal (no basis / stale phase)
 static uint32_t s_lateArmDwellTickPast = 0;  // dwell target tick already in the past
@@ -158,31 +157,6 @@ static uint32_t s_refreshPending      = 0;  // refresh: left a channel with a pe
 static uint32_t s_lookaheadDwell      = 0;  // early-window dwell arm in [nextNext, nextNext+K) (2026-09-26)
 static uint32_t s_lookaheadOpen       = 0;  // early-window open arm in [nextNext, nextNext+K)
 
-// Close-arm busy PW histogram (2026-10-09): 4 x 8-bit saturating bins packed
-// in ONE word (ram0 on this board has single-digit bytes of headroom). Counts
-// the close arms that FAILED busy, by the arm delay = the injection PW (bin0
-// = <5 ms, bin1 = 5-10, bin2 = 10-15, bin3 = >=15 ms). The discriminator for
-// the close-busy class: at 2650 rpm the 180-deg open spacing is ~11.3 ms, so
-// busy in bin2/3 = duty overlap (PW > spacing, real high load) and busy in
-// bin0/1 at any rpm = the opens were compressed while PW was small
-// (double-open re-arm). NT ticks at 4 MHz: 1 ms = 4000 ticks.
-static uint32_t s_closeBusyPwHist = 0;
-
-// 8-bit per-bin mask (bins packed into the single word above).
-static constexpr uint32_t CLOSE_PW_HIST_BIN_MASK = 0xFF;
-
-TRIGGER_RAM_CODE static void recordCloseBusyDelay(uint32_t delayNt) {
-    int bin;
-    if (delayNt >= 60000)      { bin = 3; }  // >= 15 ms
-    else if (delayNt >= 40000) { bin = 2; }  // 10-15 ms
-    else if (delayNt >= 20000) { bin = 1; }  // 5-10 ms
-    else                       { bin = 0; }  // < 5 ms
-    const uint32_t shift = static_cast<uint32_t>(bin) * 8;
-    if (((s_closeBusyPwHist >> shift) & CLOSE_PW_HIST_BIN_MASK) < CLOSE_PW_HIST_BIN_MASK) {
-        s_closeBusyPwHist += (1u << shift);
-    }
-}
-
 // Capture-at-entry instrumentation (2026-10-03): every fire with ISR-entry
 // lateness >= 10 us writes a snapshot into a small ring, and every fire
 // measures its action-body wall time. The xsec handoff=/ser= split leaves the
@@ -194,8 +168,8 @@ TRIGGER_RAM_CODE static void recordCloseBusyDelay(uint32_t delayNt) {
 static AngleClockLateCapture s_lateCaptureRing[ANGLE_CLOCK_LATE_CAPTURE_RING];
 static uint8_t  s_lateCaptureHead  = 0;   // next write slot
 static uint32_t s_lateCaptureTotal = 0;   // saturating total of captures
-static uint32_t s_bodyMaxTicks[4] = {0, 0, 0, 0};  // max action-body wall time per type
-static uint32_t s_bodyMaxLate[4]  = {0, 0, 0, 0};  // entry-late of the fire with the max body
+static uint32_t s_bodyMaxTicks[3] = {0, 0, 0};  // max action-body wall time per type
+static uint32_t s_bodyMaxLate[3]  = {0, 0, 0};  // entry-late of the fire with the max body
 
 // Most recent failed dwell arm (diagnostic snapshot, read by lockstats).
 // branch = 0xFF is the "no refusal since last reset" sentinel, set in
@@ -242,16 +216,14 @@ uint32_t angleClockTicksPerDegree() {
 TRIGGER_RAM_CODE static void dispatch() {
     // Pass 1: release every due channel. ALL channels are released BEFORE any
     // action executes, so a re-arm from inside an action (dwell arms spark,
-    // open arms close) can never hit a busy channel - including the
-    // exactly-100%-duty corner where the previous close (CC4) and the next
-    // open (CC3) match in the same ISR entry.
+    // open queues the TIM5 CC2 close) can never hit a busy channel.
     uint32_t sr = ANGLE_TIMER->SR & CC_IF_MASK;
-    action_s due[4];
-    uint32_t dueCcr[4];
-    uint8_t  dueImmediate[4];
+    action_s due[3];
+    uint32_t dueCcr[3];
+    uint8_t  dueImmediate[3];
     uint8_t dueMask = 0;
 
-    for (int ch = 0; ch < 4; ch++) {
+    for (int ch = 0; ch < 3; ch++) {
         const uint32_t flag = STM32_TIM_SR_CC1IF << ch;
         if (!(sr & flag)) continue;
 
@@ -268,8 +240,8 @@ TRIGGER_RAM_CODE static void dispatch() {
     s_armedMask &= static_cast<uint8_t>(~dueMask);
 
     // Pass 2: execute the released actions in channel order (dwell -> spark ->
-    // open -> close).
-    for (int ch = 0; ch < 4; ch++) {
+    // open).
+    for (int ch = 0; ch < 3; ch++) {
         if (!(dueMask & (1u << ch))) continue;
         action_s act = due[ch];
         if (act) {
@@ -592,15 +564,14 @@ TRIGGER_RAM_CODE bool angleClockArmInjection(float targetAngle, action_s action,
 // ── From-now arms (time domain, refresh-skipped via the sentinel) ────────
 // nowAc is a TMR2-domain timestamp (angleClockNow() read by the caller in the
 // TMR2 ISR that just fired) - the delay is added directly, no NT conversion.
+// Only the spark channel uses this: the injection close lives on the TIM5 CC2
+// mini-queue (NT domain), not on TMR2.
 TRIGGER_RAM_CODE static bool armFromNow(int ch, uint32_t nowAc, uint32_t delayNt,
                                         action_s action) {
     auto& c = s_ch[ch];
     if (c.action) {
         s_lateArm[ch]++;
         s_lateArmBusy[ch]++;
-        if (ch == ANGLE_CLOCK_CH_CLOSE) {
-            recordCloseBusyDelay(delayNt);
-        }
         return false;
     }
 
@@ -620,11 +591,6 @@ TRIGGER_RAM_CODE static bool armFromNow(int ch, uint32_t nowAc, uint32_t delayNt
 TRIGGER_RAM_CODE bool angleClockArmSparkFromNow(uint32_t nowAc,
                                                  uint32_t delayNt, action_s action) {
     return armFromNow(ANGLE_CLOCK_CH_SPARK, nowAc, delayNt, action);
-}
-
-TRIGGER_RAM_CODE bool angleClockArmInjectionCloseFromNow(uint32_t nowAc,
-                                                          uint32_t delayNt, action_s action) {
-    return armFromNow(ANGLE_CLOCK_CH_CLOSE, nowAc, delayNt, action);
 }
 
 // ── Refresh ───────────────────────────────────────────────────────────────
@@ -731,7 +697,6 @@ TRIGGER_RAM_CODE static void cancelChannel(int ch) {
 TRIGGER_RAM_CODE void angleClockCancelDwell()     { cancelChannel(ANGLE_CLOCK_CH_DWELL); }
 TRIGGER_RAM_CODE void angleClockCancelSpark()     { cancelChannel(ANGLE_CLOCK_CH_SPARK); }
 TRIGGER_RAM_CODE void angleClockCancelInjection() { cancelChannel(ANGLE_CLOCK_CH_OPEN); }
-TRIGGER_RAM_CODE void angleClockCancelClose()     { cancelChannel(ANGLE_CLOCK_CH_CLOSE); }
 
 // ── Telemetry accessors ───────────────────────────────────────────────────
 uint32_t angleClockFiredCount(int ch)       { return s_fired[ch]; }
@@ -775,7 +740,6 @@ uint32_t angleClockRefreshMaxPullTicks() { return s_refreshMaxPullTicks; }
 uint32_t angleClockRefreshPending()   { return s_refreshPending; }
 uint32_t angleClockLookaheadDwell()   { return s_lookaheadDwell; }
 uint32_t angleClockLookaheadOpen()    { return s_lookaheadOpen; }
-uint32_t angleClockCloseBusyPwHist()  { return s_closeBusyPwHist; }
 void angleClockRecordLookaheadDwell() { s_lookaheadDwell++; }
 void angleClockRecordLookaheadOpen()  { s_lookaheadOpen++; }
 uint32_t angleClockInitAcDelta()     { return s_initAcDelta; }
@@ -783,9 +747,10 @@ uint32_t angleClockInitNtDelta()     { return s_initNtDelta; }
 uint32_t angleClockInitPsc()         { return s_initPsc; }
 
 void angleClockResetStats() {
-    for (int ch = 0; ch < 4; ch++) {
+    for (int ch = 0; ch < 3; ch++) {
         s_fired[ch] = s_lateArm[ch] = s_lateArmBusy[ch] = 0;
         s_lateGt10us[ch] = s_lateMax[ch] = s_lateHandoff[ch] = s_lateSerialized[ch] = 0;
+        s_bodyMaxTicks[ch] = s_bodyMaxLate[ch] = 0;
     }
     s_lateArmDwellGuard = s_lateArmDwellTickPast = 0;
     s_lateArmOpenGuard = s_lateArmOpenTickPast = 0;
@@ -794,13 +759,8 @@ void angleClockResetStats() {
     s_refreshMaxPullTicks = 0;
     s_refreshPending = 0;
     s_lookaheadDwell = s_lookaheadOpen = 0;
-    s_closeBusyPwHist = 0;
     s_lateCaptureHead = 0;
     s_lateCaptureTotal = 0;
-    for (int ch = 0; ch < 4; ch++) {
-        s_bodyMaxTicks[ch] = 0;
-        s_bodyMaxLate[ch] = 0;
-    }
     s_dwellRefusal.branch = 0xFF;  // sentinel: no refusal since last reset
 }
 

@@ -19,6 +19,7 @@
 #include "thermistors.h"
 #include "angle_clock.h"
 #include "spark_logic.h"
+#include "injection_close_hw.h"
 
 // PB14 is error LED, configured in board.mk
 Gpio getCommsLedPin() {
@@ -882,8 +883,6 @@ static const char* m74_9AngclkChannelName(int ch) {
 		return "spark";
 	case ANGLE_CLOCK_CH_OPEN:
 		return "open";
-	case ANGLE_CLOCK_CH_CLOSE:
-		return "close";
 	default:
 		return "?";
 	}
@@ -1204,17 +1203,25 @@ void setup_custom_board_overrides() {
 
 #if EFI_ANGLE_CLOCK
 		// Single-timer angle clock (TMR2, 32-bit, prio 3): CC1=dwell CC2=spark
-		// CC3=injection open CC4=injection close. lateArm: the arm failed and the
+		// CC3=injection open. The injection CLOSE lives on the TIM5 CC2
+		// mini-queue (injCC2 line below). lateArm: the arm failed and the
 		// caller fell back to TIM5 (1:1 with the sched dwell/fuel fallback counts);
 		// busy: the channel still held a pending event of the same type (wasted
 		// spark / batch / storm over-arm - never hits in sequential mode).
-		for (int ch = 0; ch < 4; ch++) {
+		for (int ch = 0; ch < 3; ch++) {
 			efiPrintf("angclk %s fired=%u lateArm=%u busy=%u",
 				m74_9AngclkChannelName(ch),
 				(unsigned)angleClockFiredCount(ch),
 				(unsigned)angleClockLateArmCount(ch),
 				(unsigned)angleClockBusyCount(ch));
 		}
+		// Injection close on the TIM5 CC2 mini-queue (2026-10-09): scheduled =
+		// closes queued by turnInjectionPinHigh, fired = CC2 ISR dispatches.
+		// scheduled == fired in stable running; a slot's pendingCount overlap
+		// (duty overlap / double-open) does not lose either close.
+		efiPrintf("injCC2 scheduled=%u fired=%u (close on TIM5 CC2 mini-queue)",
+			(unsigned)getInjectionCC2ScheduledCount(),
+			(unsigned)getInjectionCC2FiredCount());
 		efiPrintf("angclk maxLateUs=%u immediate=%u initRate=%u/%u psc=%u nvic T2=%u (want 3)",
 			(unsigned)(angleClockMaxLateTicks() / (NT_PER_SECOND / 1000000)),
 			(unsigned)angleClockImmediateFireCount(),
@@ -1228,7 +1235,7 @@ void setup_custom_board_overrides() {
 		// ended (single-vector serialization on the long action bodies, e.g. the
 		// injection-close model recompute); the rest is the fast EXTI / short
 		// kernel-CS sections / same-entry channel ordering.
-		efiPrintf("angclk xsec dwell n=%u handoff=%u ser=%u maxUs=%u | spark n=%u handoff=%u ser=%u maxUs=%u | open n=%u handoff=%u ser=%u maxUs=%u | close n=%u handoff=%u ser=%u maxUs=%u (ISR-entry >=10us per type)",
+		efiPrintf("angclk xsec dwell n=%u handoff=%u ser=%u maxUs=%u | spark n=%u handoff=%u ser=%u maxUs=%u | open n=%u handoff=%u ser=%u maxUs=%u (ISR-entry >=10us per type)",
 			(unsigned)angleClockLateGt10usCount(ANGLE_CLOCK_CH_DWELL),
 			(unsigned)angleClockLateHandoffCount(ANGLE_CLOCK_CH_DWELL),
 			(unsigned)angleClockLateSerializedCount(ANGLE_CLOCK_CH_DWELL),
@@ -1240,11 +1247,7 @@ void setup_custom_board_overrides() {
 			(unsigned)angleClockLateGt10usCount(ANGLE_CLOCK_CH_OPEN),
 			(unsigned)angleClockLateHandoffCount(ANGLE_CLOCK_CH_OPEN),
 			(unsigned)angleClockLateSerializedCount(ANGLE_CLOCK_CH_OPEN),
-			(unsigned)(angleClockLateMaxTicks(ANGLE_CLOCK_CH_OPEN) / (NT_PER_SECOND / 1000000)),
-			(unsigned)angleClockLateGt10usCount(ANGLE_CLOCK_CH_CLOSE),
-			(unsigned)angleClockLateHandoffCount(ANGLE_CLOCK_CH_CLOSE),
-			(unsigned)angleClockLateSerializedCount(ANGLE_CLOCK_CH_CLOSE),
-			(unsigned)(angleClockLateMaxTicks(ANGLE_CLOCK_CH_CLOSE) / (NT_PER_SECOND / 1000000)));
+			(unsigned)(angleClockLateMaxTicks(ANGLE_CLOCK_CH_OPEN) / (NT_PER_SECOND / 1000000)));
 		// Capture-at-entry instrumentation (2026-10-03): the xsec handoff=/ser=
 		// split leaves the UNCLASSIFIED remainder as the majority, and by the
 		// verified ladder (fires prio 3, unlocked ISRs) that class needs a
@@ -1253,15 +1256,13 @@ void setup_custom_board_overrides() {
 		// every late>=10us fire (primask/basepri/mask reads, the handoff via
 		// NVIC IABR bit 31, immediate-origin flag, the ser= window delta) so the
 		// next lockstats pins the masker instead of guessing.
-		efiPrintf("angclk body maxUs dwell=%u late=%u | spark=%u late=%u | open=%u late=%u | close=%u late=%u (action-body wall time incl. EXTI preemption)",
+		efiPrintf("angclk body maxUs dwell=%u late=%u | spark=%u late=%u | open=%u late=%u (action-body wall time incl. EXTI preemption)",
 			(unsigned)(angleClockBodyMaxTicks(ANGLE_CLOCK_CH_DWELL) / (NT_PER_SECOND / 1000000)),
 			(unsigned)(angleClockBodyMaxLateTicks(ANGLE_CLOCK_CH_DWELL) / (NT_PER_SECOND / 1000000)),
 			(unsigned)(angleClockBodyMaxTicks(ANGLE_CLOCK_CH_SPARK) / (NT_PER_SECOND / 1000000)),
 			(unsigned)(angleClockBodyMaxLateTicks(ANGLE_CLOCK_CH_SPARK) / (NT_PER_SECOND / 1000000)),
 			(unsigned)(angleClockBodyMaxTicks(ANGLE_CLOCK_CH_OPEN) / (NT_PER_SECOND / 1000000)),
-			(unsigned)(angleClockBodyMaxLateTicks(ANGLE_CLOCK_CH_OPEN) / (NT_PER_SECOND / 1000000)),
-			(unsigned)(angleClockBodyMaxTicks(ANGLE_CLOCK_CH_CLOSE) / (NT_PER_SECOND / 1000000)),
-			(unsigned)(angleClockBodyMaxLateTicks(ANGLE_CLOCK_CH_CLOSE) / (NT_PER_SECOND / 1000000)));
+			(unsigned)(angleClockBodyMaxLateTicks(ANGLE_CLOCK_CH_OPEN) / (NT_PER_SECOND / 1000000)));
 		const uint32_t ringTotal = angleClockLateCaptureTotal();
 		const int printCount = (ringTotal < ANGLE_CLOCK_LATE_CAPTURE_RING) ? (int)ringTotal : ANGLE_CLOCK_LATE_CAPTURE_RING;
 		efiPrintf("angclk late>=10us captures=%u (last %d, newest first; imm=refresh due-now arm, iabr bit31=handoff active, bit28=TMR2 itself)",
@@ -1309,20 +1310,6 @@ void setup_custom_board_overrides() {
 		efiPrintf("angclk open lateArm split: guard=%u tickPast=%u",
 			(unsigned)angleClockLateArmOpenGuard(),
 			(unsigned)angleClockLateArmOpenTickPast());
-		// Close-arm busy PW histogram (2026-10-09): 4 x 8-bit saturating bins
-		// over the arm delay = injection PW (<5/5-10/10-15/>=15 ms) of the
-		// close arms that FAILED busy. Reading: at 2650 rpm the 180-deg open
-		// spacing is ~11.3 ms, so busy in the 10-15/>=15 bins = duty overlap
-		// (PW > spacing, real high load); busy in the <5/5-10 bins at ANY rpm
-		// = the opens were compressed while PW was small (double-open
-		// re-arm). At idle/mid rpm (spacing 20-36 ms) ANY busy = compression.
-		{
-			const uint32_t h = angleClockCloseBusyPwHist();
-			efiPrintf("angclk closePW busy[<5/5-10/10-15/>=15ms]=%u/%u/%u/%u (total busy=%u)",
-				(unsigned)(h & 0xFF), (unsigned)((h >> 8) & 0xFF),
-				(unsigned)((h >> 16) & 0xFF), (unsigned)((h >> 24) & 0xFF),
-				(unsigned)angleClockBusyCount(ANGLE_CLOCK_CH_CLOSE));
-		}
 		{
 			const DwellArmRefusal& r = angleClockDwellRefusal();
 			if (r.branch != 0xFF) {
@@ -1337,6 +1324,7 @@ void setup_custom_board_overrides() {
 		}
 		// TMR2 runtime clock sanity (the 2026-09-20 dwell lateArm root cause).
 		angleClockTimerDiag();
+		resetInjectionCC2Counters();
 		angleClockResetStats();
 #endif // EFI_ANGLE_CLOCK
 

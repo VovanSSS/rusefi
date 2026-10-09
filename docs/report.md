@@ -1,5 +1,56 @@
 # Work Report
 
+## 2026-10-09 (2) - m74_9: injection close ВЕРНУЛАСЬ на TIM5 CC2 мини-очередь (директива пользователя, вариант A) - IMPLEMENTED, build OK, car verdict за следующим lockstats
+
+Один канал TMR2 CC4 не мог держать перекрывающиеся close (busy при
+PW > 180 град = duty > 25%; в окне 15:31 было 20857 busy). Вся очередь
+close теперь на TIM5 CC2 (injection_close_hw.{h,cpp}), 4 слота по
+цилиндру - перекрытие поглощается как pendingCount>1, busy как класс
+исчезает по построению (потерянный close требовал бы duty > 100%).
+
+Изменения:
+- injection_close_hw.{h,cpp}: гейт #if !EFI_ANGLE_CLOCK снят (все prod
+  сборки; не-angle-clock платы получают тот же код, что и раньше).
+  InjCloseSlot хранит InjectionEvent* (4 Б) вместо action_s (8 Б) -
+  action пересоздаётся в dispatch (action_s::make<turnInjectionPinLow>);
+  счётчики CC2 упакованы в ОДНО слово (две 16-битных насыщающихся
+  половины, равенство scheduled==fired переживает насыщение); добавлен
+  resetInjectionCC2Counters().
+- microsecond_timer_stm32.cpp: CC2 callback + CCMR1 OC2M разгейчены
+  (на angle-clock сборке CC2 снова сконфигурирован).
+- fuel_schedule.cpp: turnInjectionPinHigh вызывает scheduleInjectionCloseHW
+  во ВСЕХ сборках - единственная точка вооружения, якорь = реальный
+  момент open (инвариант "never pre-schedule a TIM5 event whose action is
+  re-armed from a TMR ISR" держится).
+- angle_clock.{h,cpp}: close убран полностью - ANGLE_CLOCK_CH_CLOSE /
+  angleClockCancelClose / angleClockArmInjectionCloseFromNow УДАЛЕНЫ,
+  s_ch и телеметрия [4]->[3], CC_IF_MASK 3 бита, dispatch 3 канала
+  (CC4 на TMR2 свободен). Гистограмма closePW busy удалена (busy нет).
+- lockstats: angclk строки теперь dwell/spark/open; НОВАЯ строка
+  'injCC2 scheduled=%u fired=%u' (per-window, сброс с lockstats).
+
+Приоритет/исключение (проверено в 3-таймерную эпоху): CC2 ISR делит
+вектор TIM5 (prio 5), пишет в очередь TMR2 open ISR на prio 3.
+hwInjectionCloseCallback держит CriticalSectionLocker (BASEPRI 3) через
+слоты/CCR + тела action'ов - TMR2 не может порвать очередь;
+scheduleInjectionCloseHW без лока (её вызыватели выше CC2 ISR). ЦЕНА
+(принята): close action (~40 мкс с InjectionEvent::update) теперь под
+CS и на prio 5 - TMR2 fire'ы замаскированы пока исполняется CC2 entry
+(~4 x 40 мкс за цикл на оборотах = ~2%), точность close теряет prio-3
+hardware-compare (maxLate ~100-200 мкс на классе TIM5 batch, ~1% от PW
+15 мс).
+
+RAM: ram0 196572/196608 (36 Б запаса) ПОСЛЕ ужатия: слоты без action_s,
+счётчики в одном слове, late-capture ring 8->6. Первая попытка линковки
+дала overflow 96 Б.
+
+Валидация: compile_m74_9.sh BUILD SUCCESSFUL (hwInjectionCloseCallback и
+s_cc2Counters в ELF, строка 'injCC2 scheduled' в .rodata); unit tests
+собираются/линкуются чисто; НЕ bench/car-tested. Ожидание на следующем
+lockstats: close исчезает из angclk, injCC2 scheduled==fired точно,
+sched fuel n = только open tickPast fallback'и (close-fallback'ов больше
+нет).
+
 ## 2026-10-09 - m74_9: close-busy - два механизма, гистограмма добавлена (анализ + инструментация, verdict за следующим lockstats)
 
 Запрос пользователя: "angclk close fired=71237 lateArm=20857 busy=20857
@@ -15,11 +66,14 @@
 - busy по окнам: 0.2-0.5% (idle 1050-1250), 2.9-6.1% (1500-1620), 16.4-22.6%
   (2640-2750 rpm).
 
-МЕХАНИЗМ 1 - duty overlap (нужен PW > интервала между open'ами = 180 град):
-тюн 174 cc/min + lambda 0.837 на нагрузке -> WOT PW ~15-16 ms при 2750 rpm
-= duty ~73% > 50% -> пересечение open'ов СОСЕДНИХ цилиндров физически
-неизбежно на высокой нагрузке (сток так же). busy при этом = (PW-I)/I.
-Объясняет высокооборотные окна ТОЛЬКО если там была реальная нагрузка.
+МЕХАНИЗМ 1 - duty overlap (нужен PW > интервала между open'ами = 180 град
+= duty > 25%: duty = PW x rpm / 120000, цикл 720 град; мои ранние
+"duty 50%/73%" в чате были в 2 раза завышены - исправлено): тюн
+174 cc/min + lambda 0.837 на нагрузке -> WOT PW ~15.7 ms при 2750 rpm =
+duty ~36%, ~15 ms при 5600 = ~70% -> выше duty 25% пересечение open'ов
+СОСЕДНИХ цилиндров физически неизбежно (сток так же). busy при этом =
+(PW-I)/I. Объясняет высокооборотные окна ТОЛЬКО если там была реальная
+нагрузка.
 
 МЕХАНИЗМ 2 - double-open re-arm (аналог dwell Mode B): после fire open(N)
 guard injectionStartArmed пропускает следующий window-match если CC3

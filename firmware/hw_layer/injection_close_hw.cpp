@@ -4,16 +4,20 @@
  * TIM5 CC2 mini-queue for injection close events.
  * See injection_close_hw.h for architecture notes.
  *
- * NON-ANGLE-CLOCK BUILDS ONLY: the angle-clock build (m74_9) arms the
- * injection close on the TMR2 angle clock and does not compile this file.
+ * ALL PROD BUILDS: on the angle-clock build (m74_9, 2026-10-09) the close
+ * moved BACK here from TMR2 CC4 - the single CC4 channel could not hold two
+ * overlapping closes (PW > the 180-deg open spacing), and every busy close
+ * fell back to the TIM5 executor batch. The 4-slot queue absorbs the
+ * overlap by construction.
  */
 
 #include "pch.h"
 
-#if EFI_PROD_CODE && HAL_USE_PWM && !EFI_ANGLE_CLOCK
+#if EFI_PROD_CODE && HAL_USE_PWM
 
 #include "injection_close_hw.h"
 #include "port_microsecond_timer.h"
+#include "main_trigger_callback.h"
 
 // CC2G bit in EGR: force CC2 compare event (same pattern as CC1G in the executor).
 // ChibiOS defines CC1G but not CC2G; define it here.
@@ -26,16 +30,23 @@ static constexpr uint32_t INJ_CC2_MARGIN_TICKS = US2NT(4);
 
 struct InjCloseSlot {
     efitick_t  fireAt;          // absolute NT time for the LATEST pending close
-    action_s   action;          // turnInjectionPinLow(event)
+    // The close action is ALWAYS turnInjectionPinLow(event) - store the event
+    // pointer (4 bytes) instead of a full action_s (8 bytes): ram0 on the
+    // m74_9 board has no headroom for the extra 4 bytes per slot.
+    InjectionEvent* event;
     uint8_t    pendingCount = 0; // 0=free, 1=one close pending, 2+=overlap
 };
 
 static InjCloseSlot s_injClose[4];
-static uint32_t s_cc2FiredCount = 0;
-static uint32_t s_cc2ScheduledCount = 0;
+// Two 16-bit saturating halves packed in one word (ram0 headroom):
+// bits 15:0 = scheduled, bits 31:16 = fired. Per-window deltas (lockstats
+// resets them), so 65535 saturation is reached only in the longest windows
+// and the scheduled==fired equality survives saturation.
+static uint32_t s_cc2Counters = 0;
 
-uint32_t getInjectionCC2FiredCount()     { return s_cc2FiredCount; }
-uint32_t getInjectionCC2ScheduledCount() { return s_cc2ScheduledCount; }
+uint32_t getInjectionCC2FiredCount()     { return (s_cc2Counters >> 16) & 0xFFFF; }
+uint32_t getInjectionCC2ScheduledCount() { return s_cc2Counters & 0xFFFF; }
+void resetInjectionCC2Counters() { s_cc2Counters = 0; }
 
 // Re-arm CC2 to the earliest pending slot.
 // Caller must hold the kernel critical section: the injection-OPEN ISR can
@@ -80,12 +91,12 @@ static void dispatchAndRearm() {
         if (!slot.pendingCount) continue;
         // Signed comparison so past-due events (CNT > fireAt) also fire.
         if (static_cast<int32_t>(now - static_cast<uint32_t>(slot.fireAt)) >= 0) {
-            action_s act = slot.action;
+            InjectionEvent* event = slot.event;
             slot.pendingCount--;
 
             if (slot.pendingCount == 0) {
                 // Last pending close: release slot.
-                slot.action = {};
+                slot.event = nullptr;
             } else {
                 // Overlap: more closes pending (overlappingCounter > 1).
                 // Re-arm CC2 immediately so the next close fires right away.
@@ -95,8 +106,8 @@ static void dispatchAndRearm() {
                               + static_cast<efitick_t>(INJ_CC2_MARGIN_TICKS);
             }
 
-            if (act) {
-                act.execute();
+            if (event) {
+                action_s::make<turnInjectionPinLow>(event).execute();
             }
         }
     }
@@ -105,17 +116,19 @@ static void dispatchAndRearm() {
 }
 
 void hwInjectionCloseCallback(PWMDriver* /*pwmp*/) {
-    // Kernel critical section FIRST: higher-priority ISRs that call
-    // scheduleInjectionCloseHW() mutate the same s_injClose[] slots +
-    // CCR2/DIER/EGR (rearmCC2). BASEPRI masks them out, so the queue update
-    // cannot be preempted mid-way.
+    // Kernel critical section FIRST: the injection-OPEN ISR (TMR2, prio 3,
+    // on the angle-clock build) can preempt this prio-5 CC2 ISR and mutate
+    // the same s_injClose[] slots + CCR2/DIER/EGR (scheduleInjectionCloseHW /
+    // rearmCC2). BASEPRI masks it out, so the queue update cannot be torn.
     chibios_rt::CriticalSectionLocker csl;
 
     // CC2IE was NOT auto-disabled by the LLD (unlike CC1 which the executor
     // manages manually).  Disable it first to prevent re-fires on the same CCR.
     pwmDisableChannelNotificationI(&SCHEDULER_PWM_DEVICE, 1);
     SCHEDULER_TIMER_DEVICE->SR = ~STM32_TIM_SR_CC2IF;
-    s_cc2FiredCount++;
+    if (((s_cc2Counters >> 16) & 0xFFFF) < 0xFFFF) {
+        s_cc2Counters += (1u << 16);
+    }
 
     dispatchAndRearm();
 
@@ -128,8 +141,17 @@ void scheduleInjectionCloseHW(int cyl, efitick_t nowNt,
         return;
     }
 
+    // The action is always turnInjectionPinLow(event): keep only the event
+    // pointer in the slot (see InjCloseSlot).
+    InjectionEvent* event = action.getArgument<InjectionEvent*>();
+    if (!event) {
+        return;
+    }
+
     const efitick_t fireAt = sumTickAndFloat(nowNt, static_cast<float>(delayNt));
-    s_cc2ScheduledCount++;
+    if ((s_cc2Counters & 0xFFFF) < 0xFFFF) {
+        s_cc2Counters++;
+    }
 
     // No lock here: the callers run ABOVE this CC2 ISR (it cannot preempt
     // them) or already inside the executor's critical section. The CC2 ISR
@@ -139,7 +161,7 @@ void scheduleInjectionCloseHW(int cyl, efitick_t nowNt,
     if (s_injClose[cyl].pendingCount == 0) {
         // Normal path: slot free.
         s_injClose[cyl].fireAt  = fireAt;
-        s_injClose[cyl].action  = action;
+        s_injClose[cyl].event   = event;
         s_injClose[cyl].pendingCount = 1;
     } else {
         // Overlap: a previous injection hasn't closed yet (overlappingCounter > 1).
@@ -167,7 +189,7 @@ void cancelInjectionCloseHW(int cyl) {
     // against the injection-OPEN ISR and this CC2 ISR.
     chibios_rt::CriticalSectionLocker csl;
     s_injClose[cyl].pendingCount = 0;
-    s_injClose[cyl].action  = {};
+    s_injClose[cyl].event  = nullptr;
     rearmCC2();
 }
 

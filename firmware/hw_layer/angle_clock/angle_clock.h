@@ -58,11 +58,15 @@ static inline uint32_t angleClockDelayTicks(float angleFromNow, float ticksPerDe
 
 #if EFI_ANGLE_CLOCK
 
-// Channel numbers by event type (fixed assignment, == TMR2 CC1..CC4).
+// Channel numbers by event type (fixed assignment, == TMR2 CC1..CC3).
 static constexpr int ANGLE_CLOCK_CH_DWELL = 0;  // CC1: dwell start (angle)
 static constexpr int ANGLE_CLOCK_CH_SPARK = 1;  // CC2: spark fire (from-now)
 static constexpr int ANGLE_CLOCK_CH_OPEN  = 2;  // CC3: injection open (angle)
-static constexpr int ANGLE_CLOCK_CH_CLOSE = 3;  // CC4: injection close (from-now)
+// CC4 is FREE: the injection close lives on the TIM5 CC2 mini-queue
+// (injection_close_hw.{h,cpp}, NT domain) since 2026-10-09 - a single
+// TMR2 close channel could not hold overlapping closes (PW > 180-deg
+// spacing at duty > 25%). No ANGLE_CLOCK_CH_CLOSE constant exists so a
+// future close arm cannot silently target the dead channel.
 
 // Close-arm PW histogram (2026-10-09): 4 x 8-bit saturating bins packed in one
 // 32-bit word (ram0 on this board has single-digit bytes of headroom, so no
@@ -170,7 +174,7 @@ struct DwellArmRefusal {
 // per-type action-body durations name the source on the next lockstats
 // (see docs/tmr2_latency_analysis_2026-10-03.md).
 struct AngleClockLateCapture {
-    uint8_t  ch;                 // 0=dwell 1=spark 2=open 3=close
+    uint8_t  ch;                 // 0=dwell 1=spark 2=open
     uint8_t  immediate;          // fire armed by the refresh "due now" path
     uint8_t  primask;            // __get_PRIMASK() at entry
     uint8_t  basepri;            // __get_BASEPRI() at entry (raw value; 0 = unmasked)
@@ -182,7 +186,7 @@ struct AngleClockLateCapture {
 };
 
 // Size of the capture ring (the last N late>=10us fires survive to lockstats).
-static constexpr int ANGLE_CLOCK_LATE_CAPTURE_RING = 8;
+static constexpr int ANGLE_CLOCK_LATE_CAPTURE_RING = 6;
 
 // Total late>=10us fires captured since the last angleClockResetStats().
 uint32_t angleClockLateCaptureTotal();
@@ -221,16 +225,6 @@ bool angleClockArmInjection(float targetAngle, action_s action,
 // to TIM5) when the delay is too small or the channel is busy.
 bool angleClockArmSparkFromNow(uint32_t nowAc, uint32_t delayNt, action_s action);
 
-// Arm the injection-close channel (CC4) directly from a TMR2-domain timestamp
-// + delay. Called from turnInjectionPinHigh (the actual injector-open
-// callback) to anchor the closing pulse to the REAL opening moment,
-// regardless of any TIM5/TMR2 START timing uncertainty. Analogue of
-// angleClockArmSparkFromNow for injection close; 32-bit now, so PW up to
-// ~65 ms is fine (the 16-bit PW > 8 ms limit of the old TMR3 arm is gone).
-// Returns false (caller falls back to TIM5) when the delay is too small or
-// the channel is busy.
-bool angleClockArmInjectionCloseFromNow(uint32_t nowAc, uint32_t delayNt, action_s action);
-
 // Re-anchor the armed ANGLE channels (dwell, open) from the freshest tooth
 // data. Due events (angle already passed) are armed for immediate ISR
 // firing - both dwell and injection, matching the time-based build's
@@ -244,7 +238,6 @@ void angleClockRefresh();
 void angleClockCancelDwell();
 void angleClockCancelSpark();
 void angleClockCancelInjection();
-void angleClockCancelClose();
 
 // True while the channel holds a pending action (armed and not yet fired).
 // The action is stored by writeChannel and released by the ISR dispatch when
@@ -293,13 +286,6 @@ uint32_t angleClockImmediateFireCount();
 // vs open split for attribution. The band check is in the inline helpers below.
 uint32_t angleClockLookaheadDwell();
 uint32_t angleClockLookaheadOpen();
-
-// Close-arm busy PW histogram (2026-10-09): 4 x 8-bit saturating bins packed
-// in one word, bins by the arm delay = injection PW (<5/5-10/10-15/>=15 ms).
-// Counts only the busy-FAILED close arms. See the CLOSE_PW_HIST_BINS comment
-// for the reading: bin2/3 busy at high rpm = duty overlap, bin0/1 busy at
-// any rpm = compressed-open double-fire class.
-uint32_t angleClockCloseBusyPwHist();
 void angleClockRecordLookaheadDwell();
 void angleClockRecordLookaheadOpen();
 

@@ -8,10 +8,6 @@
 
 #if EFI_ENGINE_CONTROL
 
-#if EFI_ANGLE_CLOCK
-#include "angle_clock.h"
-#endif
-
 #if EFI_PROD_CODE && HAL_USE_PWM
 #include "injection_close_hw.h"
 #endif
@@ -41,27 +37,14 @@ TRIGGER_RAM_CODE void turnInjectionPinHigh(scheduler_arg_t const arg) {
 	// Arm injection close at nowNt + PW. This is anchored to the ACTUAL open
 	// moment, not the nominal startTime, so PW is always measured from real
 	// physical injector opening.
+	// TIM5 CC2 32-bit mini-queue (see injection_close_hw.h): 4 slots, one per
+	// cylinder - overlapping closes (duty overlap of adjacent cylinders, or a
+	// double-open re-arm) just occupy their own slot instead of colliding on
+	// a single channel.
 	if (event->injectionEndDelayNt > 0) {
-#if EFI_ANGLE_CLOCK
-		// Angle-clock build: TMR2 CC4 (32-bit hardware compare) fires the close
-		// directly - no TIM5 CC2 mini-queue, no 8-ms overflow, no race
-		// condition. The anchor is TMR2's OWN counter (angleClockNow() - the
-		// same counter this open ISR just fired from, no TIM5 read); the TIM5
-		// executor below is the fallback. Falls back when the delay is too
-		// small or the close channel still holds a pending close.
-		if (!angleClockArmInjectionCloseFromNow(
-				angleClockNow(), event->injectionEndDelayNt,
-				action_s::make<turnInjectionPinLow>(event))) {
-			getScheduler()->schedule("inj close", nullptr,
-				sumTickAndFloat(nowNt, static_cast<float>(event->injectionEndDelayNt)),
-				action_s::make<turnInjectionPinLow>(event));
-		}
-#else
-		// Time-based builds: TIM5 CC2 32-bit mini-queue (see injection_close_hw.h).
 		scheduleInjectionCloseHW(
 			event->getCylinderNumber(), nowNt, event->injectionEndDelayNt,
 			action_s::make<turnInjectionPinLow>(event));
-#endif
 	}
 #endif // EFI_PROD_CODE && HAL_USE_PWM
 }

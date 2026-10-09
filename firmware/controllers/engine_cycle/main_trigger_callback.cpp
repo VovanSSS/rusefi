@@ -130,11 +130,11 @@ TRIGGER_RAM_CODE void InjectionEvent::onTriggerTooth(efitick_t nowNt, float curr
 		// Fell through the guard with the previous arm already fired: this
 		// window match is a RE-ARM before the close of the SAME injection (a
 		// phase re-anchor moved the current window onto the fixed start angle
-		// right after the open) - the double-open whose second close arm
-		// collides with the still-pending first close on CC4 (close-busy
-		// class). The normal next-cycle schedule cannot land here:
-		// InjectionEvent::update() runs at the close and clears
-		// injectionStartArmed first.
+		// right after the open) - the double-open. Its close lands in the
+		// TIM5 CC2 mini-queue slot of the same cylinder as an overlap
+		// (pendingCount++), not as a lost close. The normal next-cycle
+		// schedule cannot land here: InjectionEvent::update() runs at the
+		// close and clears injectionStartArmed first.
 	}
 
 	// The injection start is scheduled one tooth ahead: the early window
