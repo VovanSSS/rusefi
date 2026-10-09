@@ -158,6 +158,31 @@ static uint32_t s_refreshPending      = 0;  // refresh: left a channel with a pe
 static uint32_t s_lookaheadDwell      = 0;  // early-window dwell arm in [nextNext, nextNext+K) (2026-09-26)
 static uint32_t s_lookaheadOpen       = 0;  // early-window open arm in [nextNext, nextNext+K)
 
+// Close-arm busy PW histogram (2026-10-09): 4 x 8-bit saturating bins packed
+// in ONE word (ram0 on this board has single-digit bytes of headroom). Counts
+// the close arms that FAILED busy, by the arm delay = the injection PW (bin0
+// = <5 ms, bin1 = 5-10, bin2 = 10-15, bin3 = >=15 ms). The discriminator for
+// the close-busy class: at 2650 rpm the 180-deg open spacing is ~11.3 ms, so
+// busy in bin2/3 = duty overlap (PW > spacing, real high load) and busy in
+// bin0/1 at any rpm = the opens were compressed while PW was small
+// (double-open re-arm). NT ticks at 4 MHz: 1 ms = 4000 ticks.
+static uint32_t s_closeBusyPwHist = 0;
+
+// 8-bit per-bin mask (bins packed into the single word above).
+static constexpr uint32_t CLOSE_PW_HIST_BIN_MASK = 0xFF;
+
+TRIGGER_RAM_CODE static void recordCloseBusyDelay(uint32_t delayNt) {
+    int bin;
+    if (delayNt >= 60000)      { bin = 3; }  // >= 15 ms
+    else if (delayNt >= 40000) { bin = 2; }  // 10-15 ms
+    else if (delayNt >= 20000) { bin = 1; }  // 5-10 ms
+    else                       { bin = 0; }  // < 5 ms
+    const uint32_t shift = static_cast<uint32_t>(bin) * 8;
+    if (((s_closeBusyPwHist >> shift) & CLOSE_PW_HIST_BIN_MASK) < CLOSE_PW_HIST_BIN_MASK) {
+        s_closeBusyPwHist += (1u << shift);
+    }
+}
+
 // Capture-at-entry instrumentation (2026-10-03): every fire with ISR-entry
 // lateness >= 10 us writes a snapshot into a small ring, and every fire
 // measures its action-body wall time. The xsec handoff=/ser= split leaves the
@@ -573,6 +598,9 @@ TRIGGER_RAM_CODE static bool armFromNow(int ch, uint32_t nowAc, uint32_t delayNt
     if (c.action) {
         s_lateArm[ch]++;
         s_lateArmBusy[ch]++;
+        if (ch == ANGLE_CLOCK_CH_CLOSE) {
+            recordCloseBusyDelay(delayNt);
+        }
         return false;
     }
 
@@ -747,6 +775,7 @@ uint32_t angleClockRefreshMaxPullTicks() { return s_refreshMaxPullTicks; }
 uint32_t angleClockRefreshPending()   { return s_refreshPending; }
 uint32_t angleClockLookaheadDwell()   { return s_lookaheadDwell; }
 uint32_t angleClockLookaheadOpen()    { return s_lookaheadOpen; }
+uint32_t angleClockCloseBusyPwHist()  { return s_closeBusyPwHist; }
 void angleClockRecordLookaheadDwell() { s_lookaheadDwell++; }
 void angleClockRecordLookaheadOpen()  { s_lookaheadOpen++; }
 uint32_t angleClockInitAcDelta()     { return s_initAcDelta; }
@@ -765,6 +794,7 @@ void angleClockResetStats() {
     s_refreshMaxPullTicks = 0;
     s_refreshPending = 0;
     s_lookaheadDwell = s_lookaheadOpen = 0;
+    s_closeBusyPwHist = 0;
     s_lateCaptureHead = 0;
     s_lateCaptureTotal = 0;
     for (int ch = 0; ch < 4; ch++) {

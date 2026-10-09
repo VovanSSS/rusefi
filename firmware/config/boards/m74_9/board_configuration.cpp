@@ -1309,6 +1309,20 @@ void setup_custom_board_overrides() {
 		efiPrintf("angclk open lateArm split: guard=%u tickPast=%u",
 			(unsigned)angleClockLateArmOpenGuard(),
 			(unsigned)angleClockLateArmOpenTickPast());
+		// Close-arm busy PW histogram (2026-10-09): 4 x 8-bit saturating bins
+		// over the arm delay = injection PW (<5/5-10/10-15/>=15 ms) of the
+		// close arms that FAILED busy. Reading: at 2650 rpm the 180-deg open
+		// spacing is ~11.3 ms, so busy in the 10-15/>=15 bins = duty overlap
+		// (PW > spacing, real high load); busy in the <5/5-10 bins at ANY rpm
+		// = the opens were compressed while PW was small (double-open
+		// re-arm). At idle/mid rpm (spacing 20-36 ms) ANY busy = compression.
+		{
+			const uint32_t h = angleClockCloseBusyPwHist();
+			efiPrintf("angclk closePW busy[<5/5-10/10-15/>=15ms]=%u/%u/%u/%u (total busy=%u)",
+				(unsigned)(h & 0xFF), (unsigned)((h >> 8) & 0xFF),
+				(unsigned)((h >> 16) & 0xFF), (unsigned)((h >> 24) & 0xFF),
+				(unsigned)angleClockBusyCount(ANGLE_CLOCK_CH_CLOSE));
+		}
 		{
 			const DwellArmRefusal& r = angleClockDwellRefusal();
 			if (r.branch != 0xFF) {

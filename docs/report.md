@@ -1,5 +1,53 @@
 # Work Report
 
+## 2026-10-09 - m74_9: close-busy - два механизма, гистограмма добавлена (анализ + инструментация, verdict за следующим lockstats)
+
+Запрос пользователя: "angclk close fired=71237 lateArm=20857 busy=20857
+копится" (окно 15:31, ~2750 rpm). Первый мой ответ ("всё ок, это duty")
+ОТОЗВАН: он не объяснял холостые/средние обороты.
+
+ФАКТЫ (не зависят от механизма):
+- Бухгалтерия точная во всех 9 окнах: close total (fired+lateArm) == open
+  total, sched fuel n == open lateArm + close lateArm ТОЧНО. Зависших
+  форсунок нет. busy == lateArm == 100% (CC4 занят предыдущим close, не
+  tickPast/guard). angleClockCancelClose() - мёртвая обёртка, никто не
+  снимает close с CC4 -> CC4 занят ТОЛЬКО пока висит незакрытая форсунка.
+- busy по окнам: 0.2-0.5% (idle 1050-1250), 2.9-6.1% (1500-1620), 16.4-22.6%
+  (2640-2750 rpm).
+
+МЕХАНИЗМ 1 - duty overlap (нужен PW > интервала между open'ами = 180 град):
+тюн 174 cc/min + lambda 0.837 на нагрузке -> WOT PW ~15-16 ms при 2750 rpm
+= duty ~73% > 50% -> пересечение open'ов СОСЕДНИХ цилиндров физически
+неизбежно на высокой нагрузке (сток так же). busy при этом = (PW-I)/I.
+Объясняет высокооборотные окна ТОЛЬКО если там была реальная нагрузка.
+
+МЕХАНИЗМ 2 - double-open re-arm (аналог dwell Mode B): после fire open(N)
+guard injectionStartArmed пропускает следующий window-match если CC3
+свободен и armedAt прошёл; phase re-anchor (gapCorr/rpm-drop) двигает
+текущее окно на фиксированный injectionStartAngle сразу после open ->
+re-arm того же цилиндра ДО его close -> второй open -> второй close-arm
+бьёт в занятый CC4. Каждый = +1 лишний open (в данных excess opens =
+0.5-1.9% - совпадает с idle/mid busy по порядку). Объясняет idle/mid окна
+(W1/W3/W4/W7/W8/W9), где duty невозможен (PW 2-6 ms << интервала 20-36 ms).
+
+ДЫРА: 20857 busy в W2 vs excess opens 1753 - double-fire покрывает ~8%,
+остальное требует либо нагрузки (PW>11.3 ms при 2750), либо третьего
+механизма. Решает только измерение PW.
+
+ИНСТРУМЕНТАЦИЯ (IMPLEMENTED, build OK): lockstats печатает
+'angclk closePW busy[<5/5-10/10-15/>=15ms]=a/b/c/d (total busy=N)' - 4
+8-битных насыщающихся бина в ОДНОМ слове (ram0 на m74_9 имеет ~8 байт
+запаса - полные массивы не лезут, линкер overflowed на 52 байта). Запись
+в armFromNow по ветке busy. Чтение: при 2650 rpm интервал 11.3 ms -> busy
+в 10-15/>=15 = duty; busy в <5/5-10 на ЛЮБЫХ оборотах = double-open. При
+idle/mid ЛЮБОЙ busy = double-open класс. total busy уже печатается
+(lateArm==busy). Сброс с lockstats.
+
+СЛЕДУЮЩИЙ ШАГ: один заезд + lockstats. Если busy в коротких бинах -
+копать double-open (guard после phase re-anchor, кандидат - respacing
+guard как для dwell Mode B). Если в длинных и нагрузка была реальной -
+busy это физика duty, а "десятки тысяч на TIM5" на самом деле duty>50%.
+
 ## 2026-10-02 (7) - m74_9: откат rusEFI -> OEM через OEM loader BENCH-VALIDATED end-to-end (пользователь)
 
 Пользователь прогнал полную процедуру на стенде (PCAN_USBBUS1, билд

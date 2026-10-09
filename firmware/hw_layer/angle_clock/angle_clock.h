@@ -64,6 +64,17 @@ static constexpr int ANGLE_CLOCK_CH_SPARK = 1;  // CC2: spark fire (from-now)
 static constexpr int ANGLE_CLOCK_CH_OPEN  = 2;  // CC3: injection open (angle)
 static constexpr int ANGLE_CLOCK_CH_CLOSE = 3;  // CC4: injection close (from-now)
 
+// Close-arm PW histogram (2026-10-09): 4 x 8-bit saturating bins packed in one
+// 32-bit word (ram0 on this board has single-digit bytes of headroom, so no
+// per-bin arrays). Bins count the CLOSE arms that FAILED busy, by the arm
+// delay = the injection PW: bin0 = <5 ms, bin1 = 5-10, bin2 = 10-15,
+// bin3 = >=15 ms. Reading: at 2650 rpm the 180-deg open spacing is ~11.3 ms,
+// so busy in bin2/3 = duty overlap (PW > spacing, real high load); busy in
+// bin0/1 at ANY rpm = the opens were compressed while PW was small
+// (double-open re-arm). At idle/mid rpm (spacing 20-36 ms) ANY busy is the
+// compression class.
+static constexpr int CLOSE_PW_HIST_BINS = 4;
+
 // LOOKAHEAD (2026-09-26): the one-tooth-ahead early window at tooth T-1 spans
 // [nextPhase, nextNextPhase). A dwell/inj START target that lands just past
 // nextNextPhase - the m74_9 START angles sit AT tooth boundaries by
@@ -282,6 +293,13 @@ uint32_t angleClockImmediateFireCount();
 // vs open split for attribution. The band check is in the inline helpers below.
 uint32_t angleClockLookaheadDwell();
 uint32_t angleClockLookaheadOpen();
+
+// Close-arm busy PW histogram (2026-10-09): 4 x 8-bit saturating bins packed
+// in one word, bins by the arm delay = injection PW (<5/5-10/10-15/>=15 ms).
+// Counts only the busy-FAILED close arms. See the CLOSE_PW_HIST_BINS comment
+// for the reading: bin2/3 busy at high rpm = duty overlap, bin0/1 busy at
+// any rpm = compressed-open double-fire class.
+uint32_t angleClockCloseBusyPwHist();
 void angleClockRecordLookaheadDwell();
 void angleClockRecordLookaheadOpen();
 
