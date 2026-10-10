@@ -1024,7 +1024,43 @@ Authoritative reference is in-tree: `firmware/ChibiOS-Contrib/os/hal/ports/AT32/
 
 Symptom of missing flash setup (fixed 2026-08-21, fork commit e4d262bbd7): every instruction fetch pays maximum wait states - `flashperf` 1M-iteration multiply loop took ~205 ms instead of ~10-20 ms, and the trigger ISR histograms (lockstats) showed ~335 us per tooth at cranking, overlapping the next tooth edge (~1.2 ms @ 850 rpm on 60-2) -> lost teeth -> C9002 on the catch. Distinguish this from a PLL problem: if systick_ms and nt_ms agree (timecheck) and USB/CAN work, the core clock is right - it is a fetch-speed problem, not a clock-tree problem.
 
-m74_9 diagnostics (board-local console): `flashperf` prints PSR + DIVR + CONTR + EOPB0 + the loop time; the loop code lives at ~0x0807118C (NZW area), so the number is the NZW-area fetch cost. `flashnzw` is READ-ONLY on purpose: NZW_BST (PSR bit 12) hangs the flash read path in EVERY phase - live write at full HCLK AND set-at-boot before the PLL switch both produce a hard lockup (no fault, power-cycle-only recovery, bootloader still answers; observed four times 2026-08-21). Leave it off; the Artery SDK never enables it either. EOPB0 (USD + 0x10) reads 0x5FA on m74_9 - not a documented value, ZW-area size unresolved. Measured levers: DIVR=/3 (205 -> 136 ms on the 1M loop) and CONTR[31] continue-read (136 -> ~90 ms); enabled at boot as of fork commit 33f0f243a1.
+m74_9 diagnostics (board-local console): `flashperf` prints PSR + DIVR + CONTR + EOPB0 + the loop time; the loop code lives at ~0x0807118C (NZW area), so the number is the NZW-area fetch cost. `flashnzw` is READ-ONLY on purpose: NZW_BST (PSR bit 12) hangs the flash read path in EVERY phase - live write at full HCLK AND set-at-boot before the PLL switch both produce a hard lockup (no fault, power-cycle-only recovery, bootloader still answers; observed four times 2026-08-21). Leave it off; the Artery SDK never enables it either. EOPB0 (USD + 0x10) reads 0x5FA on m74_9 -> RESOLVED by the fw-m74.9 fork (docs/memory-layout-and-bootloader-details.md): 0x05FA bits[2:0]=010 = 384 KiB SRAM -> 256 KiB ZW flash (0x08000000-0x0803FFFF). Measured levers: DIVR=/3 (205 -> 136 ms on the 1M loop) and CONTR[31] continue-read (136 -> ~90 ms); enabled at boot as of fork commit 33f0f243a1.
+
+### m74_9 ZW placement (landed 2026-10-10, port of fw-m74.9 475cf71)
+
+- The app linker (config/boards/m74_9/firmware/m749.ld) now puts hot code in a
+  `.m749_fast_text` output section at 0x08011000 (front of flash0), captured
+  by function-section NAME GLOBS (Trigger/Shaft/EventQueue/SingleTimer/Pwm/
+  Engine/Injection/Fuel/Ignition/Spark/Dwell/Advance/Timing/Map/Sensor/Adc/
+  Exti/Scheduler/Timer/Limp/WallFuel/Airmass/VeModel/Gpio/Brain/Sniffer/
+  OutputPin/action/assertPin/Wave/Knock/Idle/Etb/Throttle/Vvt/Fan/Boost/
+  Alternator + ChibiOS `.text.ch*`/`._port*`/`Vector*` + getTime/interpol/
+  Rpm/Angle/Dma/pal/ScopePerf + `.text.__aeabi*`/`__hard_fp*`/`__gnu_*`/
+  memset/memcpy), with vectors+ctors in a fixed 4 KiB page 0x08010000-0x08010FFF.
+  Cold rodata classes move OUT of flash0 to `.m749_rodata_nzw` in flash1:
+  `.rodata.str*` + the per-function `.rodata.*.str1.x` pools LTO emits +
+  the wideband blob. ASSERTs: vectors+ctors <= 4 KiB; fast_text end <=
+  0x08040000 (ZW bound for the 384 KiB SRAM option - the board's RAM map
+  mandates it). The linker enforces the flash0/flash1 split by region
+  overflow. Measured: fast_text 130 KiB (0x08011000-0x080318F0), rodata_nzw
+  84 KiB, TEXT 305 KiB in flash1, app srec segments unchanged in structure.
+- THE GLOBS ARE FRAGILE: a class/file rename silently evicts code from ZW (the
+  ASSERT only bounds size, not coverage). `check_zw_coverage.sh` (board bin/,
+  hooked into compile_m74_9.sh) nm-checks the hot symbols resolve in ZW or in
+  the .fast_text RAM copy - add new hot-path symbols there.
+- The .fast_text RAM copy (22.8 KB: angle clock ISR, decode, spark/inj bodies)
+  is KEPT on top of the ZW placement. Two reasons: the car-validated critical
+  path must not move without a bench run, and AT32 has NO read-while-write -
+  instruction fetch from ZW flash STALLS during any MFS write/erase, while
+  RAM code keeps draining the EXTI queue (the 08-24 mid-storm write class).
+  Retiring the copy (frees ram_fast 64 KiB + its 22.8 KB flash LMA, fork does
+  without it) is a separate bench-first step.
+- KNOWN NZW BY DESIGN: Lua, console/TS, config get/set-by-name, thread bodies
+  (dash CAN, L9779 driver, LIN), newlib printf/strtod, and the libgcc float
+  helpers (`__aeabi_ddiv` etc. sit in a plain `.text` input section of the
+  prebuilt archive - unmatchable by globs; the fork has the same hole and
+  still measured 6.4 us decode). ramdisk_image (128 KB const blob) stays in
+  flash0 rodata - flash1 cannot hold it together with TEXT.
 
 ## EFI_USE_OPENBLT: USE_OPENBLT=yes does NOT enable the app-side OpenBLT code
 

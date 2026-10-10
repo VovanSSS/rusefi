@@ -19238,3 +19238,63 @@ Validation: compile_m74_9.sh BUILD SUCCESSFUL. Car verdict pending: idle
 needle must read console rpm, 1900 rpm must read 1900, and the BC hourly
 consumption display must stay alive (if it dies, the [0:1] flow side of the
 multiplex is consumed by the tach too - fallback is rpm x8 unconditionally).
+
+## 2026-10-10 - m74_9: ZW-flash placement ported from fw-m74.9 (475cf71), the fork's "slow flash" fix
+
+The fw-m74.9 fork fixed its slow trigger decode (44.8 -> 6.4 us at 600 rpm)
+by placing hot code in the AT32 zero-wait (ZW) flash window instead of the
+NZW area (issue #13, commit 475cf711a25797581f328d7be2866c9e34e3476d).
+Ported to the rusEFI m74_9 build:
+
+- firmware/config/boards/m74_9/firmware/m749.ld:
+  - New fixed vectors region 0x08010000-0x08010FFF (4 KiB; vectors 0x220 +
+    xtors 8 bytes fit with room); flash0 now starts at 0x08011000.
+  - New .m749_fast_text output section at the front of flash0, capturing hot
+    code by function-section name globs (Trigger/Shaft/EventQueue/
+    SingleTimer/Pwm/Engine/Injection/Fuel/Ignition/Spark/Dwell/Advance/
+    Timing/Map/Sensor/Adc/Exti/Scheduler/Timer/Limp/WallFuel/Airmass/VeModel/
+    Gpio/writePad/Brain/Sniffer/OutputPin/action/assertPin/Wave/Knock/Idle/
+    Etb/Throttle/Vvt/Fan/Boost/Alternator + ChibiOS .text.ch*/._port*/Vector*
+    + getTime/interpol/Rpm/Angle/Dma/pal/ScopePerf + libgcc/glue helpers
+    .text.__aeabi*/__hard_fp*/__gnu_*/memset/memcpy). Measured 133,360 B at
+    0x08011000-0x080318F0 - inside the ZW window.
+  - New .m749_rodata_nzw section in flash1 for the cold rodata classes:
+    plain .rodata.str* and the per-function .rodata.*.str1.x string pools LTO
+    emits, plus the wideband firmware blob (86,213 B moved out of flash0).
+  - ASSERTs: vectors+ctors <= 4 KiB page, __m749_fast_text_end__ <=
+    0x08040000 (the 256 KiB ZW bound of the 384 KiB SRAM option - the board's
+    RAM map already mandates that option).
+- firmware/config/boards/m74_9/bin/check_zw_coverage.sh (new): coverage
+  guard - the linker globs are fragile to class/file renames (the ASSERT only
+  bounds the size), so the script nm-checks the hot symbols resolve inside
+  ZW or the RAM fast copy. Hooked into compile_m74_9.sh after the app link.
+
+Key decisions:
+- The .fast_text RAM copy (22.8 KB, angle clock ISR + decode + bodies) is
+  KEPT on top of the ZW placement: the car-validated critical path does not
+  move, and it keeps instruction fetch alive during MFS flash writes (AT32
+  has no read-while-write - ZW code stalls during any flash write, the RAM
+  decode drains the EXTI queue instead). Retiring it (frees the 64 KiB
+  ram_fast + 22.8 KB flash LMA) is a separate, bench-first step - the fork
+  runs everything from ZW, so it is proven viable, but not on our car yet.
+- The layout math forced the rodata split: flash0 (0x08011000-0x0805F000)
+  holds hot code + non-string rodata + data LMA + fast_text LMA; flash1
+  holds the remaining TEXT + the string pools. The linker enforces both
+  bounds; the strings are cold by construction (format/error paths only).
+- Known NZW leftovers by design: Lua runtime, console/TS code, config
+  get/set-by-name, thread bodies (dash CAN, L9779 driver, LIN), newlib
+  printf/strtod, and the libgcc float helpers (__aeabi_ddiv etc. live in a
+  plain .text input section of the prebuilt archive, unmatchable by the
+  globs - same situation as the fork; the fork still measured 6.4 us decode).
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL end to end (app + bootloader +
+three-stage merge + CRC + app-only srec; check_zw_coverage.sh passes inline).
+App-only srec segments unchanged in structure: 0x08010000-0x0805CA1C +
+0x08090000-0x080F1358 (no new segments - the update path is untouched).
+Unit tests NOT re-run: the change is linker-only (host builds use their own
+scripts); the board build regenerates the shared generated headers as usual
+(touch firmware/integration/rusefi_config.txt + config_page_4.txt before the
+next unit_tests make - the known ping-pong). Bench/car verdict pending:
+lockstats triggerIsr/trgDecode/trgPostDecode vs the RAM-copy baseline, plus
+the angclk body maxUs (the 2026-10-04 residual floor is suspected to be
+GPIO-write stalls, not fetch - ZW will not remove it if so).

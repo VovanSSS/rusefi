@@ -28,6 +28,12 @@ export PATH="/opt/arm-gnu-toolchain/bin:$PATH"
 . config/boards/common_script_read_meta_env.inc "$META" >/dev/null 2>&1
 gmake -j12 "$@"
 
+# 1b. ZW-coverage guard: the .m749_fast_text patterns are name globs, a
+#     rename can silently evict hot code from the zero-wait window (the
+#     link ASSERT only bounds the size). Fails the build when a listed
+#     hot symbol resolves outside ZW/RAM.
+"$SCRIPT_DIR/bin/check_zw_coverage.sh" build/rusefi.elf
+
 # 2. OpenBLT second-stage bootloader.
 BOARD_DIR=../$BOARD_DIR_REL BOARD_META_PATH=../$META gmake -C bootloader -r SUBMAKE=yes -j12
 
