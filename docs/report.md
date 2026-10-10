@@ -19338,3 +19338,39 @@ segment boundaries verified sector-disjoint by a parse script);
 Bench flash of the new rusefi_app.srec is the remaining verdict - it must
 now pass on the unchanged bootloader (and would even work with the OLD
 flasher jar, thanks to the linker-side alignment).
+
+## 2026-10-10 (3) - m74_9: ZW placement CAR-VALIDATED - decode ~6 us, best-ever TMR2 lateness
+
+Four drives, 12 lockstats windows (12:33-14:57). Averages on the move:
+decode 5.5-6.2 us (was 8.7-10 with RAM-marked decode + NZW callees), post
+25-29 us (was 33-37), triggerIsr total 32-34 us (was 50-54). The fork
+parity (6.4 us) is reached; the decode win comes from the ZW placement of
+the callees the RAM-resident decode calls. Idle/storm windows are 40-46 us
+(the rpm-flap storm dominates the event count - 892-1960 teeth/s vs 53
+real - and the flap tooth itself got cheaper, ~46 vs the old ~87 us).
+
+Maxima: triggerMaxDuration 85-99 us steady-state; exactly one ~300 us
+event in the FIRST window of each of the 4 sessions (catch/first-sync
+class, 4/4 - pre-existing). angclk maxLateUs 7-34 us = the best ever
+recorded (56-106 pre-ZW, 25-35 after the 10-04 flash moves). TMR2 action
+bodies: dwell 23-32, spark 29-41, open 21-31 us - another ~45% below the
+10-04 car state (44-53/65-75/33-44). The flash-fetch theory is now fully
+confirmed: with ALL body callees in ZW/RAM the "residual floor" collapsed
+to ~20-25 us. maxPullUs up to 650-724 us on transients = the by-design
+only-earlier refresh re-anchor. One 203 us dwell body in the 12:59:10
+storm window (suspected C9009 print class - console log would confirm).
+
+Anomalies:
+- ONE C9352 (cylinder 2 Coil 3, 5.95 ms) at 14:34:06 mid-drive, session 4
+  - the overdwell rescue bounded it (overdwell n=1, cbmax 188 us = the
+  warning print); one instance in ~2 h is the transient class, watch the
+  rate.
+- open tickPast steady 0.56-0.75% on drives, 1:1 TIM5 fallback (sched fuel
+  n == open tickPast exactly in every window); LOOKAHEAD covers 94-97% of
+  opens; immediate 2-3% on the move, 0.1% idle.
+- injCC2 counters saturated at 65535 in the long 14:45 window (16-bit
+  packing, equality holds - cosmetic).
+- The idle rpm-flap storm is unchanged (pre-existing, not a ZW regression).
+
+Next experiment: retire the .fast_text RAM copy (marks -> ZW) on the bench
+and compare decode RAM vs ZW; if ZW holds ~6 us the 64 KiB ram_fast frees.
