@@ -103,6 +103,44 @@ class OpenBltCanFlasherTest {
     }
 
     @Test
+    void erasesAllSegmentsBeforeProgrammingAny() throws Exception {
+        // Regression for the ZW-layout corruption (2026-10-10): the bootloader
+        // erases whole 4 KiB sectors per PROGRAM_CLEAR, so two segments whose
+        // gap is smaller than a sector overlap in flash. With per-segment
+        // erase-then-program the erase of segment N+1 wiped the already-
+        // programmed tail of segment N (verify mismatch at the wideband blob
+        // tail). The flasher must erase EVERYTHING before programming ANYTHING:
+        // assert every PROGRAM_CLEAR precedes every PROGRAM_BATCH/PROGRAM_MAX.
+        byte[] seg1 = pattern(0x9000, 1);
+        byte[] seg2 = pattern(0x9000, 2);
+        // 0x100-byte gap between the segments: smaller than a 4 KiB sector.
+        List<String> lines = new ArrayList<>(SrecTestUtil.image(SEG1_BASE, seg1));
+        lines.remove(lines.size() - 1); // drop terminator
+        lines.addAll(SrecTestUtil.image(SEG1_BASE + seg1.length + 0x100, seg2));
+        Path srec = writeImage(lines);
+
+        FakeCanLink link = new FakeCanLink();
+        OpenBltCanFlasher flasher = new OpenBltCanFlasher(new OpenBltCanFlasher.Listener() {
+        });
+
+        flasher.flash(link, config(srec, false, false));
+
+        boolean sawProgram = false;
+        for (var frame : link.sent()) {
+            int cmd = frame.data()[0] & 0xFF;
+            if (cmd == XcpConstants.CMD_PROGRAM_BATCH || cmd == XcpConstants.CMD_PROGRAM_MAX
+                    || cmd == XcpConstants.CMD_PROGRAM) {
+                sawProgram = true;
+            }
+            if (cmd == XcpConstants.CMD_PROGRAM_CLEAR) {
+                assertTrue(!sawProgram, "PROGRAM_CLEAR after programming started: "
+                        + "a later segment's erase would wipe the previous segment's tail");
+            }
+        }
+        assertTrue(sawProgram);
+    }
+
+    @Test
     void verifyCatchesCorruption() throws Exception {
         byte[] seg1 = pattern(32, 3);
         Path srec = writeImage(new ArrayList<>(SrecTestUtil.image(SEG1_BASE, seg1)));

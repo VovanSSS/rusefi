@@ -1048,6 +1048,20 @@ m74_9 diagnostics (board-local console): `flashperf` prints PSR + DIVR + CONTR +
   ASSERT only bounds size, not coverage). `check_zw_coverage.sh` (board bin/,
   hooked into compile_m74_9.sh) nm-checks the hot symbols resolve in ZW or in
   the .fast_text RAM copy - add new hot-path symbols there.
+- SECTOR-ALIGN SEGMENT BOUNDARIES (2026-10-10 flash failure): the OpenBLT
+  app-update bootloader erases WHOLE 4 KiB sectors per PROGRAM_CLEAR, and the
+  flasher erases each srec segment right before programming the next one - so
+  any two adjacent segments with a sub-4-KiB gap share a sector and the later
+  erase wipes the earlier segment's programmed tail (byte-exact verify
+  mismatch 0xA1 vs 0x20 at the wideband blob tail). `.m749_rodata_nzw` is
+  therefore padded (`. = ALIGN(0x1000)`) so it ends on a sector boundary and
+  merges with `.text` into one contiguous srec segment; the vectors-page
+  S1/S2 split is sector-safe by construction (S1's erase covers the whole
+  4 KiB page 0x08010000, S2 starts at 0x08011000). The flasher ALSO now
+  erases all segments before programming any (the real class fix; regression
+  test erasesAllSegmentsBeforeProgrammingAny). Any future layout change must
+  keep every srec segment boundary 4 KiB-aligned or the flash corrupts
+  silently - the verify catches it AFTER the image is erased.
 - The .fast_text RAM copy (22.8 KB: angle clock ISR, decode, spark/inj bodies)
   is KEPT on top of the ZW placement. Two reasons: the car-validated critical
   path must not move without a bench run, and AT32 has NO read-while-write -

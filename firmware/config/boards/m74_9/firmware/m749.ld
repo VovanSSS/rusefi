@@ -117,7 +117,17 @@ SECTIONS {
    pools LTO emits) are only fetched by formatting/error paths, and the
    wideband firmware blob is only read when flashing the controller. This
    frees flash0 for the hot code; the linker errors when either region
-   overflows, so the split stays honest. */
+   overflows, so the split stays honest.
+
+   The section is padded (zero fill) to the next 4 KiB sector boundary.
+   The OpenBLT app-update path erases whole 4 KiB sectors per XCP
+   PROGRAM_CLEAR and the flasher erases each srec segment right before
+   programming the next one: if two adjacent segments shared a sector (a
+   sub-4-KiB gap, like the one this section would otherwise leave before
+   .text), the later erase would wipe the already-programmed tail of the
+   earlier segment (verify mismatch at the wideband blob tail,
+   2026-10-10). Sector-aligning every segment boundary keeps the erases
+   disjoint for ANY flasher version. */
 SECTIONS {
     .m749_fast_text : ALIGN(4)
     {
@@ -221,6 +231,7 @@ SECTIONS {
         *(.rodata.*.str1.1)
         *(.rodata.*.str1.4)
         *(.rodata.*wideband*)
+        . = ALIGN(0x1000);
     } > flash1
 }
 

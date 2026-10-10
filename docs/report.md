@@ -19298,3 +19298,43 @@ next unit_tests make - the known ping-pong). Bench/car verdict pending:
 lockstats triggerIsr/trgDecode/trgPostDecode vs the RAM-copy baseline, plus
 the angclk body maxUs (the 2026-10-04 residual floor is suspected to be
 GPIO-write stalls, not fetch - ZW will not remove it if so).
+
+## 2026-10-10 (2) - m74_9: ZW-layout srec did not flash - the erase-after-program sector overlap (root cause found by checksum math)
+
+The new 4-segment app srec (ZW placement) failed the OpenBLT-over-CAN
+app-update verify on the bench: "Checksum mismatch at 0x080A0000 len 20677:
+ECU says 0xA1, image has 0x20". The bootloader on the ECU is the unchanged
+10-02 build; the old 2-segment srec flashed fine - the failure is purely
+the new segment structure.
+
+Root cause (NOT the bootloader): the flasher erases+programs per segment in
+order (erase S1, program S1, erase S2, program S2, ...), and the bootloader
+erases WHOLE 4 KiB sectors per PROGRAM_CLEAR. The new image's string/blob
+segment (0x08090000-0x080A50C5) and the .text segment (0x080A5100+) shared
+sector 0x080A5000 - a 59-byte gap. The erase of .text therefore wiped the
+already-programmed 196-byte tail of the blob segment (the last byte
+survived in the bootloader's 4-byte write buffer and was re-written by the
+flush at .text's first write). Byte-exact confirmation: the verify chunk
+sum = 0x20 - sum(196 wiped bytes) + 196*0xFF + last byte = 0x3D + 0x64 =
+0xA1 = exactly the ECU-reported checksum.
+
+Fixes (both):
+- m749.ld: .m749_rodata_nzw is now padded (. = ALIGN(0x1000)) to the next
+  4 KiB sector boundary, so the section ends at 0x080A6000 and .text starts
+  right there - the two segments merge into one contiguous srec segment and
+  every segment boundary is sector-disjoint (the vectors-page S1/S2 split
+  was already sector-safe by construction). The app srec is now 3 segments:
+  0x08010000-0x08010228 + 0x08011000-0x0805CA1C + 0x08090000-0x080F2258.
+  Cost: ~3.9 KB of zero padding (unreferenced, inside the segment).
+- OpenBltCanFlasher: erase ALL segments BEFORE programming ANY (the
+  erase-after-program ordering was the real class bug - any sub-4-KiB gap
+  between segments triggered it). Regression test
+  erasesAllSegmentsBeforeProgrammingAny asserts every PROGRAM_CLEAR precedes
+  every PROGRAM_BATCH/PROGRAM_MAX/PROGRAM.
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL (coverage check passes, srec
+segment boundaries verified sector-disjoint by a parse script);
+:openblt_can:test BUILD SUCCESSFUL (all tests incl. the new regression).
+Bench flash of the new rusefi_app.srec is the remaining verdict - it must
+now pass on the unchanged bootloader (and would even work with the OLD
+flasher jar, thanks to the linker-side alignment).

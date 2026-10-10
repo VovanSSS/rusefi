@@ -276,8 +276,21 @@ public class OpenBltCanFlasher {
                 }
             }
             try {
+                // Erase EVERYTHING before programming ANYTHING. The bootloader
+                // erases whole 4 KiB sectors per PROGRAM_CLEAR, so two adjacent
+                // segments that share a sector (a sub-4-KiB gap between them)
+                // would otherwise corrupt each other: with per-segment
+                // erase-then-program, the erase of segment N+1 wipes the
+                // already-programmed tail of segment N. The first image with
+                // such a layout (ZW placement, 2026-10-10) hit exactly this:
+                // the erase of the .text segment destroyed the last 196 bytes
+                // of the string/blob segment in the same sector (verify
+                // mismatch at the wideband blob tail). Erase-all-first keeps
+                // erases disjoint from every program.
                 for (SrecParser.Segment seg : segments) {
                     eraseSegment(xcp, seg);
+                }
+                for (SrecParser.Segment seg : segments) {
                     programSegment(xcp, seg);
                     done += seg.data().length;
                     listener.progress(done, total);
