@@ -19374,3 +19374,37 @@ Anomalies:
 
 Next experiment: retire the .fast_text RAM copy (marks -> ZW) on the bench
 and compare decode RAM vs ZW; if ZW holds ~6 us the 64 KiB ram_fast frees.
+
+## 2026-10-08 (3) - m74_9: dash BC consumption - 0x186[0:1] is BOTH flow and rpm, gated by the X byte
+
+User data points: the consumption (л/ч) was broken BEFORE the port too; at
+idle the stock shows 0.9-1.3 L/h recomputed CONSTANTLY (never frozen); our
+dash shows idle-ish values at 100+ km/h and updates rarely.
+
+Elimination from the dumps (orig_1/2/3 idle + ignon_and_start, all stock):
+- The ONLY fast-changing ECU field at idle is 0x186[0:1] (0x0000..0x3470 at
+  constant 800 rpm; rpm16, tach byte, hour-meter, angle counter are frozen
+  or slow at X == 0). The dash's own integrator (0x29A/0x29C) is frozen at
+  0x0000 through the whole of orig_3 - the dash gates consumption on X > 0.
+- Scale check against the user's idle L/h: 0x3A4C (warm idle) / 16 = 933
+  mL/h = 0.93 L/h - exactly the 0.9-1.3 band. So the dash's L/h =
+  0x186[0:1] / 16 while the throttle is closed: the field carries FLOW.
+- The same field at X > 0 carries rpm x8 (the tach source - the 1/8 slope
+  car data). The dash reads the field per its own X-gate mode: X == 0 ->
+  flow (L/h), X > 0 -> rpm (needle). A nonzero closed-throttle X (the
+  rusEFI 0.4% TPS offset) flips the dash into the rpm mode at idle - the
+  original 2000-rpm needle bug; the flow-always encoding then made the dash
+  show flow/8 as rpm; the rpm-always encoding made the L/h = rpm/2 (stuck,
+  rarely updating, 0.9 at ~1800 rpm coast - the observed "0.9 at 100+").
+
+Fix (m74_9_vehicle_can.cpp):
+- 0x186[0:1] multiplexed by the SAME X gate: X == 0 -> fuel flow mL/h x16
+  (raw per-event rate, DFCO-zeroed - NO pre-smoothing: the stock sends the
+  spiky raw value and the dash smooths; pre-filtering made the display
+  sluggish), X > 0 while running -> rpm x8.
+- encodeThrottleXByte keeps the 0.4% closed-stop subtraction (X == 0 at a
+  shut blade - the dash stays in the flow mode at idle, needle on rpm x16).
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL. Car verdict pending: idle
+L/h must read ~0.9-1.3 and update like the stock; needle correct at all
+rpm; DFCO must zero the L/h.
