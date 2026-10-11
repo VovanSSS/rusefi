@@ -19375,7 +19375,26 @@ Anomalies:
 Next experiment: retire the .fast_text RAM copy (marks -> ZW) on the bench
 and compare decode RAM vs ZW; if ZW holds ~6 us the 64 KiB ram_fast frees.
 
-## 2026-10-08 (3) - m74_9: dash BC consumption - 0x186[0:1] is BOTH flow and rpm, gated by the X byte
+## 2026-10-08 (3) - m74_9: dash BC consumption - 0x186[0:1] = injector-computed flow in ALL modes
+
+REVISED (user correction): 0x186[0:1] is the FUEL FLOW in every engine
+mode - computed from the actual injector events, not from rpm. The stock
+computes this flow across the whole rpm range and exposes the same value
+over OBD; the dash BC L/h display = value / 16 at any rpm (idle
+0.9-1.3 L/h = 0x3A4C..0x4E00 / 16, recomputed constantly, DFCO-zeroed).
+The rpm x8-in-this-field theory was WRONG (the needle reads the rpm x16
+fields + the tach byte; the original 2000-rpm needle bug came from the
+degraded dash - the bogus fixed 0x1F6[3] = 0x1A read as a 6.9 V battery,
+and the nonzero closed-throttle X; both fixed earlier).
+
+Fix: 0x186[0:1] = encodeFuelFlowMlPerHour() unconditionally - RAW
+injector-event rate (trip odometer), DFCO-zeroed, no pre-smoothing (the
+dash smooths, exactly like with the stock's spiky value).
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL. Car verdict pending: idle
+L/h ~0.9-1.3 updating constantly, rising with load, zero in DFCO.
+
+## 2026-10-08 (3-orig) - m74_9: dash BC consumption - 0x186[0:1] is BOTH flow and rpm, gated by the X byte
 
 User data points: the consumption (л/ч) was broken BEFORE the port too; at
 idle the stock shows 0.9-1.3 L/h recomputed CONSTANTLY (never frozen); our
