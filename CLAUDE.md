@@ -908,17 +908,16 @@ field lives in `persistent_config_s` -> access via `config->`, NOT
 line to revert), 0x65C[0] bits 7:1 = (IAT+40)<<1, 0x5DA[1] = idleTarget/8
 (was Vbatt x10), 0x5DA[4] = rpmHardLimit/32, 0x1F6[2] state bits, frame
 suppression on invalid CLT/IAT. KEPT from the old stream (fw-m74.9 lacks
-these): 0x186[0:1] MULTIPLEXED by the dash's own gate (the X throttle
-byte): fuel flow mL/h x16 at X == 0 (the dash BC L/h = value/16 -
-stock idle 0.9-1.3 L/h from 0x3A4C..0x4E00, recomputed constantly,
-DFCO-zeroed, sent RAW - the dash smooths) and rpm x8 at X > 0 (the
-tach source, car-verified at exactly 1/8 slope). A nonzero
-closed-throttle X (the rusEFI 0.4% TPS offset) flips the dash into
-the rpm mode at idle - the original 2000-rpm needle bug; sending flow
-always breaks the needle (flow/8), sending rpm always breaks the BC
-L/h (rpm/2, stuck). encodeThrottleXByte subtracts the 0.4% offset so
-a shut blade reads X == 0; 0x1F6[3] = battery volts x3.75 (fitted,
-was fixed 0x1A); live rpm
+these): 0x186[0:1] = injector-computed FUEL FLOW mL/h x16 in ALL engine
+modes (never rpm; the same flow is what the stock exposes over OBD).
+The dash BC L/h = value/16 at any rpm - stock idle 0.9-1.3 L/h from
+0x3A4C..0x4E00, recomputed constantly, DFCO-zeroed; send RAW (the dash
+smooths, like with the stock's spiky value). The needle reads the rpm
+x16 fields + the tach byte 0x186[4] - the earlier 2000-rpm needle bug
+was a DEGRADED dash: the bogus fixed 0x1F6[3] = 0x1A read as a 6.9 V
+battery + the nonzero closed-throttle X (rusEFI 0.4% TPS offset) -
+fixed by 0x1F6[3] = battery volts x3.75 and encodeThrottleXByte
+subtracting the 0.4% offset so a shut blade reads X == 0; live rpm
 x16 + tach byte +
 throttle-X + Vbatt + rolling counter + advance + angle accumulator +
 hour-meter, ignition gating, IMMO. Niva/Granta profile is fw verbatim.
