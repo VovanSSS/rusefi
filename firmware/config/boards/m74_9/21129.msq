@@ -720,8 +720,8 @@
 </constant>
         <constant cols="8" digits="2" name="cltIdleCorrTable" rows="16" units="%">
          38.0 34.0 28.0 23.0 21.0 21.0 22.0 22.0
-         25.9 21.9 15.9 11.0 11.0 9.0 9.0 9.0
-         24.8 20.8 14.8 11.0 11.0 9.0 9.0 9.0
+         24.9 20.9 14.9 10.0 10.0 8.0 8.0 8.0
+         23.8 19.8 13.8 10.0 10.0 8.0 8.0 8.0
          34.7 30.7 24.7 19.7 17.7 17.7 19.7 19.7
          32.6 28.6 22.6 17.6 15.6 15.6 17.6 17.6
          33.5 29.5 23.5 18.5 16.5 16.5 18.5 18.5
@@ -790,11 +790,11 @@
         <constant name="clutchUpPin">"NONE"</constant>
         <constant name="clutchUpPinMode">"PULLUP"</constant>
         <constant digits="0" name="coastingFuelCutClt" units="{bitStringValue(unitsLabels, useMetricOnInterface)}">60</constant>
-        <constant name="coastingFuelCutEnabled">"disabled"</constant>
+        <constant name="coastingFuelCutEnabled">"enabled"</constant>
         <constant digits="0" name="coastingFuelCutMap" units="{bitStringValue(pressureUnitsLabels, useMetricOnInterface)}">100</constant>
-        <constant digits="0" name="coastingFuelCutRpmHigh" units="rpm">1600</constant>
-        <constant digits="0" name="coastingFuelCutRpmLow" units="rpm">1400</constant>
-        <constant digits="0" name="coastingFuelCutTps" units="%">10</constant>
+        <constant digits="0" name="coastingFuelCutRpmHigh" units="rpm">2000</constant>
+        <constant digits="0" name="coastingFuelCutRpmLow" units="rpm">1800</constant>
+        <constant digits="0" name="coastingFuelCutTps" units="%">0</constant>
         <constant digits="0" name="coastingFuelCutVssHigh" units="{bitStringValue(velocityUnitsLabels, useMetricOnInterface)}">0</constant>
         <constant digits="0" name="coastingFuelCutVssLow" units="{bitStringValue(velocityUnitsLabels, useMetricOnInterface)}">0</constant>
         <constant name="complexWallModel">"Basic (constants)"</constant>
@@ -1083,7 +1083,7 @@
         <constant digits="0" name="etbJamDetectThreshold" units="%">10</constant>
         <constant digits="2" name="etbJamTimeout" units="sec">0.0</constant>
         <constant digits="0" name="etbMaximumPosition" units="%">90</constant>
-        <constant digits="1" name="etbMinimumPosition" units="%">1.0</constant>
+        <constant digits="1" name="etbMinimumPosition" units="%">2.5</constant>
         <constant digits="0" name="etbNeutralPosition" units="%">0</constant>
         <constant digits="0" name="etbRevLimitRange" units="rpm">250</constant>
         <constant digits="0" name="etbRevLimitStart" units="rpm">0</constant>
@@ -2440,7 +2440,7 @@
          3.49 1.66 0.7 0.41 0.22 0.06 -0.04 -0.06
 </constant>
         <constant digits="2" name="injector_flow" units="">174.0</constant>
-        <constant name="injectorCompensationMode">"None"</constant>
+        <constant name="injectorCompensationMode">"Fixed rail pressure"</constant>
         <constant digits="4" name="injectorCorrectionPolynomial1" units="">0.0</constant>
         <constant digits="4" name="injectorCorrectionPolynomial2" units="">0.0</constant>
         <constant digits="4" name="injectorCorrectionPolynomial3" units="">0.0</constant>
@@ -2585,20 +2585,20 @@
         <constant digits="1" name="knockFuelTrimAggression" units="%">0.0</constant>
         <constant digits="1" name="knockFuelTrimReapplyRate" units="1%/s">0.0</constant>
         <constant cols="1" digits="0" name="knockGainLoadBins" rows="6" units="">
+         10
          0
          20
          40
          60
          80
-         100
 </constant>
         <constant cols="1" digits="0" name="knockGainRpmBins" rows="6" units="RPM">
+         1000
          700
          800
          2200
          3600
          5000
-         7000
 </constant>
         <constant cols="6" digits="0" name="knockGains10_table" rows="6" units="dB">
          0 0 0 0 0 0
@@ -2625,7 +2625,7 @@
          0 0 0 0 0 0
 </constant>
         <constant cols="6" digits="0" name="knockGains1_table" rows="6" units="dB">
-         0 0 0 0 0 0
+         70 0 0 0 0 0
          0 0 0 0 0 0
          0 0 0 0 0 0
          0 0 0 0 0 0
@@ -2886,7 +2886,6 @@
         <constant name="luaOutputPins8">"NONE"</constant>
         <constant name="m74_9ImmoEnabled">"no"</constant>
         <constant name="m74_9ImmoOff">"yes"</constant>
-        <constant name="ladaCanbusProfile">"Largus"</constant>
         <constant name="m74_9LinAltEnabled">"Enabled"</constant>
         <constant digits="0" name="m74_9LinAltFeedbackSel" units="">2</constant>
         <constant digits="0" name="m74_9LinAltMapOffKpa" units="">98</constant>
@@ -3321,11 +3320,11 @@
          8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8
          9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9
          10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10
-         0 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11
-         0 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12
-         0 13 13 13 13 13 13 13 13 13 13 13 13 13 13 13 13 13 13
-         0 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14
-         0 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15
+         11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11
+         12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12
+         13 13 13 13 13 13 13 13 13 13 13 13 13 13 13 13 13 13 13
+         14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14
+         15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15
          0 16 16 16 16 16 16 16 16 16 16 16 16 16 16 16 16 16 16
          0 17 17 17 17 17 17 17 17 17 17 17 17 17 17 17 17 17 17
          0 18 18 18 18 18 18 18 18 18 18 18 18 18 18 18 18 18 18
@@ -4599,11 +4598,11 @@
         <constant digits="2" name="tps2SecondaryMax" units="V">0.0</constant>
         <constant digits="2" name="tps2SecondaryMin" units="V">5.0</constant>
         <constant digits="1" name="tpsAccelEnrichmentThreshold" units="roc">15.0</constant>
-        <constant digits="2" name="tpsAccelFractionDivisor" units="coef">1.0</constant>
+        <constant digits="2" name="tpsAccelFractionDivisor" units="coef">0.0</constant>
         <constant digits="0" name="tpsAccelFractionPeriod" units="cycles">0</constant>
         <constant digits="2" name="tpsAccelLookback" units="sec">0.0</constant>
         <constant digits="2" name="tpsDecelEnleanmentMultiplier" units="coeff">0.0</constant>
-        <constant digits="1" name="tpsDecelEnleanmentThreshold" units="roc">0.0</constant>
+        <constant digits="1" name="tpsDecelEnleanmentThreshold" units="roc">0.2</constant>
         <constant digits="0" name="tpsErrorDetectionTooHigh" units="%">110</constant>
         <constant digits="0" name="tpsErrorDetectionTooLow" units="%">-10</constant>
         <constant digits="2" name="tpsMax" units="V">0.37</constant>
@@ -4802,7 +4801,7 @@
          0.0
          0.0
 </constant>
-        <constant name="useAbsolutePressureForLagTime">"no"</constant>
+        <constant name="useAbsolutePressureForLagTime">"yes"</constant>
         <constant name="useAdvanceCorrectionsForCranking">"no"</constant>
         <constant name="useAuxSpeedForSlipRatio">"no"</constant>
         <constant name="useBiQuadOnAuxSpeedSensors">"no"</constant>
@@ -5124,7 +5123,7 @@
          69.2 68.0 69.7 71.9 81.2 81.7 84.0 86.4 93.4 97.2 92.7 100.9 108.7 92.8 101.0 96.1 103.3 98.0 104.3 96.6 95.4 94.3 93.1 92.0 90.8 89.7 88.5 87.4 86.6 86.0
          70.4 69.4 71.0 73.3 80.7 83.2 85.6 88.0 90.4 99.0 94.5 109.1 97.9 94.6 103.1 104.8 99.4 99.9 112.4 105.3 97.3 96.2 95.0 93.8 92.6 91.5 90.3 89.2 88.3 87.6
          71.7 70.6 72.3 74.7 82.2 84.6 90.0 93.1 97.4 100.9 102.9 104.8 106.6 109.3 105.1 106.9 108.4 102.0 101.5 107.7 99.2 98.0 96.8 95.6 94.4 93.2 92.0 90.9 89.9 89.3
-         73.0 71.0 73.5 76.1 83.6 86.1 88.7 91.2 98.1 102.9 104.7 113.0 115.0 111.4 113.3 115.4 117.4 118.7 117.7 110.1 101.1 99.9 98.6 97.4 96.2 95.0 93.8 99.1 91.3 91.0
+         73.0 71.0 73.5 76.1 83.6 86.1 88.7 91.2 98.1 102.9 104.7 113.0 115.0 111.4 113.3 115.4 117.4 118.7 120.2 118.1 109.1 107.9 106.6 97.4 96.2 95.0 93.8 99.1 91.3 91.0
 </constant>
         <constant name="vRefAdcChannel">"NONE"</constant>
         <constant name="vrThreshold1_pin">"NONE"</constant>
@@ -5333,8 +5332,8 @@
 </constant>
         <constant name="yesUnderstandLocking">"no"</constant>
     </page>
-    <versionInfo firmwareInfo="20261008" nPages="1" signature="rusEFI maccan-tx-fix.2026.10.08.m74_9.3796215110" version="5.0"/>
-    <bibliography author="rusEFI 20261008" writeDate="date"/>
+    <versionInfo firmwareInfo="20261002" nPages="1" signature="rusEFI maccan-tx-fix.2026.09.29.m74_9.4273509233" version="5.0"/>
+    <bibliography author="rusEFI 20261002" writeDate="date"/>
     <settings/>
     <userComments/>
 </msq>
