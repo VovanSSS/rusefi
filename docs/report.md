@@ -19427,3 +19427,149 @@ Fix (m74_9_vehicle_can.cpp):
 Validation: compile_m74_9.sh BUILD SUCCESSFUL. Car verdict pending: idle
 L/h must read ~0.9-1.3 and update like the stock; needle correct at all
 rpm; DFCO must zero the L/h.
+
+## 2026-10-29 - m74_9: tach broken again on latest build - 0x186[0:1] restored to rpm x8 unconditionally (car decision)
+
+User report: flashed the latest build/rusefi_app.srec, tach broken again.
+Git history of the 0x186[0:1] encoding:
+
+- 0e1c6bd94ee (10-08) tach fix: rpm x8 while X > 0 (needle source), flow
+  at X == 0; + X offset subtraction + 0x1F6[3] battery volts x3.75
+- 3a8bf45b874 (10-08) user correction: rpm x8 UNCONDITIONALLY - "the tach
+  cannot depend on throttle/load"; flow encoder removed
+- 7d5574fa387 (10-11) BC consumption thread: X-gate multiplex restored
+  (flow at X == 0, rpm x8 at X > 0) - car verdict never landed
+- 00c26bf0dd6 (10-11, 7 min later) "user correction": flow in ALL modes,
+  rpm x8 theory dropped (needle bug blamed on the degraded dash only).
+  This is the model that was in the flashed build.
+
+The 10-11 flow-always build broke the needle on the car - the same class as
+the original report (flow/8 -> 2000 rpm at idle, 7000+ at light throttle,
+0 on plausibility). CAR VERDICT: 0x186[0:1] IS the dash tach source (rpm
+x8 at 1/8 slope), at least in the modes the car sees; no flow encoding is
+safe in this field. Capture-only correlation cannot decide it (the stock's
+idle dumps read "flow-like" because the stock multiplexes the field) - the
+car has now voted rpm x8 twice.
+
+Fix (m74_9_vehicle_can.cpp): 0x186[0:1] = live rpm x8 unconditionally (the
+3a8bf45b874 state), encodeFuelFlowMlPerHour() removed, X byte keeps the
+0.4% closed-stop subtraction, 0x1F6[3] battery fix kept. If the dash BC
+instant L/h ever needs the injector flow, it needs a different field (the
+X-gate elsewhere in 0x186 or another frame id - not verified).
+
+Validation: compile_m74_9.sh BUILD SUCCESSFUL, build/rusefi_app.srec
+regenerated. Car verdict pending: needle = console rpm at any throttle.
+
+## 2026-10-29 - m74_9: 21129.msq - air idle loop enabled, blade rises on rpm drop in closed-loop idle
+
+User request: in closed-loop idle the throttle blade must rise when rpm
+falls. Code chain verified first: idleMode "Open Loop + Closed Loop" is
+IM_AUTO, getClosedLoop (idle_thread.cpp) adds the idleRpmPid output to the
+open-loop position, the ETB setpoint maps position to blade via
+etbIdleThrottleRange (PERCENT_DIV * range * position; 20 position% -> 4%
+blade at range 20) with the pedal-range compression, and positive duty =
+blade open on m74_9. Pid sign is error = target - input (efi_pid.cpp), so
+rpm below target -> positive output -> blade up. The previous state was
+P-only (i=0, max=15) - transient response without droop recovery.
+
+Changes in config/boards/m74_9/21129.msq:
+- idleRpmPid_iFactor 0.0 -> 0.05 (with the 5 ms fast-callback dTime this
+  integrates +5 position% per second per 100 rpm of error)
+- idleRpmPid_maxValue 15 -> 20 (add-only authority: minValue=0 and
+  iTermMin=0 keep the PID from ever closing the blade below open loop;
+  20 position% = 4% of blade travel)
+Unchanged: pFactor 0.05, dFactor 0, iTermMax 25, dead zone 10 rpm,
+pidExtraForLowRpm 20%, idlePidActivationTime 2 s, idle_antiwindupFreq 0.1,
+idle_derivativeFilterLoss 0. The idleTimingPid (p=0.03 i=0.005 +/-20 deg)
+stays as the primary fast-response layer (the stock torque-reserve scheme);
+air is the sustained-load second layer.
+
+Validation: calibration-only change - no build/test possible off-car
+(the msq is not consumed by unit tests). Next step: burn the tune, verify
+isIdleClosedLoop = yes at idle and the blade rises (idle position up,
+rpm recovering) on a load step (fan/clutch).
+
+## 2026-10-29 (21:23 log) - m74_9: idle hunt - blade and timing controllers decoupled by frequency
+
+Log analyzed: artifacts/logs/rusEFI_outputChannels_2026-10-29_21_23_22_627.mlg
+(65 records after MlgToCsv). The previous air-loop enablement produced a
+limit cycle: rpm 675..1138 (std ~82 rpm at the 900 target), period ~3-4 s.
+Both controllers swung at full excursion together: idleclosedloop
+1.7..7.8 position%, air iTerm saturating at iTermMax (25->24.99),
+timingpidcorrection -5.7..+8.3 deg, total advance 17.4..32.7 deg. A real
+load step at ~26.3-27.4 s (MAP 51->62 kPa while the blade target stayed
+~4.3%) dipped rpm to 675-698; the saturated air I-term then held the blade
+open through the recovery -> overshoot to 1138 (map 45-50 kPa) -> timing
+retarded to 17.4 deg total -> next dip to 806. Also noticed: pedal sensor
+reads 1.23-1.24% at rest, so idlePidDeactivationTpsThreshold=2 scales
+BOTH air gains by ~0.38 (the taper) - the loop ran at ~38% of configured
+gains yet still oscillated.
+
+Coordination fix in config/boards/m74_9/21129.msq (frequency split, as in
+the stock scheme: timing = fast authoritative layer, air = slow weak trim):
+- idleTimingPid_pFactor 0.03 -> 0.05, _iFactor 0.005 -> 0.02 (timing now
+gives ~+11..+20 deg instantly on a 200-225 rpm dip and ~-12 deg on the
+overshoot; the controller is immediate - per-cycle, no blade lag)
+- idleRpmPid_pFactor 0.05 -> 0.02, _iFactor 0.05 -> 0.01 (air responds
+slowly and weakly - the sustained-load trim, not the stabilizer)
+- idlerpmpid_iTermMax 25 -> 12, idleRpmPid_maxValue 20 -> 10 (the
+post-dip I-overhang is what rocket-launched the blade through recovery;
+cap = at most +10 position% = +2% blade, decaying)
+- idlePidRpmDeadZone 10 -> 50 rpm (blade freezes inside 850..950; small
+deviations are exclusively the timing layer job - the log shows the 10 rpm
+dead zone banging idlestate 2<->4 every sample)
+- pidExtraForLowRpm 20 -> 10 (less extra amplification on drops - it was
+feeding the overshoot)
+Kept: add-only air (minValue=0, iTermMin=0), idleTimingPid window
+-20..+20 deg, activation 2 s. NOT touched: idlePidDeactivationTpsThreshold
+=2 - the pedal reads 1.24% at rest, so raising it would instantly
+re-multiply the air gains ~2.6x; it is the next lever if the blade response
+proves too weak.
+
+Validation: calibration-only (msq is not consumed by unit tests, XML
+validated with xmllint). Expected after burn: rpm swing << 50 rpm around
+900, advance moving a few degrees, blade nearly static except under
+sustained load. Watch idleclosedloop / timingpidcorrection / idlestatus
+in the next MLG.
+
+## 2026-10-29 - m74_9: online UOZ (ignition advance) optimization - analysis (see docs/ignition_online_tuning_analysis_2026-10-29.md)
+
+User request (Russian): analysis of how to find the optimal ignition advance
+online while driving. Full analysis in the doc above; durable facts verified
+in code this session:
+
+- KNOCK CHAIN IS COMPLETE on m74_9 but never validated on detonation and
+  effectively switched off in 21129.msq: AA3 knock sensor -> SGM321/LM321 ->
+  PA0/ADC1 IN0 (idle ~1.76 V), software bandpass 7000 Hz (== 2 x bore2frequency
+  for the 82 mm bore, ~6988 Hz), 20 deg window + 15 deg samples, per-cyl RMS
+  in RELATIVE dB, threshold = knockBaseNoise (rpm-only), gains (rpm x load),
+  retard controller. Tune state: knockRetardAggression=0, knockBaseNoise=-20 dB
+  flat, knockGains=0 -> the loop reads/logs but cannot protect or search.
+- CORRECTION ORDER (engine2.cpp L223-285): timingAdvance[c] = base(map + blends
+  + idle table + idle timing PID + IAT/CLT) [getWrappedAdvance incl. luaTiming
+  Add applied BEFORE retard] - knockRetard - limpRetard + getCylinderIgnition
+  Trim(c, rpm, load) + sparkHardwareLatency. Per-cylinder trim hook exists
+  (custom_board_getCylinderIgnitionTrim, ignition_state.cpp L292) - the natural
+  permanent-trim injection point.
+- DynoView (virtual dyno) is wired on this board: hp/torque output channels
+  from WheelSpeed, updated in the 20 Hz slow loop; dynoCarGearRatio=1.0 in msq
+  (scale-only, fill the real gear for absolute Nm).
+- Lua prototype is possible with zero firmware changes: getOutput("m_knock
+  Level"/"hp"/"torque"/"m_knockCount"), getSensor("Rpm"/"Map"/"Tps1"), setTiming
+  Add. Lifetime = RAM (session tool, results baked into the msq by hand).
+- METHODS: (A) knock-limited borderline search for high load (step +0.5 deg per
+  2 s quiet, -2..3 deg per event, safety == the stock controller tuned first);
+  (B) torque-plateau sweep for mid load via dynoview (argmax +-1.5..2 deg at
+  best, needs flat road, frozen trims, 3-5 s per point); (C) CA50/ion/pressure
+  = impossible without hardware (only the Saab CDM path remains in rusEFI).
+  The 30x16 advance map is already the stock ME17 .clb conversion - the online
+  search is a +-2..4 deg TRIM on top, and map-axis shift (mg->kPa) is the first
+  suspect for any cell anomaly. Staged plan: validate the knock channel (noise
+  floor vs rpm) -> tune the retard safety -> 1D sanity sweeps -> high-load
+  border hunt -> persist into the msq. Never: search with the safety off,
+  search on uncalibrated lambda, vary advance in idle (separate table + timing
+  PID already tuned), TS-burn while driving.
+
+Validation: analysis only, no build/test; every code claim verified against the
+tree this session (knock_config.h, software_knock.cpp, knock_controller.cpp,
+ignition_state.cpp, engine2.cpp, dynoview.cpp, lua_hooks.cpp, 21129.msq).

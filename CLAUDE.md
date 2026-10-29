@@ -908,17 +908,26 @@ field lives in `persistent_config_s` -> access via `config->`, NOT
 line to revert), 0x65C[0] bits 7:1 = (IAT+40)<<1, 0x5DA[1] = idleTarget/8
 (was Vbatt x10), 0x5DA[4] = rpmHardLimit/32, 0x1F6[2] state bits, frame
 suppression on invalid CLT/IAT. KEPT from the old stream (fw-m74.9 lacks
-these): 0x186[0:1] = injector-computed FUEL FLOW mL/h x16 in ALL engine
-modes (never rpm; the same flow is what the stock exposes over OBD).
-The dash BC L/h = value/16 at any rpm - stock idle 0.9-1.3 L/h from
-0x3A4C..0x4E00, recomputed constantly, DFCO-zeroed; send RAW (the dash
-smooths, like with the stock's spiky value). The needle reads the rpm
-x16 fields + the tach byte 0x186[4] - the earlier 2000-rpm needle bug
-was a DEGRADED dash: the bogus fixed 0x1F6[3] = 0x1A read as a 6.9 V
-battery + the nonzero closed-throttle X (rusEFI 0.4% TPS offset) -
-fixed by 0x1F6[3] = battery volts x3.75 and encodeThrottleXByte
-subtracting the 0.4% offset so a shut blade reads X == 0; live rpm
-x16 + tach byte +
+these): 0x186[0:1] = live rpm x8, UNCONDITIONALLY - THE DASH TACH
+SOURCE, car-verified at exactly 1/8 slope (FINAL, 2026-10-29 car
+decision, supersedes the flow models below). The dash reads this field
+as rpm x8 for the needle; every fuel-flow encoding put there broke the
+tach on the car - flow-always showed flow/8 (2000 rpm at idle, 7000+
+at light throttle, then 0 when the field saturated) and the X-gate
+multiplex still made the needle load-dependent (the field must NEVER
+depend on throttle/load). The dash's BC L/h display and its X-gated
+consumption/angle/hour-meter integrators consume OTHER fields
+(0x186[5] gate); the injector-computed flow (TripOdometer
+getConsumptionGramPerSecond g/s x3600 /0.745 x16) has no workable home
+in 0x186[0:1] - if the instant L/h display ever needs it, it needs a
+different field. The needle also crossorigin the rpm x16 fields +
+the tach byte 0x186[4]; the 0x1F6[3] = battery volts x3.75 fix and
+encodeThrottleXByte's 0.4% TPS-offset subtraction stay (both were real
+and fixed). The rpm x8 theory was rejected as WRONG twice on
+capture-only analysis (it reads flow-like in the idle dumps because
+the stock multiplexes it) and CONFIRMED twice on the car (the needle
+tracks 1/8 exactly) - capture correlation cannot decide this field,
+only a car drive can, and twice it has voted rpm x8. Live
 throttle-X + Vbatt + rolling counter + advance + angle accumulator +
 hour-meter, ignition gating, IMMO. Niva/Granta profile is fw verbatim.
 The encodings below (derived from the stock captures) remain the
@@ -1295,6 +1304,7 @@ See also .junie/guidelines.md file
 - Cranking (rpm < cranking_rpm): open loop, position = `cltCrankingCorr` x `etbIdleThrottleRange` / 100. CrankToIdleTaper lasts `afterCrankingIACtaperDuration` ENGINE CYCLES (720 deg each); `RpmCalculator::getRevolutionCounterSinceStart()` counts cycles, not revolutions, despite the name. Idling phase: open loop base + RPM PID, PID held off for `idlePidActivationTime` SECONDS after Idling entry (this is the "20 s open loop then closed" behavior). `fuelClosedLoopCorrectionEnabled` (lambda STFT) is a separate switch, often disabled on bench tunes.
 - Cranking and idle tables share ONE scale: actual ETB opening = table % x `etbIdleThrottleRange` / 100 (`EtbController::getSetpointEtb`, `etbIdleAddition`). Raising the range to give warm idle headroom REQUIRES dividing `cltCrankingCorr` by the same factor to preserve cranking openings (m74_9: range 2->8, corr /4).
 - **Stock idle torque-reserve scheme (m74_9, per user decision 2026-08-27)**: fixed throttle blade, torque regulated ONLY through ignition advance (no rpm-target or air adders). The timing PID (`useIdleTimingPidControl`, `idleTimingPid_*`) runs ONLY in `Phase::Idling` (never in crank taper/coasting - it resets there), on `instantRpm` vs target rpm, and its output is added to the advance as `timingPidCorrection` (`getAdvanceCorrections` in ignition_state.cpp; base advance = the `idleAdvance` table when `useSeparateAdvanceForIdle=enabled`). The usable reserve = `idleTimingPid_maxValue` minus the idle-band base: the old tune had base 26-27 deg with max +30 -> ~3 deg of reserve, so any load (fan) saturated the PID instantly and sagged rpm. Stock-style numbers now in 21129.msq: base 10-14 deg at 700-1300 rpm, max +20 / min -10 (total window 0..30 deg), p 0.15, i 0.03, soft entry 1 s. A zero `idleTimingPid_iFactor` = pure P = permanent droop under load. Timing-only reserve is ~15-20% torque - enough for fan/electrical/AC/clutch engagement; stock brake-creep ALSO uses its air loop, so if it is not enough the second layer is the air RPM PID (`idleRpmPid_*`, currently all zero) with small authority - same knobs, not a different architecture.
+- **m74_9 air idle loop enabled, then frequency-decoupled after the 21:23 hunt log (2026-10-29, 21129.msq):** CURRENT STATE: the airflow second layer is a slow weak trim, the timing PID is the fast authoritative stabilizer: `idleMode` "Open Loop + Closed Loop" (IM_AUTO), `idleTimingPid` p=0.05 i=0.02 d=0 min=-20 max=20, `idleRpmPid` p=0.02 i=0.01 d=0 min=0 max=10, `idlerpmpid_iTermMin`=0 `iTermMax`=12, dead zone 50 rpm, `pidExtraForLowRpm` 10%, `idlePidActivationTime` 2 s. Sign chain (code-verified): `Pid::getOutput` error = target - input -> rpm below target = positive output -> added to the open-loop position in `IdleController::getClosedLoop` -> blade via `EtbController::getSetpointEtb` (`etbIdleThrottleRange`/100 x position; range 20 -> 10 position% = 2% blade) -> positive duty = OPEN on this board. Add-only (min=0) - the blade rises on rpm drop but never closes below the open-loop table. The failed first cut (p=0.05 i=0.05 max=20 dead zone 10) produced a 3-4 s limit cycle (rpm 675..1138 around the 900 target): the air I-term saturated (24.99/25) during a load dip and held the blade open through recovery -> 1138 overshoot -> +timing retard 17.4 deg total -> next dip. DURABLE FACT from that log: the pedal (DriverThrottleIntent) reads 1.23-1.24% at rest, so `idlePidDeactivationTpsThreshold`=2 applies the `getClosedLoop` TPS taper at ~0.38 scale to BOTH air gains - the loop ran at ~38% of configured gains; raising that threshold re-multiplies the air loop ~2.6x (next lever, not yet touched).
 
 ## m74_9 Throttle Flow Model (ME17 .clb curves)
 
@@ -1345,6 +1355,62 @@ Durable facts for converting stock ME17 .clb tables into rusEFI tables (m74_9
   IGN/VE_RPM_COUNT=30 the page sizes are: page 0 = 18500 B, page 3 (LTFT) =
   3840 B, page 4 (second tables) = 2220 B - all far below the 65536 B TS
   protocol ceiling.
+
+## m74_9 online УОЗ (ignition advance) optimization (2026-10-29 analysis, see docs/ignition_online_tuning_analysis_2026-10-29.md)
+
+The two signal channels for finding optimal advance on the road - and their
+actual readiness:
+
+- **Knock chain = complete hardware + DSP, but un-tuned and never validated on
+detonation.** AA3 knock sensor -> SGM321/LM321 conditioner -> PA0 = ADC1 IN0
+(shared with the slow ADC; the slow chain is aborted/resumed around each
+window). Software: biquad bandpass at knockFrequency (21129.msq = 7000 Hz ==
+2 x bore2frequency(0.082) ~= 6988 Hz), window knockDetectionWindowStart
+(=20 deg) + knockSamplingDuration (=15 deg of samples), per-cyl RMS in
+RELATIVE dB (10*log10 mean square - not physical dB), per-cyl peak hold 50 ms,
+threshold = knockBaseNoise x knockNoiseRpmBins (rpm-only floor), gains
+knockGains[c] (rpm x load), retard controller (knockRetardAggression = % of
+distance-to-minus-20-deg per event; reapplyRate in deg/s; maxKnockRetardTable).
+21129.msq state: aggression=0, baseNoise=-20 dB flat, gains=0 -> the loop
+measures/logs but is EQUIVALENT TO OFF (never protects, never searches).
+First real work item for any knock-based advance tuning: map the noise floor
+vs rpm (spectrogram: enableKnockSpectrogram=yes; or medians from
+m_knockLevel/Knock: Cyl MLGs) and set floor + 4-6 dB, aggression 40-50%,
+max retard 8-10 deg. knocktest/knockpin are the bench diagnostics.
+- **Torque = DynoView virtual dyno** (EFI_DYNO_VIEW, dynoview.cpp): wheel
+acceleration from VehicleSpeed (Largus CAN on this board) -> hp/torque TS
+channels, updated in the 20 Hz slow loop; Lua getOutput("hp")/getOutput(
+"torque") reach them. dynoCarGearRatio=1.0 in the msq (absolute Nm need the
+real gear; the sweep argmax is scale-invariant).
+
+**Correction order (load-bearing for any trim design), engine2.cpp L223-285:**
+timingAdvance[c] = [map + blends + idle table + idle timing PID + IAT/CLT +
+luaTimingMult/Add] - knockRetard - limpRetard + getCylinderIgnitionTrim(c, rpm,
+load) + sparkHardwareLatency. Lua add applies BEFORE the knock retard (a search
+riding on setTimingAdd stays protected); the per-cylinder board hook
+custom_board_getCylinderIgnitionTrim (ignition_state.cpp L292, board_overrides.h)
+is the permanent per-cyl trim injection point.
+
+**Method taxonomy (durable):** (A) knock-limited borderline search for high
+load (quiet 2 s -> +0.5..1 deg; event -> -2..3 deg + mark cell, final = last
+quiet minus 2 deg street-fuel margin) - sharp signal, but detonation risk; the
+tuned stock controller IS the safety net. (B) torque-plateau sweep for mid
+load (+-3 deg, 3-5 s per point, parabola argmax; sensitivity near MBT is
+0.5-1.5%/deg so road noise caps accuracy at +-1.5..2 deg) - flat road, fixed
+gear/throttle, frozen STFT/LTFT required. (C) CA50 combustion phasing - NO
+hardware on m74_9 (no pressure sensor, no ion sense; only the Saab CDM path
+cdmInputPin -> engine->knockLogic remains in rusEFI).
+
+**Context facts:** the 30x16 advance map is the stock ME17 .clb conversion - the
+online search is a +-2..4 deg TRIM on factory-calibrated base, not a
+from-scratch tune; a per-cell anomaly is FIRST suspected as MAP-axis mapping
+error (mg->kPa), verified by cheap 1D sweeps. Narrowband lambda AK3 is unusable
+as a mixture reference (1:1 input, curve not re-anchored, 14.0 AFR ceiling) -
+high-load knock search needs the rich WOT zone confirmed by other means.
+Advance must NEVER be varied in idle (separate idle table + timing PID =
+another controller; gate any trim on isIdlingOrTaper/TPS threshold). Persist
+results by hand into ignitionTable after a session - no TS-burn while driving
+(MFS stalls).
 
 ## Building in a git worktree (merge validation)
 
