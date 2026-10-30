@@ -794,7 +794,7 @@
         <constant digits="0" name="coastingFuelCutMap" units="{bitStringValue(pressureUnitsLabels, useMetricOnInterface)}">100</constant>
         <constant digits="0" name="coastingFuelCutRpmHigh" units="rpm">2000</constant>
         <constant digits="0" name="coastingFuelCutRpmLow" units="rpm">1800</constant>
-        <constant digits="0" name="coastingFuelCutTps" units="%">0</constant>
+        <constant digits="0" name="coastingFuelCutTps" units="%">3</constant>
         <constant digits="0" name="coastingFuelCutVssHigh" units="{bitStringValue(velocityUnitsLabels, useMetricOnInterface)}">0</constant>
         <constant digits="0" name="coastingFuelCutVssLow" units="{bitStringValue(velocityUnitsLabels, useMetricOnInterface)}">0</constant>
         <constant name="complexWallModel">"Basic (constants)"</constant>

@@ -1,5 +1,29 @@
 # Work Report
 
+## 2026-10-30 - m74_9: DFCO never armed - coastingFuelCutTps=0 vs pedal rest ~1.2% (21129.msq)
+
+Tune bug, surfaced as "fuel keeps injecting above 2000 rpm with the pedal
+fully released (engine sniffer shows injection)".
+
+Root cause: DfcoController::getState() gates activation on
+    tps.Value < coastingFuelCutTps
+(firmware/controllers/algo/fuel/dfco.cpp). The msq had coastingFuelCutTps=0
+while DriverThrottleIntent reads ~1.2% at rest on this car (durable fact
+from the idle tuning sessions), so the condition can never be true and
+DFCO never arms. All other conditions were fine: enabled=yes,
+MAP < 99 kPa (cutMap=100, hysteresis +-1), CLT > 60 C, rpm > 2000,
+VSS gate 0/0 (disabled), dfcoDelay 1.0 s.
+
+Change: 21129.msq coastingFuelCutTps 0 -> 3 (margin above the 1.2%
+rest position; raise to 5 if the live rest reading ever exceeds 3).
+
+Validation: none yet (tune-only change, msq signed/stamped by the next
+board config gen). Verify on the car: burn while stopped (no TS-burn
+while driving - MFS stalls), then release the pedal above 2000 rpm -
+injection should stop after ~1 s (dfcoDelay). If it does not: check
+live DriverThrottleIntent, isTuningNow (VE tuning inhibits DFCO) and
+disableDecelerationFuelCutOff from Lua.
+
 ## 2026-10-09 (2) - m74_9: injection close ВЕРНУЛАСЬ на TIM5 CC2 мини-очередь (директива пользователя, вариант A) - IMPLEMENTED, build OK, car verdict за следующим lockstats
 
 Один канал TMR2 CC4 не мог держать перекрывающиеся close (busy при
