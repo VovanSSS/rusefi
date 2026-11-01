@@ -11,14 +11,14 @@ allprojects {
 
     plugins.withType(JavaPlugin) {
         java {
-          // [tag:java25] the project now ships Java 25 bytecode (class major 69):
+          // [tag:java27] the project now ships Java 27 bytecode (class major 71):
           // the console and the tools require a modern JRE. NOTE: the TunerStudio
           // plugin modules can no longer run inside TunerStudio's bundled Java 8
           // runtime - TS would need a newer JVM.
-          sourceCompatibility = '25'
-          targetCompatibility = '25'
+          sourceCompatibility = '27'
+          targetCompatibility = '27'
           toolchain {
-            languageVersion.set(JavaLanguageVersion.of(25))
+            languageVersion.set(JavaLanguageVersion.of(27))
           }
         }
 

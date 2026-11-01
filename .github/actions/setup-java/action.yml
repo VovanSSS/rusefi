@@ -4,7 +4,7 @@ inputs:
   java-version:
     description: 'Java version'
     required: false
-    default: '25'
+    default: '27'
   distribution:
     description: 'Java distribution'
     required: false

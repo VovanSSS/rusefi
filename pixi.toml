@@ -53,7 +53,8 @@ arm-gnu-toolchain = ">=14,<15"
 # JDK for the config/INI code generation the firmware Makefiles run (see CLAUDE.md
 # "Code generation is integrated into the Makefile"). CI supplies this via the
 # setup-java action in .github/workflows/build-firmware-windows.yaml.
-openjdk = "17.*"
+# Must be >= the project bytecode target (Java 27, [tag:java27]).
+openjdk = "27.*"
 
 # The rusEFI Makefiles shell out to a Unix userland (bash, sed, awk, grep,
 # coreutils). On Linux/macOS these come from the OS. On native Windows the CI job

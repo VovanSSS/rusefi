@@ -19,8 +19,8 @@ jobs:
 
     - uses: ./.github/actions/setup-java
       with:
-        # using version 21 here just for fun. See build-tsplugin-body.yaml
-        java-version: '25'
+        # matches the project toolchain ([tag:java27] in the root build.gradle)
+        java-version: '27'
 
     - name: Test Compiler
       run: javac -version

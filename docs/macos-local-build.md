@@ -78,9 +78,9 @@ produces `console/rusefi_console.jar`.
   beyond the toolchain + JDK above.
 - `firmware/bin/compile.sh` and friends remain compatible with Linux; macOS
   branches are guarded by `uname -s`.
-- Gradle 9.7 runs on JVM 17-26; the project toolchain is Java 25
-  (`languageVersion=25` in the root build.gradle) and the produced bytecode is
-  Java 25 (class major 69) - the console and the tools require a JRE 25 to run.
+- Gradle 9.8 runs on JVM 17-27; the project toolchain is Java 27
+  (`languageVersion=27` in the root build.gradle) and the produced bytecode is
+  Java 27 (class major 71) - the console and the tools require a JRE 27 to run.
   Note: the TunerStudio plugin modules no longer load inside TunerStudio's
   bundled Java 8 runtime; TS would need a newer JVM.
 - The repo directory is shared with the Docker container if you still use it:

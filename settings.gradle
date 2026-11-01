@@ -1,5 +1,5 @@
 plugins {
-  // [tag:java25] the project ships Java 25 bytecode; foojay only fills toolchain gaps now
+  // [tag:java27] the project ships Java 27 bytecode; foojay only fills toolchain gaps now
   id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
 }
 

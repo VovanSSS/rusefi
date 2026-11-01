@@ -34,4 +34,4 @@ for arg in "$@"; do
 done
 
 # libpcanbasic_jni.dylib / PCANBasic_JNI.dll live in java_console/
-exec java -Djava.library.path=. -cp "$JAR" com.rusefi.openblt.OpenBltCanFlasher "${resolved_args[@]}"
+exec java --enable-native-access=ALL-UNNAMED -Djava.library.path=. -cp "$JAR" com.rusefi.openblt.OpenBltCanFlasher "${resolved_args[@]}"

@@ -1,5 +1,110 @@
 # Work Report
 
+## 2026-11-01 (2) - java 25 -> 27 + wrapper 9.8.2 (variant A) - IMPLEMENTED and BUILD/TEST-VALIDATED
+
+User directive: variant A - wrapper pinned to 9.8.2 (= brew "system" gradle, so
+./gradlew and gradle are interchangeable), project toolchain Java 27.
+
+CHANGES (repo)
+- build.gradle: sourceCompatibility/targetCompatibility/languageVersion
+  25 -> 27, [tag:java25] -> [tag:java27] comments (build.gradle + settings.gradle).
+- gradle/wrapper/gradle-wrapper.properties: gradle-9.7.0-all -> gradle-9.8.2-all
+  (9.7 does not know the 27 toolchain; 9.8.2 release notes list "Java 27
+  support").
+- .github/actions/setup-java/action.yml default '25' -> '27';
+  gen-configs.yaml explicit '25' -> '27' (comment updated; Zulu 27 in
+  setup-java@v5 is UNVERIFIED until the next workflow run - fallback temurin).
+- pixi.toml: openjdk "17.*" -> "27.*" (the firmware codegen path; PATH java
+  must be >= 27 or the fat jars die with UnsupportedClassVersionError).
+- java_console/bin/openblt_can.sh + can_dump.sh: added
+  --enable-native-access=ALL-UNNAMED (m749_can.sh had it; JDK 27 warns that
+  restricted native methods will be BLOCKED in a future release).
+- docs/macos-local-build.md (Gradle 9.8 JVM 17-27, toolchain 27, major 71,
+  JRE 27 required), docs/m749_cli.md ("под Java 27"), dependencies.gradle
+  stale jakarta comment.
+
+LOCAL MACHINE (not in repo)
+- brew openjdk 27.0.1 is keg-only and invisible to java_home/Gradle; linked
+  via ~/Library/Java/JavaVirtualMachines/openjdk-27.jdk -> /opt/homebrew/opt/
+  openjdk/libexec/openjdk.jdk (user-level, no sudo; java_home scans that dir).
+  PATH java is now 27.0.1 - codegen scripts and the Gradle daemon use it.
+- wrapper distribution seeded offline from the user's zip (services.gradle.org
+  download timed out at the 10 s networkTimeout):
+  ~/.gradle/wrapper/dists/gradle-9.8.2-all/<hash>/ where <hash> =
+  base36(md5("https://services.gradle.org/distributions/gradle-9.8.2-all.zip"))
+  = 5xecsnx1v1ypz0za8yyzm2yym; zip copied + unpacked + .ok marker created.
+  ./gradlew now runs offline.
+
+VALIDATION
+- gradle :ui:shadowJar (brew 9.8.2) BUILD SUCCESSFUL; console/
+  rusefi_console.jar class major 71 (javap-verified).
+- gradle test BUILD SUCCESSFUL (162 tasks) - mockito 5.23/ByteBuddy handled
+  major 71, NO mockito bump needed (the flagged risk did not fire).
+- ./gradlew :ui:shadowJar + ./gradlew --version via the wrapper: 9.8.2,
+  Launcher JVM 27 - wrapper == system gradle, the variant-A property.
+- bash -n clean on both edited launcher scripts.
+- Residual: 50 javac deprecation warnings (incl. new JDK-27 ones like
+  URL(String)); JVM 27 runtime warnings from jSerialComm System::loadLibrary
+  and JAXB final-field mutation in tests (warning-only, flagged as blocked
+  "in a future release").
+
+OPEN: CI zulu-27 resolution check (next workflow run); generated-firmware-file
+churn in git status is the usual build regeneration - left modified per
+project convention, never committed.
+
+## 2026-11-01 - java 25 -> 27 + system gradle: ANALYSIS (no code changes)
+
+User request (Russian): analysis of migrating the project to Java 27 and
+"system gradle" (brew gradle instead of ./gradlew). Facts verified on this
+Mac and in the tree:
+
+CURRENT STATE
+- wrapper pins Gradle 9.7.0; brew "gradle" is 9.8.2 whose release notes
+  explicitly list "Java 27 support" -> 9.7 does NOT know the 27 toolchain.
+- project toolchain: Java 25 via root build.gradle (languageVersion 25,
+  [tag:java25] in build.gradle + settings.gradle); bytecode major 69.
+- machine: default java on PATH = Temurin 25; brew openjdk 27.0.1 installed
+  but keg-only (NOT in /Library/Java/JavaVirtualMachines, not on PATH) ->
+  Gradle toolchain detection and the firmware codegen scripts do NOT see it.
+- firmware codegen runs bare "java" from PATH on the 27-bytecode fat jars
+  (gen_config_board.sh, gen_enum_to_string.sh, firmware/Makefile gcc_map_reader)
+  -> PATH java must be >= 27 after the switch or codegen dies with
+  UnsupportedClassVersionError (major 71).
+- pixi.toml pins openjdk = "17.*" for exactly that codegen path -> must
+  become 27.*.
+- CI: .github/actions/setup-java default '25' + gen-configs.yaml explicit
+  '25' -> bump both to '27' (verify Azul Zulu 27 resolves in setup-java@v5;
+  fallback distribution temurin).
+- android/app/build.gradle stays Java 11 (separate android/ gradle build,
+  untouched).
+- docs to update: docs/macos-local-build.md (Gradle JVM range, toolchain,
+  class major, JRE requirement), docs/m749_cli.md ("под Java 25").
+
+DECISIONS / RISKS
+- recommended: keep the wrapper (bump to 9.8.2) and use the system brew
+  gradle locally - same version = same result; full wrapper removal hurts
+  reproducibility (brew will advance to 9.9/10.0 and break the build; CI on
+  ubuntu then needs a gradle install). "System gradle" becomes a local
+  convenience, the repo keeps one pinned version.
+- tests: project bytecode 27 = class major 71; mockito 5.23.0 (bundled
+  ByteBuddy/ASM) may refuse to instrument -> ./gradlew test may fail until
+  mockito/byte-buddy bump. Run tests first after the switch.
+- JNA/PCAN on JDK 27: smoke openblt_can/can_dump/m749_can (m749 already
+  passes --enable-native-access=ALL-UNNAMED; the other two scripts do not).
+- -Xlint:deprecation + org.gradle.warning.mode=all: expect new JDK 27
+  deprecation noise, warnings only.
+- foojay-resolver-convention 1.0.0 provisions 27 from the discovery API on
+  demand (downloads a temurin into ~/.gradle/jdks); linking the brew JDK
+  into /Library/Java/JavaVirtualMachines avoids that ~200 MB download.
+- distribution: console/TS-plugin users now need a JRE 27 (TS itself runs
+  on its bundled Java 8 - the plugin needs a newer JVM, already documented).
+
+Validation: analysis only; gradle --version (9.8.2, "Java 27 support" in
+its release notes), java_home -V, brew list, and every touched file read
+this session (build.gradle, settings.gradle, gradle-wrapper.properties,
+setup-java action, gen-configs.yaml, java_tools.mk, pixi.toml, firmware
+codegen scripts, macos-local-build.md).
+
 ## 2026-10-30 - m74_9: DFCO never armed - coastingFuelCutTps=0 vs pedal rest ~1.2% (21129.msq)
 
 Tune bug, surfaced as "fuel keeps injecting above 2000 rpm with the pedal

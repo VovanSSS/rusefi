@@ -15,4 +15,4 @@ JAR=mcp_can/build/libs/mcp_can-all.jar
 (cd .. && ./gradlew :mcp_can:fatJar) || exit 1
 
 # libpcanbasic_jni.dylib / PCANBasic_JNI.dll live in java_console/
-exec java -Djava.library.path=. -cp "$JAR" com.rusefi.candump.CanDump "$@"
+exec java --enable-native-access=ALL-UNNAMED -Djava.library.path=. -cp "$JAR" com.rusefi.candump.CanDump "$@"

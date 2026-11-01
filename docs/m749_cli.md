@@ -19,7 +19,7 @@ bash java_console/bin/m749_can.sh <команда> [опции]
 - main-класс: `com.rusefi.m749.M749Cli`.
 - нативные библиотеки PCAN лежат в `java_console/` (`libpcanbasic_jni.dylib` на macOS,
   `PCANBasic_JNI.dll` на Windows); лаунчер выставляет `-Djava.library.path=.` и
-  `--enable-native-access=ALL-UNNAMED` (под Java 25).
+  `--enable-native-access=ALL-UNNAMED` (под Java 27).
 - Тесты: `./gradlew :m749:test`.
 
 ## Транспорты

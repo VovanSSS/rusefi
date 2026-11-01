@@ -15,7 +15,7 @@ ext {
           snakeyaml      : "org.yaml:snakeyaml:2.6",
           commons_logging: "commons-logging:commons-logging:1.4.0",
           jcip           : 'net.jcip:jcip-annotations:1.0',
-    // jakarta 4 (the project bytecode is Java 25 now; jakarta 3 was kept for the TS plugin's java 8 runtime)
+    // jakarta 4 (the project bytecode is Java 27 now; jakarta 3 was kept for the TS plugin's java 8 runtime)
           jaxb           : 'jakarta.xml.bind:jakarta.xml.bind-api:4.0.5',
           jaxb_runtime   : 'org.glassfish.jaxb:jaxb-runtime:4.0.9',
   ]
