@@ -20,7 +20,12 @@ evaluationDependsOn(':core_ui')
 evaluationDependsOn(':shared_io')
 
 test {
-    systemProperty 'autoupdate.test.classpath', sourceSets.test.runtimeClasspath.asPath
+    // The classpath is resolved lazily: resolving sourceSets.test.runtimeClasspath at
+    // configuration time locks the outgoing configurations at evaluation, and the shadow
+    // plugin then fails mutating ':autoupdate:shadowRuntimeElements' (Gradle 9.8.2).
+    doFirst {
+        systemProperty 'autoupdate.test.classpath', sourceSets.test.runtimeClasspath.asPath
+    }
 }
 
 shadowJar {
