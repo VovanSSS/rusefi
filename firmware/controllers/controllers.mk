@@ -18,7 +18,7 @@ CONTROLLERS_SRC_CPP = \
 	$(CONTROLLERS_DIR)/actuators/idle_thread_io.cpp \
 	$(CONTROLLERS_DIR)/actuators/idle_hardware.cpp \
 	$(CONTROLLERS_DIR)/actuators/idle_thread.cpp \
-	$(CONTROLLERS_DIR)/actuators/ignition_controller.cpp \
+	$(CONTROLLERS_DIR)/ignition_controller.cpp \
 	$(CONTROLLERS_DIR)/actuators/main_relay.cpp \
 	$(CONTROLLERS_DIR)/actuators/vvt.cpp \
 	$(CONTROLLERS_DIR)/actuators/gppwm_channel_reader.cpp \
@@ -52,7 +52,7 @@ CONTROLLERS_SRC_CPP = \
 	$(CONTROLLERS_DIR)/can/can_verbose.cpp \
 	$(CONTROLLERS_DIR)/can/can_rx.cpp \
 	$(CONTROLLERS_DIR)/can/can_bench_test.cpp \
-	$(CONTORLLERS_DIR)/can/rusefi_wideband.cpp \
+	$(CONTROLLERS_DIR)/can/rusefi_wideband.cpp \
 	$(CONTROLLERS_DIR)/can/can_tx.cpp \
 	$(CONTROLLERS_DIR)/can/can_dash.cpp \
 	$(CONTROLLERS_DIR)/can/can_dash_ms.cpp \

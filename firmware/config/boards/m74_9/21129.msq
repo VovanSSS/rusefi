@@ -5332,8 +5332,8 @@
 </constant>
         <constant name="yesUnderstandLocking">"no"</constant>
     </page>
-    <versionInfo firmwareInfo="20261101" nPages="1" signature="rusEFI maccan-tx-fix.2026.09.29.m74_9.4273509233" version="5.0"/>
-    <bibliography author="rusEFI 20261101" writeDate="date"/>
+    <versionInfo firmwareInfo="20261102" nPages="1" signature="rusEFI maccan-tx-fix.2026.11.02.m74_9.669483117" version="5.0"/>
+    <bibliography author="rusEFI 20261102" writeDate="date"/>
     <settings/>
     <userComments/>
 </msq>

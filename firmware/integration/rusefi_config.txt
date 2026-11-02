@@ -1400,6 +1400,8 @@ tps_limit_t tps2Max;Fully opened voltage for primary throttle position sensor
 
 	can_baudrate_e can2BaudRate;
 
+	bit canOpenBLT,"yes","no"; Allow OpenBLT on Primary CAN
+
 	#define load_override_e_enum "None", "MAP", "TPS", "Acc Pedal", "Cyl Filling %"
 	custom load_override_e 1 bits, U08, @OFFSET@, [0:2], @@load_override_e_enum@@
 	load_override_e afrOverrideMode;Override the Y axis (load) value used for the AFR table.\nAdvanced users only: If you aren't sure you need this, you probably don't need this.

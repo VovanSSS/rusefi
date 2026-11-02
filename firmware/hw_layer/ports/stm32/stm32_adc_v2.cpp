@@ -22,8 +22,6 @@
 
 #if HAL_USE_ADC
 
-#include "adc_onchip.h"
-
 /* HW channels count per ADC */
 constexpr size_t adcChannelCount = 16;
 constexpr size_t adcAux1ChannelCount = 2;
@@ -489,16 +487,16 @@ static void slowAdcEnableDisableChannel(adc_channel_e hwChannel, bool en)
 		return;
 	}
 
-	int channelAdcIndex = getAdcInternalChannel(EFI_SLOW_ADC.adc, hwChannel);
-	if (channelAdcIndex < 0 || channelAdcIndex >= static_cast<int>(adcChannelCount)) {
-		return;
-	}
+	/* TODO: following is correct for STM32 ADC1/2.
+	 * ADC3 has another input to gpio mapping
+	 * and should be handled separately */
+	uint32_t channelAdcIndex = hwChannel - EFI_ADC_0;
 	// Switch disabled channel to internal Vrefint channel
 	adcConversionGroupSetSeqInput(&convGroupSlow, channelAdcIndex, en ? channelAdcIndex : 17);
 }
 
 AdcToken enableFastAdcChannel(const char*, adc_channel_e hwChannel) {
-	if (!isAdcChannelOnChip(hwChannel)) {
+	if (!isAdcChannelValid(hwChannel)) {
 		return invalidAdcToken;
 	}
 
@@ -736,12 +734,9 @@ void portInitAdc() {
 
 #if EFI_ADC3_SLOW
 	/* Init ADC3 for slow sampling of the ADC3-only pins (CLT/IAT live on the
-	 * F-port pins, EFI_ADC_32..39). The master-side adc3Slow sampler framework
-	 * (adc_onchip_slow.cpp / adc3SlowUpdate) depends on initAdc3Slow() having
-	 * built the conversion group and started the driver (it tolerates an
-	 * already-started ADCD3); on this board knock is on ADC1, so ADCD3 has
-	 * no other users. */
-	initAdc3Slow();
+	 * F-port pins, EFI_ADC_32..39). On this board knock is on ADC1, so ADCD3
+	 * has no other users and is started exactly once here. */
+	adcStart(&ADCD3, nullptr);
 #endif // EFI_ADC3_SLOW
 
 #if (EFI_INTERNAL_SLOW_ADC_BACKGROUND == TRUE)
@@ -772,7 +767,6 @@ void portInitAdc() {
 		nvicDisableVector(STM32_ADC_NUMBER);
 	}
 #endif
-
 }
 
 #endif // HAL_USE_ADC
