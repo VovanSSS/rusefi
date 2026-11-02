@@ -146,6 +146,8 @@ typedef enum  __attribute__ ((__packed__)) {
 
   VVT_CUSTOM_5 = 34,
 
+  VVT_NISSAN_VK56DE = 35,
+
 } vvt_mode_e;
 
 typedef enum __attribute__ ((__packed__)) {
@@ -535,13 +537,17 @@ typedef enum __attribute__ ((__packed__)) {
 } air_pressure_sensor_type_e;
 
 typedef enum {
+	INVALID = -9,
 	REVERSE = -1,
 	NEUTRAL = 0,
 	GEAR_1 = 1,
 	GEAR_2 = 2,
 	GEAR_3 = 3,
 	GEAR_4 = 4,
-
+	GEAR_5 = 5,
+	GEAR_6 = 6,
+	GEAR_7 = 7,
+	GEAR_8 = 8,
 } gear_e;
 
 typedef enum __attribute__ ((__packed__)) {
@@ -808,6 +814,8 @@ typedef enum __attribute__ ((__packed__)) {
 	// NOT to be used in dual H-bridge stepper control
 	DC_IdleValve = 3,
 	DC_Wastegate = 4,
+	// Uses one H-bridge terminal as an on/off output. The paired terminal must stay disconnected.
+	DC_Gpio = 5,
 } dc_function_e;
 
 typedef enum __attribute__ ((__packed__)) {
@@ -854,6 +862,7 @@ typedef enum __attribute__ ((__packed__)) {
 	AE_MODE_MS_ADDER = 0,
 	AE_MODE_PERCENT_ADDER = 1,
 	AE_MODE_PREDICTIVE_MAP = 2,
+	AE_MODE_LUA = 3,
 } accel_enrichment_mode_e;
 
 #if __cplusplus
@@ -932,7 +941,8 @@ typedef enum __attribute__ ((__packed__)) {
 	stftDisabledAfrOurOfRange = 6,
 	stftDisabledDFCO = 7,
 	stftDisabledTpsAccel = 8,
-	stftDisabledFuelCut = 9
+	stftDisabledFuelCut = 9,
+	stftDisabledLaunch = 10
 } stft_state_e;
 
 typedef enum __attribute__((__packed__)) {
@@ -941,6 +951,37 @@ typedef enum __attribute__((__packed__)) {
 	ftRegionPower = 2,
 	ftRegionCruise = 3,
 } ft_region_e;
+
+enum class fan_ac_mode_e : uint8_t {
+	Disabled = 0,
+	Relay = 1,
+	Pressure = 2,
+};
+
+// Engine state machine shift settings; values match the tuning schema.
+enum class sm_clutch_switch_e : uint8_t {
+	None = 0,
+	ClutchUp = 1,
+	ClutchDown = 2,
+};
+
+enum class sm_shift_detection_mode_e : uint8_t {
+	RpmRate = 0,
+	VssRate = 1,
+};
+
+// [tag:state_aware_dfco] Zero preserves traditional overrun behavior in older tunes.
+enum class dfco_fuel_cut_mode_e : uint8_t {
+	Overrun = 0,
+	Decel = 1,
+	Both = 2,
+};
+
+enum class fuel_pump_mode_e : uint8_t {
+	Single = 0,
+	Dual = 1,
+	Pwm = 2,
+};
 
 enum class SDLoggerMode : uint8_t {
 	None = 0,

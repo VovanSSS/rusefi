@@ -348,7 +348,7 @@ TEST(misc, testRpmCalculator) {
 }
 
 TEST(trigger, testAnotherTriggerDecoder) {
-	testTriggerDecoder2("Miata 2003", engine_type_e::MAZDA_MIATA_NB2, 3, 0.38888889, 0.0);
+	testTriggerDecoder2("Miata 2003", engine_type_e::MAZDA_MIATA_NB2, 3, 0.38888889f, 0.0f);
 }
 
 TEST(trigger, testTriggerDecoder) {
@@ -367,13 +367,13 @@ TEST(trigger, testTriggerDecoder) {
 	}
 
 	printf("====================================================================================== testTriggerDecoder part 2\r\n");
-	testTriggerDecoder2("Dodge Neon 1995", engine_type_e::DODGE_NEON_1995, 0, 0.4931, 0.2070);
+	testTriggerDecoder2("Dodge Neon 1995", engine_type_e::DODGE_NEON_1995, 0, 0.4931f, 0.2070f);
 
 	testTriggerDecoder2("ford aspire", engine_type_e::FORD_ASPIRE_1996, 4, 0.0000, 0.5);
 
-	testTriggerDecoder2("dodge ram", engine_type_e::DODGE_RAM, 16, 0.5000, 0.06);
+	testTriggerDecoder2("dodge ram", engine_type_e::DODGE_RAM, 16, 0.5000f, 0.06f);
 
-	testTriggerDecoder2("Miata NB2", engine_type_e::MAZDA_MIATA_NB2, 3, 0.3888888955, 0);
+	testTriggerDecoder2("Miata NB2", engine_type_e::MAZDA_MIATA_NB2, 3, 0.3888888955f, 0);
 
 	printf("====================================================================================== testTriggerDecoder part 3\r\n");
 
@@ -383,9 +383,9 @@ TEST(trigger, testTriggerDecoder) {
 	testTriggerDecoder2("test engine", engine_type_e::TEST_ENGINE, 0, 0.7500, 0.2500);
 	testTriggerDecoder2("testGY6_139QMB", engine_type_e::GY6_139QMB, 0, 0.4375, 0.0);
 
-	testTriggerDecoderByTriggerType("testFordEscortGt", trigger_type_e::TT_MAZDA_DOHC_1_4, 0, 0.8096, 0.3844);
+	testTriggerDecoderByTriggerType("testFordEscortGt", trigger_type_e::TT_MAZDA_DOHC_1_4, 0, 0.8096f, 0.3844f);
 
-	testTriggerDecoderByTriggerType("NISSAN_PRIMERA", trigger_type_e::TT_NISSAN_SR20VE, 2, 0.9611, 0.0);
+	testTriggerDecoderByTriggerType("NISSAN_PRIMERA", trigger_type_e::TT_NISSAN_SR20VE, 2, 0.9611f, 0.0f);
 
 	testTriggerDecoder2("test1+1", engine_type_e::DEFAULT_FRANKENSO, 0, 0.7500, 0.2500);
 
@@ -401,13 +401,13 @@ TEST(trigger, testTriggerDecoder) {
 
 	}
 
-	testTriggerDecoder2("sachs", engine_type_e::SACHS, 0, 0.4800, 0.000);
+	testTriggerDecoder2("sachs", engine_type_e::SACHS, 0, 0.4800f, 0.000f);
 
-	testTriggerDecoder2("vw ABA", engine_type_e::VW_ABA, 0, 0.51666, 0.0);
+	testTriggerDecoder2("vw ABA", engine_type_e::VW_ABA, 0, 0.51666f, 0.0f);
 }
 
 static void assertInjectionEventBase(const char *msg, InjectionEvent *ev, int injectorIndex, int eventIndex, angle_t angleOffset) {
-	EXPECT_EQ(injectorIndex, ev->outputs[0]->injectorIndex) << msg << "inj index";
+	EXPECT_NE(0, ev->calculateInjectorOutputMask() & (1u << injectorIndex)) << msg << "inj index";
 	EXPECT_NEAR_M4(angleOffset, ev->injectionStartAngle) << msg << "inj index";
 }
 
@@ -415,17 +415,14 @@ static void assertInjectionEventBase(const char *msg, InjectionEvent *ev, int in
 static void assertInjectionEvent(const char *msg, InjectionEvent *ev, int injectorIndex, int eventIndex, angle_t angleOffset) {
 	assertInjectionEventBase(msg, ev, injectorIndex, eventIndex, angleOffset);
 
-	// There should NOT be a second injector configured
-	EXPECT_EQ(nullptr, ev->outputs[1]);
+	EXPECT_EQ(1u << injectorIndex, ev->calculateInjectorOutputMask());
 }
 #endif //FUEL_RPM_COUNT == 16
 
 static void assertInjectionEventBatch(const char *msg, InjectionEvent *ev, int injectorIndex, int secondInjectorIndex, int eventIndex, angle_t angleOffset) {
 	assertInjectionEventBase(msg, ev, injectorIndex, eventIndex, angleOffset);
 
-	// There should be a second injector - confirm it's the correct one
-	ASSERT_NE(nullptr, ev->outputs[1]);
-	EXPECT_EQ(secondInjectorIndex, ev->outputs[1]->injectorIndex);
+	EXPECT_EQ((1u << injectorIndex) | (1u << secondInjectorIndex), ev->calculateInjectorOutputMask());
 }
 
 // https://sourceforge.net/p/rusefi/tickets/299/
@@ -456,9 +453,9 @@ static void setTestBug299(EngineTestHelper *eth) {
 	// inj #1 |........|.......#|........|.......#|
 	ASSERT_EQ( 4,  engine->scheduler.size()) << "qs#00";
 	ASSERT_EQ( 3u, getRevolutionCounter()) << "rev cnt#3";
-	eth->assertInjectorUpEvent("setTestBug299: 1@0", 0, MS2US(8.5), 2);
+	eth->assertInjectorUpEvent("setTestBug299: 1@0", 0, static_cast<efitimeus_t>(MS2US(8.5)), 2);
 	eth->assertInjectorDownEvent("@1", 1, MS2US(10), 2);
-	eth->assertInjectorUpEvent("1@2", 2, MS2US(18.5), 3);
+	eth->assertInjectorUpEvent("1@2", 2, static_cast<efitimeus_t>(MS2US(18.5)), 3);
 	eth->assertInjectorDownEvent("1@3", 3, MS2US(20), 3);
 	ASSERT_EQ( 0,  eth->executeActions()) << "exec#0";
 
@@ -479,13 +476,13 @@ static void setTestBug299(EngineTestHelper *eth) {
 	// inj #1 |........|.......#|........|.......#|
 	ASSERT_EQ( 8,  engine->scheduler.size()) << "qs#0";
 	ASSERT_EQ( 3u, getRevolutionCounter()) << "rev cnt#3";
-	eth->assertInjectorUpEvent("02@0", 0, MS2US(-11.5), 2);
+	eth->assertInjectorUpEvent("02@0", 0, static_cast<efitimeus_t>(MS2US(-11.5)), 2);
 	eth->assertInjectorDownEvent("@1", 1, MS2US(-10), 2);
-	eth->assertInjectorUpEvent("@2", 2, MS2US(-1.5), 3);
+	eth->assertInjectorUpEvent("@2", 2, static_cast<efitimeus_t>(MS2US(-1.5)), 3);
 	eth->assertInjectorDownEvent("02@3", 3, MS2US(0), 3);
-	eth->assertInjectorUpEvent("02@4", 4, MS2US(8.5), 0);
+	eth->assertInjectorUpEvent("02@4", 4, static_cast<efitimeus_t>(MS2US(8.5)), 0);
 	eth->assertInjectorDownEvent("@5", 5, MS2US(10), 0);
-	eth->assertInjectorUpEvent("02@6", 6, MS2US(18.5), 1);
+	eth->assertInjectorUpEvent("02@6", 6, static_cast<efitimeus_t>(MS2US(18.5)), 1);
 	eth->assertInjectorDownEvent("@7", 7, MS2US(20), 1);
 	ASSERT_EQ( 4,  eth->executeActions()) << "exec#1";
 
@@ -494,9 +491,9 @@ static void setTestBug299(EngineTestHelper *eth) {
 	 * Trigger up again
 	 */
 	eth->moveTimeForwardMs(20 /*ms*/);
-	eth->assertInjectorUpEvent("22@0", 0, MS2US(-11.5), 0);
+	eth->assertInjectorUpEvent("22@0", 0, static_cast<efitimeus_t>(MS2US(-11.5)), 0);
 	eth->assertInjectorDownEvent("22@1", 1, MS2US(-10), 0);
-	eth->assertInjectorUpEvent("22@2", 2, MS2US(-1.5), 1);
+	eth->assertInjectorUpEvent("22@2", 2, static_cast<efitimeus_t>(MS2US(-1.5)), 1);
 	eth->assertInjectorDownEvent("22@3", 3, MS2US(0), 1);
 	ASSERT_EQ( 4,  eth->executeActions()) << "exec#20";
 
@@ -506,9 +503,9 @@ static void setTestBug299(EngineTestHelper *eth) {
 	// time...|-20.....|-10.....|0.......|10......|20
 	// inj #0 |.......#|........|.......#|........|
 	// inj #1 |........|.......#|........|.......#|
-	eth->assertInjectorUpEvent("2@0", 0, MS2US(8.5), 2);
+	eth->assertInjectorUpEvent("2@0", 0, static_cast<efitimeus_t>(MS2US(8.5)), 2);
 	eth->assertInjectorDownEvent("@1", 1, MS2US(10), 2);
-	eth->assertInjectorUpEvent("@2", 2, MS2US(18.5), 3);
+	eth->assertInjectorUpEvent("@2", 2, static_cast<efitimeus_t>(MS2US(18.5)), 3);
 	eth->assertInjectorDownEvent("2@3", 3, MS2US(20), 3);
 	ASSERT_EQ( 0,  eth->executeActions()) << "exec#2";
 
@@ -522,9 +519,9 @@ static void setTestBug299(EngineTestHelper *eth) {
 	// inj #1 |........|.......#|........|........|
 	ASSERT_EQ( 4,  engine->scheduler.size()) << "qs#0-2";
 	ASSERT_EQ( 4u, getRevolutionCounter()) << "rev cnt#4";
-	eth->assertInjectorUpEvent("0@0", 0, MS2US(8.5), 0);
+	eth->assertInjectorUpEvent("0@0", 0, static_cast<efitimeus_t>(MS2US(8.5)), 0);
 	eth->assertInjectorDownEvent("0@1", 1, MS2US(10), 0);
-	eth->assertInjectorUpEvent("0@2", 2, MS2US(18.5), 1);
+	eth->assertInjectorUpEvent("0@2", 2, static_cast<efitimeus_t>(MS2US(18.5)), 1);
 	eth->assertInjectorDownEvent("0@3", 3, MS2US(20), 1);
 	ASSERT_EQ( 0,  eth->executeActions()) << "exec#3";
 
@@ -536,7 +533,7 @@ static void setTestBug299(EngineTestHelper *eth) {
 	ASSERT_EQ( 3000,  round(Sensor::getOrZero(SensorType::Rpm))) << "setTestBug299: RPM";
 
 	ASSERT_NEAR(1.5, engine->engineState.injectionDuration, EPS4D) << "fuel #1";
-	ASSERT_NEAR(7.5, getInjectorDutyCycle(round(Sensor::getOrZero(SensorType::Rpm))), EPS4D) << "duty for maf=0";
+	ASSERT_NEAR(7.5f, getInjectorDutyCycle(roundf(Sensor::getOrZero(SensorType::Rpm))), EPS4D) << "duty for maf=0";
 }
 
 #define assertInjectors(msg, value0, value1) \
@@ -567,7 +564,7 @@ void doTestFuelSchedulerBug299smallAndMedium(int startUpDelayMs) {
 	EXPECT_CALL(im, getInjectionDuration(_)).WillRepeatedly(Return(12.5f));
 	engine->module<InjectorModelPrimary>().set(&im);
 
-	ASSERT_NEAR(62.5, getInjectorDutyCycle(round(Sensor::getOrZero(SensorType::Rpm))), EPS4D) << "duty for maf=3";
+	ASSERT_NEAR(62.5f, getInjectorDutyCycle(roundf(Sensor::getOrZero(SensorType::Rpm))), EPS4D) << "duty for maf=3";
 
 	ASSERT_EQ( 4,  engine->scheduler.size()) << "qs#1";
 	eth.moveTimeForwardUs(MS2US(20));
@@ -700,9 +697,9 @@ void doTestFuelSchedulerBug299smallAndMedium(int startUpDelayMs) {
 	eth.firePrimaryTriggerRise();
 	ASSERT_EQ( 5,  engine->scheduler.size()) << "Queue.size#03";
 
-	eth.assertInjectorUpEvent("07@0", 0, MS2US(7.5), 3);
+	eth.assertInjectorUpEvent("07@0", 0, static_cast<efitimeus_t>(MS2US(7.5)), 3);
 	eth.assertInjectorDownEvent("07@1", 1, MS2US(10), 2);
-	eth.assertInjectorUpEvent("07@2", 2, MS2US(17.5), 0);
+	eth.assertInjectorUpEvent("07@2", 2, static_cast<efitimeus_t>(MS2US(17.5)), 0);
 	eth.assertInjectorDownEvent("07@3", 3, MS2US(20), 3);
 	eth.assertInjectorDownEvent("07@4", 4, MS2US(30), 0);
 //	assertInjectorDownEvent("07@5", 5, MS2US(30), 0);
@@ -728,7 +725,7 @@ void doTestFuelSchedulerBug299smallAndMedium(int startUpDelayMs) {
 	engine->module<InjectorModelPrimary>().set(&im2);
 
 	// duty cycle above 75% is a special use-case because 'special' fuel event overlappes the next normal event in batch mode
-	ASSERT_NEAR(87.5, getInjectorDutyCycle(round(Sensor::getOrZero(SensorType::Rpm))), EPS4D) << "duty for maf=3";
+	ASSERT_NEAR(87.5f, getInjectorDutyCycle(roundf(Sensor::getOrZero(SensorType::Rpm))), EPS4D) << "duty for maf=3";
 
 
 	assertInjectionEventBatch("#03", &t->elements[0], 0, 3, 0, 315);
@@ -932,7 +929,7 @@ TEST(big, testFuelSchedulerBug299smallAndLarge) {
 	EXPECT_CALL(im, getInjectionDuration(_)).WillRepeatedly(Return(17.5f));
 	engine->module<InjectorModelPrimary>().set(&im);
 
-	ASSERT_NEAR(87.5, getInjectorDutyCycle(round(Sensor::getOrZero(SensorType::Rpm))), EPS4D) << "Lduty for maf=3";
+	ASSERT_NEAR(87.5f, getInjectorDutyCycle(roundf(Sensor::getOrZero(SensorType::Rpm))), EPS4D) << "Lduty for maf=3";
 
 
 	ASSERT_EQ( 4,  engine->scheduler.size()) << "Lqs#1";
@@ -948,10 +945,10 @@ TEST(big, testFuelSchedulerBug299smallAndLarge) {
 	// inj #0 |########|########|########|.....###|########|........|........|
 	// inj #1 |..######|########|....####|########|........|........|........|
 	ASSERT_EQ( 6,  engine->scheduler.size()) << "Lqs#4";
-	eth.assertInjectorUpEvent("L04@0", 0, MS2US(8.5), 2);
-	eth.assertInjectorUpEvent("L04@1", 1, MS2US(12.5), 0);
+	eth.assertInjectorUpEvent("L04@0", 0, static_cast<efitimeus_t>(MS2US(8.5)), 2);
+	eth.assertInjectorUpEvent("L04@1", 1, static_cast<efitimeus_t>(MS2US(12.5)), 0);
 	// special overlapping injection is merged with one of the scheduled injections
-	eth.assertInjectorUpEvent("L04@2", 2, MS2US(18.5), 3);
+	eth.assertInjectorUpEvent("L04@2", 2, static_cast<efitimeus_t>(MS2US(18.5)), 3);
 
 	eth.assertInjectorDownEvent("L04@3", 3, MS2US(26), 2);
 	eth.assertInjectorDownEvent("L04@4", 4, MS2US(30), 0);
@@ -966,7 +963,7 @@ TEST(big, testFuelSchedulerBug299smallAndLarge) {
 	// injector goes high...
 	ASSERT_FALSE(enginePins.injectors[0].currentLogicValue) << "injector@1";
 
-	eth.executeAllPreservingTimeUs(getTimeNowUs() + MS2US(17.5) + 1);
+	eth.executeAllPreservingTimeUs(static_cast<efitimeus_t>(getTimeNowUs() + MS2US(17.5f) + 1));
 	// injector does not go low too soon, that's a feature :)
 	ASSERT_TRUE(enginePins.injectors[0].currentLogicValue) << "injector@2";
 
@@ -974,8 +971,8 @@ TEST(big, testFuelSchedulerBug299smallAndLarge) {
 	eth.fireFall(20);
 
 	ASSERT_EQ( 6,  engine->scheduler.size()) << "Lqs#04";
-	eth.assertInjectorUpEvent("L015@0", 0, MS2US(-1.5), 3);
-	eth.assertInjectorUpEvent("L015@1", 1, MS2US(2.5), 1);
+	eth.assertInjectorUpEvent("L015@0", 0, static_cast<efitimeus_t>(MS2US(-1.5)), 3);
+	eth.assertInjectorUpEvent("L015@1", 1, static_cast<efitimeus_t>(MS2US(2.5)), 1);
 	eth.assertInjectorDownEvent("L015@2", 2, MS2US(6), 2);
 	eth.assertInjectorDownEvent("L015@3", 3, MS2US(10), 0);
 	eth.assertInjectorDownEvent("L015@4", 4, MS2US(16), 3);
@@ -999,7 +996,7 @@ TEST(big, testFuelSchedulerBug299smallAndLarge) {
 	EXPECT_CALL(im2, getInjectionDuration(_)).WillRepeatedly(Return(2.0f));
 	engine->module<InjectorModelPrimary>().set(&im2);
 
-	ASSERT_EQ( 10,  getInjectorDutyCycle(round(Sensor::getOrZero(SensorType::Rpm)))) << "Lduty for maf=3";
+	ASSERT_EQ( 10,  getInjectorDutyCycle(roundf(Sensor::getOrZero(SensorType::Rpm)))) << "Lduty for maf=3";
 
 
 	eth.firePrimaryTriggerRise();
@@ -1079,7 +1076,7 @@ TEST(big, testSparkReverseOrderBug319) {
 	/**
 	 * here we throw scheduling logic off
 	 */
-	eth.fireFall(0.1); // executing new signal too early
+	eth.fireFall(0.1f); // executing new signal too early
 	eth.executeActions();
 
 

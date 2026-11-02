@@ -35,7 +35,6 @@
 #include "trigger_emulator_algo.h"
 #include "high_pressure_fuel_pump.h"
 #include "malfunction_central.h"
-#include "malfunction_indicator.h"
 #include "speed_density.h"
 #include "local_version_holder.h"
 #include "alternator_controller.h"
@@ -54,6 +53,7 @@
 #include "gppwm.h"
 #include "date_stamp.h"
 #include "rusefi_lua.h"
+#include "lua_heap.h"
 #include "buttonshift.h"
 #include "start_stop.h"
 #include "dynoview.h"
@@ -227,6 +227,8 @@ char * getPinNameByAdcChannel(const char *msg, adc_channel_e hwChannel, char *bu
 #if HAL_USE_ADC
 	if (!isAdcChannelValid(hwChannel)) {
 		snprintf(buffer, bufferSize, "NONE");
+	} else if (isAdcChannelOffChip(hwChannel)) {
+		snprintf(buffer, bufferSize, "External ADC%d", hwChannel - EFI_ADC_0);
 	} else {
 		const char *name = portname(getAdcChannelPort(msg, hwChannel));
 		snprintf(buffer, bufferSize, "%s%d", name ? name : "null", getAdcChannelPin(hwChannel));
@@ -444,10 +446,6 @@ void commonInitEngineController() {
 	initVvtActuators();
 #endif /* EFI_VVT_PID */
 
-#if EFI_MALFUNCTION_INDICATOR
-	initMalfunctionIndicator();
-#endif /* EFI_MALFUNCTION_INDICATOR */
-
 #if !EFI_UNIT_TEST
 	// This is tested independently - don't configure sensors for tests.
 	// This lets us selectively mock them for each test.
@@ -461,6 +459,10 @@ void commonInitEngineController() {
 	initScriptImpl();
 
 	initGpPwm();
+
+#ifdef MODULE_FUEL_PUMP
+	initFuelPump();
+#endif
 
 #if EFI_IDLE_CONTROL
 	startIdleThread();
@@ -495,6 +497,8 @@ void commonInitEngineController() {
 #endif // EFI_ENGINE_CONTROL
 
 #if EFI_UNIT_TEST
+	// [tag:trigger_rpm_startup] General algorithm tests need RPM without a pin.
+	// TriggerRpmStartup removes this registration before testing hardware startup.
 	engine->rpmCalculator.Register();
 #endif /* EFI_UNIT_TEST */
 
@@ -559,19 +563,39 @@ static bool validateConfig(const engine_configuration_s* previousConfiguration) 
   }
 #endif
 
-  if (engineConfiguration->knockFrequency != 0 && engineConfiguration->knockFrequency < 100) {
+  if (engineConfiguration->enableSoftwareKnock && engineConfiguration->knockFrequency != 0 && engineConfiguration->knockFrequency < 100) {
     // todo: migrate from hard error to soft error
 		criticalError("knock frequency setting uses HZ not KHz: %f", engineConfiguration->knockFrequency);
 		return false;
   }
 
+#ifndef EFI_SOFTWARE_KNOCK
+  if (engineConfiguration->enableSoftwareKnock) {
+    // [tag:user_facing_ini_labels] Match the Knock sensing control in TunerStudio.
+    criticalError("Knock sensing is enabled but this firmware does not support software knock");
+    return false;
+  }
+#endif // EFI_SOFTWARE_KNOCK
 
+#if EFI_ENGINE_CONTROL
   // the only step which is allowed to modify configuration - everything else in this method is read-only validation
   applyDefaultsOrFixAfterBurn(previousConfiguration);
-	if (engineConfiguration->cylindersCount > MAX_CYLINDER_COUNT) {
-		criticalError("Invalid cylinder count: %d", engineConfiguration->cylindersCount);
+	if (!(engineConfiguration->injector.flow > 0) || !std::isfinite(engineConfiguration->injector.flow)) {
+		criticalError("Primary injector flow must be positive");
 		return false;
 	}
+	if (engineConfiguration->enableStagedInjection &&
+		(!(engineConfiguration->injectorSecondary.flow > 0) || !std::isfinite(engineConfiguration->injectorSecondary.flow))) {
+		criticalError("Secondary injector flow must be positive when staged injection is enabled");
+		return false;
+	}
+	if (engineConfiguration->cylindersCount > MAX_CYLINDER_COUNT) {
+		// [tag:user_facing_ini_labels] Match the engine setting label in tunerstudio.template.ini.
+		criticalError("Invalid Number of cylinders: %d", engineConfiguration->cylindersCount);
+		return false;
+	}
+#endif // EFI_ENGINE_CONTROL
+
 #if EFI_PROD_CODE && (BOARD_MC33810_COUNT > 0)
     float maxConfiguredCorr = config->dwellVoltageCorrValues[0];
     for (size_t i = 0;i<efi::size(config->dwellVoltageCorrValues);i++) {
@@ -588,7 +612,8 @@ static bool validateConfig(const engine_configuration_s* previousConfiguration) 
 
 #endif // EFI_PROD_CODE && (BOARD_MC33810_COUNT > 0)
 	if (engineConfiguration->adcVcc > 5.0f || engineConfiguration->adcVcc < 1.0f) {
-    criticalError("Invalid adcVcc: %f", engineConfiguration->adcVcc);
+		// [tag:user_facing_ini_labels] Match the hardware setting label in tunerstudio.template.ini.
+    criticalError("Invalid ADC vRef voltage: %f", engineConfiguration->adcVcc);
 		return false;
 	}
 
@@ -669,7 +694,10 @@ static bool validateConfig(const engine_configuration_s* previousConfiguration) 
 // todo: huh? why does this not work on CI?	ensureArrayIsAscendingOrDefault("Dwell Correction Voltage", engineConfiguration->dwellVoltageCorrVoltBins);
 
 #if EFI_ENGINE_CONTROL
-	ensureArrayIsAscending("MAF transfer function", config->mafDecodingBins);
+	// Both analog MAF inputs use this curve, regardless of the fuel algorithm.
+	if (isAdcChannelValid(engineConfiguration->mafAdcChannel) || isAdcChannelValid(engineConfiguration->maf2AdcChannel)) {
+		ensureArrayIsAscending("MAF transfer function", config->mafDecodingBins);
+	}
 
 	// Cranking tables
 	ensureArrayIsAscending("Cranking fuel mult", config->crankingFuelBins);
@@ -776,6 +804,13 @@ void commonEarlyInit() {
 	 */
 	initHardware();
 
+#if EFI_PROD_CODE
+	// Hardware is initialized: now latch the critical error for a watchdog reset, if there was one.
+	// Doing it before initHardware() would leave SPI/pins unconfigured and initMmc() would refuse
+	// the card, so the SD report file could never be written.
+	errorHandlerRaiseWatchdogResetError();
+#endif // EFI_PROD_CODE
+
 	initQcBenchControls();
 
 #if EFI_FILE_LOGGING
@@ -787,6 +822,7 @@ void commonEarlyInit() {
 #endif
 
 #if EFI_LUA
+	luaHeapInit();
 	startLua();
 #endif // EFI_LUA
 

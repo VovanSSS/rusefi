@@ -14,7 +14,8 @@ struct LtftState {
   // todo: probably reuse page_2_generated.h?
 	float trims[FT_BANK_COUNT][VE_LOAD_COUNT][VE_RPM_COUNT];
 
-	void save();
+	// returns true if the trims were persisted, false on storage failure
+	bool save();
 	void load();
 	void reset();
 	void applyToVe();
@@ -32,7 +33,8 @@ public:
 	void learn(ClosedLoopFuelResult clResult, float rpm, float fuelLoad);
 	ClosedLoopFuelResult getTrims(float rpm, float fuelLoad);
 	void load();
-	void store();
+	// returns true if the trims were persisted; false lets the storage manager keep the request pending and retry
+	bool store();
 	void reset();
 	void applyTrimsToVe();
 	bool isVeUpdated();
@@ -41,10 +43,14 @@ public:
 	void fillRandom();
 
 private:
-	LtftState *m_state;
+	// only init() ever writes this, and store() null-checks it - that guard is only meaningful
+	// if the pointer starts null rather than relying on the instance living at file scope
+	LtftState *m_state = nullptr;
 	// TODO: move to livedata and kill isVeUpdated() ?
 	bool veNeedRefresh = false;
 	bool showUpdateToUser = false;
+	// a save request that could not be queued yet (storage manager mailbox full); retried on every learn() call
+	bool saveRequestNeeded = false;
 
 	float getIntegratorGain(const ltft_s& cfg, ft_region_e region) const;
 	float getMaxAdjustment(const ltft_s& cfg) const;

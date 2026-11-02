@@ -10,6 +10,7 @@
 #include "efi_pid.h"
 #include "idle_thread.h"
 #include "electronic_throttle.h"
+#include "fan_control.h"
 
 using ::testing::StrictMock;
 using ::testing::_;
@@ -23,7 +24,7 @@ TEST(idle_v2, timingPid) {
 
 	engineConfiguration->useIdleTimingPidControl = true;
 
-	engineConfiguration->idleTimingPid.pFactor = 0.1;
+	engineConfiguration->idleTimingPid.pFactor = 0.1f;
 	engineConfiguration->idleTimingPid.minValue = -10;
 	engineConfiguration->idleTimingPid.maxValue = 10;
 	engineConfiguration->idleTimingSoftEntryTime = 0.0f;
@@ -62,7 +63,7 @@ TEST(idle_v2, testTargetRpm) {
 	engineConfiguration->idlePidRpmUpperLimit = 50;
 	EXPECT_EQ((TgtInfo{100, 150, 175}), dut.getTargetRpm(10));
  	EXPECT_EQ((TgtInfo{500, 550, 575}), dut.getTargetRpm(50));
- 
+
  	engineConfiguration->idlePidRpmUpperLimit = 73;
 	EXPECT_EQ((TgtInfo{100, 173, 209.5}), dut.getTargetRpm(10));
  	EXPECT_EQ((TgtInfo{500, 573, 609.5}), dut.getTargetRpm(50));
@@ -81,7 +82,7 @@ TEST(idle_v2, testDeterminePhase) {
   TgtInfo targetInfo;
  	// Phase determination should ignore this!
  	targetInfo.ClosedLoopTarget = 9999;
- 
+
  	// Idling threshold is 1000 + 100 rpm
  	targetInfo.IdleEntryRpm = 1000 + 100;
   targetInfo.IdleExitRpm = 1000 + 100;
@@ -118,6 +119,103 @@ TEST(idle_v2, testDeterminePhase) {
 	// Below TPS but above RPM should be outside the zone
 	EXPECT_EQ(ICP::Coasting, dut.determinePhase(1101, targetInfo, 0, 0, 10));
 	EXPECT_EQ(ICP::Coasting, dut.determinePhase(5000, targetInfo, 0, 0, 10));
+}
+
+// [tag:idle_clutch_disengaged] Lua clutch-down permits high-RPM idle correction;
+// releasing it restores the RPM hysteresis in IdleController::determinePhase().
+TEST(idle_v2, clutchDisengagedAllowsHighRpmIdleCorrection) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	IdleController dut;
+
+	engineConfiguration->clutchDownPin = Gpio::Unassigned;
+	engine->engineState.lua.clutchDownState = true;
+
+	setArrayValues(config->cltIdleRpm, 1060);
+	engineConfiguration->idlePidRpmUpperLimit = 350;
+	engineConfiguration->idlePidDeactivationTpsThreshold = 2;
+	engineConfiguration->maxIdleVss = 10;
+	engineConfiguration->idleReturnTargetRamp = false;
+	engineConfiguration->idlePidRpmDeadZone = 50;
+
+	// Proportional-only gains isolate phase gating from integrator history.
+	engineConfiguration->idleRpmPid.pFactor = 0.005f;
+	engineConfiguration->idleRpmPid.iFactor = 0;
+	engineConfiguration->idleRpmPid.dFactor = 0;
+	engineConfiguration->idleRpmPid.minValue = -20;
+	engineConfiguration->idleRpmPid.maxValue = 100;
+	engineConfiguration->useIdleTimingPidControl = true;
+	engineConfiguration->idleTimingSoftEntryTime = 0;
+	engineConfiguration->idleTimingPid.pFactor = 0.005f;
+	engineConfiguration->idleTimingPid.iFactor = 0;
+	engineConfiguration->idleTimingPid.dFactor = 0;
+	engineConfiguration->idleTimingPid.minValue = -6;
+	engineConfiguration->idleTimingPid.maxValue = 6;
+	dut.init();
+
+	auto target = dut.getTargetRpm(80);
+	EXPECT_EQ((TgtInfo{1060, 1410, 1585}), target);
+	// Allow the air PID's initial entry damping to finish.
+	advanceTimeUs(1'000'000);
+
+	// Zero rider demand, stopped vehicle, clutch disengaged, and taper complete.
+	for (float rpm : {2500.0f, 1700.0f, 1700.0f, 1500.0f}) {
+		SCOPED_TRACE(rpm);
+		engine->rpmCalculator.setRpmValue(rpm);
+		auto phase = dut.determinePhase(rpm, target, /*tps*/ 0, /*vss*/ 0, /*taper*/ 1);
+		ASSERT_EQ(ICP::Idling, phase);
+		EXPECT_LT(dut.getClosedLoop(phase, 0, rpm, target.ClosedLoopTarget), 0);
+		EXPECT_LT(dut.getIdleTimingAdjustment(rpm, target.ClosedLoopTarget, phase), 0);
+		advanceTimeUs(1'000'000);
+	}
+
+	// Releasing the clutch restores coasting even inside the hysteresis band.
+	engine->engineState.lua.clutchDownState = false;
+	auto phase = dut.determinePhase(1500, target, 0, 0, 1);
+	ASSERT_EQ(ICP::Coasting, phase);
+	EXPECT_FLOAT_EQ(0, dut.getClosedLoop(phase, 0, 1500, target.ClosedLoopTarget));
+	EXPECT_FLOAT_EQ(0, dut.getIdleTimingAdjustment(1500, target.ClosedLoopTarget, phase));
+
+	// Without the clutch flag, falling below the entry threshold still permits idle.
+	engine->rpmCalculator.setRpmValue(1409);
+	phase = dut.determinePhase(1409, target, 0, 0, 1);
+	ASSERT_EQ(ICP::Idling, phase);
+	// Process pending air PID resets, then allow reset damping to finish.
+	dut.getClosedLoop(phase, 0, 1409, target.ClosedLoopTarget);
+	dut.getClosedLoop(phase, 0, 1409, target.ClosedLoopTarget);
+	advanceTimeUs(1'000'000);
+	EXPECT_LT(dut.getClosedLoop(phase, 0, 1409, target.ClosedLoopTarget), 0);
+	EXPECT_LT(dut.getIdleTimingAdjustment(1409, target.ClosedLoopTarget, phase), 0);
+}
+
+TEST(idle_v2, clutchDisengagedPhaseGuards) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	IdleController dut;
+	engineConfiguration->clutchDownPin = Gpio::Unassigned;
+	engineConfiguration->idlePidDeactivationTpsThreshold = 2;
+	engineConfiguration->maxIdleVss = 10;
+	engine->engineState.lua.clutchDownState = true;
+	TgtInfo target{1060, 1410, 1585};
+
+	// Clutch-down does not override cranking, invalid rider demand, or open throttle.
+	engine->rpmCalculator.setRpmValue(0);
+	EXPECT_EQ(ICP::Cranking, dut.determinePhase(0, target, 0, 25, 1));
+	engine->rpmCalculator.setRpmValue(2500);
+	EXPECT_EQ(ICP::Running, dut.determinePhase(2500, target, unexpected, 25, 1));
+	EXPECT_EQ(ICP::Running, dut.determinePhase(2500, target, 3, 25, 1));
+	EXPECT_EQ(ICP::CrankToIdleTaper, dut.determinePhase(2500, target, 0, 25, 0.5f));
+
+	// Once taper completes, the disengaged clutch allows idle at high road speed.
+	EXPECT_EQ(ICP::Idling, dut.determinePhase(2500, target, 0, 25, 1));
+	engine->engineState.lua.clutchDownState = false;
+	EXPECT_EQ(ICP::Coasting, dut.determinePhase(2500, target, 0, 25, 1));
+
+	// Below the RPM entry limit, clutch release still restores the vehicle-speed gate.
+	engine->rpmCalculator.setRpmValue(1409);
+	EXPECT_EQ(ICP::Running, dut.determinePhase(1409, target, 0, 25, 1));
+	engine->engineState.lua.clutchDownState = true;
+	EXPECT_EQ(ICP::Idling, dut.determinePhase(1409, target, 0, 25, 1));
+	engine->engineState.lua.clutchDownState = false;
+	EXPECT_EQ(ICP::Idling, dut.determinePhase(1409, target, 0, 0, 1));
 }
 
 TEST(idle_v2, crankingOpenLoop) {
@@ -162,6 +260,8 @@ TEST(idle_v2, runningFanAcBump) {
 	engineConfiguration->acIdleExtraOffset = 9;
 	engineConfiguration->fan1ExtraIdle = 7;
 	engineConfiguration->fan2ExtraIdle = 3;
+	engineConfiguration->fanPin = Gpio::A1;
+	engineConfiguration->fan2Pin = Gpio::A2;
 
 	setTable(config->cltIdleCorrTable, 50.0f);
 
@@ -190,6 +290,80 @@ TEST(idle_v2, runningFanAcBump) {
 	enginePins.fanRelay.setValue(1);
 	enginePins.fanRelay2.setValue(1);
 	EXPECT_FLOAT_EQ(50 + 9 + 7 + 3, dut.getRunningOpenLoop(IIdleController::Phase::Idling, 0, 10, 0));
+}
+
+// Issue #10310: unassigned fan outputs must not add idle air.
+TEST(idle_v2, unassignedFanOutputDoesNotAddIdleAir) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	IdleController dut;
+
+	engineConfiguration->fanPin = Gpio::Unassigned;
+	engineConfiguration->fan2Pin = Gpio::Unassigned;
+	engineConfiguration->fan1ExtraIdle = 7;
+	engineConfiguration->fan2ExtraIdle = 3;
+	engineConfiguration->fanOnTemperature = 90;
+	engineConfiguration->fanOffTemperature = 85;
+	engineConfiguration->fan2OnTemperature = 110;
+	engineConfiguration->fan2OffTemperature = 105;
+	setTable(config->cltIdleCorrTable, 50.0f);
+
+	// Cold: neither fan requests extra idle air.
+	Sensor::setMockValue(SensorType::Clt, 75);
+	engine->module<FanControl1>()->onSlowCallback();
+	engine->module<FanControl2>()->onSlowCallback();
+	EXPECT_FLOAT_EQ(50, dut.getRunningOpenLoop(IIdleController::Phase::Idling, 0, 10, 0));
+
+	Sensor::setMockValue(SensorType::Clt, 95);
+	engine->module<FanControl1>()->onSlowCallback();
+	engine->module<FanControl2>()->onSlowCallback();
+	EXPECT_TRUE(enginePins.fanRelay.getLogicValue());
+	EXPECT_FALSE(enginePins.fanRelay2.getLogicValue());
+	EXPECT_FLOAT_EQ(50, dut.getRunningOpenLoop(IIdleController::Phase::Idling, 0, 10, 0));
+
+	engineConfiguration->fanOnTemperature = 110;
+	engineConfiguration->fanOffTemperature = 105;
+	engineConfiguration->fan2OnTemperature = 90;
+	engineConfiguration->fan2OffTemperature = 85;
+	engine->module<FanControl1>()->onSlowCallback();
+	engine->module<FanControl2>()->onSlowCallback();
+	EXPECT_FALSE(enginePins.fanRelay.getLogicValue());
+	EXPECT_TRUE(enginePins.fanRelay2.getLogicValue());
+	EXPECT_FLOAT_EQ(50, dut.getRunningOpenLoop(IIdleController::Phase::Idling, 0, 10, 0));
+}
+
+TEST(idle_v2, parkNeutralOffset) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	auto& dut = engine->module<IdleController>().unmock();
+	setTable(config->cltIdleCorrTable, 50.0f);
+	setArrayValues(config->cltCrankingCorr, 30.0f);
+
+	// Older tunes and scripts that don't report P/N retain their idle position.
+	dut.setParkNeutral(true);
+	EXPECT_FLOAT_EQ(50, dut.getOpenLoop(ICP::Idling, 800, 80, 0, 1));
+	engineConfiguration->idleParkNeutralOffset = -12.5f;
+	dut.setParkNeutral(false);
+	EXPECT_FLOAT_EQ(50, dut.getOpenLoop(ICP::Idling, 800, 80, 0, 1));
+
+	dut.setParkNeutral(true);
+	EXPECT_FLOAT_EQ(37.5f, dut.getOpenLoop(ICP::Idling, 800, 80, 0, 1));
+	// The modifier leaves cranking alone and blends in during the cranking taper.
+	EXPECT_FLOAT_EQ(30, dut.getOpenLoop(ICP::Cranking, 200, 80, 0, 0));
+	EXPECT_FLOAT_EQ(33.75f, dut.getOpenLoop(ICP::CrankToIdleTaper, 800, 80, 0, 0.5f));
+
+	// Calibration edits take effect even without a gear transition.
+	engineConfiguration->idleParkNeutralOffset = 7.5f;
+	dut.luaAdd = 2;
+	EXPECT_FLOAT_EQ(59.5f, dut.getOpenLoop(ICP::Idling, 800, 80, 0, 1));
+	engineConfiguration->idleParkNeutralOffset = -100;
+	EXPECT_FLOAT_EQ(0, dut.getOpenLoop(ICP::Idling, 800, 80, 0, 1));
+	engineConfiguration->idleParkNeutralOffset = 100;
+	EXPECT_FLOAT_EQ(100, dut.getOpenLoop(ICP::Idling, 800, 80, 0, 1));
+
+	dut.setParkNeutral(false);
+	EXPECT_FLOAT_EQ(52, dut.getOpenLoop(ICP::Idling, 800, 80, 0, 1));
+	dut.setParkNeutral(true);
+	engine->resetLua();
+	EXPECT_FLOAT_EQ(50, dut.getOpenLoop(ICP::Idling, 800, 80, 0, 1));
 }
 
 // This can be seen as a kind of some close-loop logic, please read:
@@ -449,14 +623,76 @@ TEST(idle_v2, closedLoopDeadzone) {
 	EXPECT_FLOAT_EQ(-25, dut.getClosedLoop(ICP::Idling, 0, /*rpm*/ 900, /*tgt*/ 900));
 }
 
+// Target idle is 1000 RPM. At 940 RPM, the controller adds air to raise RPM.
+// At 1020 RPM, it still requests the same extra air because RPM is now inside
+// the +/-50 RPM deadzone. With only P enabled, it should instead reduce air.
+// This test passes by checking the current unwanted behavior in both directions.
+// When fixing it, keep the same RPM sequence and update the expected results.
+TEST(idle_v2, deadzoneReturnsStaleCorrectionAndPidState) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	IdleController dut;
+
+	engineConfiguration->idleRpmPid.pFactor = 0.01f;
+	engineConfiguration->idleRpmPid.iFactor = 0;
+	engineConfiguration->idleRpmPid.dFactor = 0;
+	engineConfiguration->idleRpmPid.offset = 0;
+	engineConfiguration->idleRpmPid.periodMs = 0;
+	engineConfiguration->idleRpmPid.minValue = -50;
+	engineConfiguration->idleRpmPid.maxValue = 50;
+	engineConfiguration->idlePidRpmDeadZone = 50;
+	engineConfiguration->useCicPidForIdle = false;
+	engineConfiguration->useIacPidMultTable = false;
+	engineConfiguration->pidExtraForLowRpm = 0;
+	engineConfiguration->idle_antiwindupFreq = 0;
+	engineConfiguration->idle_derivativeFilterLoss = 0;
+	engineConfiguration->idlePidDeactivationTpsThreshold = 2;
+	dut.init();
+
+	// Let the post-reset output damping finish before checking the cached value.
+	dut.getClosedLoop(ICP::Idling, 0, /*rpm*/ 940, /*target*/ 1000);
+	advanceTimeUs(1'000'000);
+	EXPECT_FLOAT_EQ(0.6f, dut.getClosedLoop(ICP::Idling, 0, /*rpm*/ 940, /*target*/ 1000));
+	EXPECT_FALSE(dut.isInDeadZone);
+
+	// Error reverses from +60 to -20 RPM. With I=D=0, live P would be -0.2,
+	// but current behavior retains +0.6 and the last posted error of +60 RPM.
+	EXPECT_FLOAT_EQ(0.6f, dut.getClosedLoop(ICP::Idling, 0, /*rpm*/ 1020, /*target*/ 1000));
+	EXPECT_TRUE(dut.isInDeadZone);
+	EXPECT_TRUE(dut.isIdleClosedLoop);
+	EXPECT_EQ(RPM_DEAD_ZONE, dut.idleState);
+	EXPECT_FLOAT_EQ(60, dut.getIdlePid()->getPrevError());
+	dut.getIdlePid()->postState(engine->outputChannels.idleStatus);
+	EXPECT_FLOAT_EQ(60, engine->outputChannels.idleStatus.error);
+	EXPECT_FLOAT_EQ(0.6f, engine->outputChannels.idleStatus.pTerm);
+	EXPECT_FLOAT_EQ(0, engine->outputChannels.idleStatus.iTerm);
+
+	// The configured 50 RPM boundary is included in the deadzone too.
+	EXPECT_FLOAT_EQ(0.6f, dut.getClosedLoop(ICP::Idling, 0, /*rpm*/ 1050, /*target*/ 1000));
+	EXPECT_TRUE(dut.isInDeadZone);
+	EXPECT_FLOAT_EQ(60, dut.getIdlePid()->getPrevError());
+
+	// A new error outside the band refreshes the cached correction in the other
+	// direction; reversing again to +20 RPM holds that negative value and -60 error.
+	EXPECT_FLOAT_EQ(-0.6f, dut.getClosedLoop(ICP::Idling, 0, /*rpm*/ 1060, /*target*/ 1000));
+	EXPECT_FALSE(dut.isInDeadZone);
+	EXPECT_FLOAT_EQ(-0.6f, dut.getClosedLoop(ICP::Idling, 0, /*rpm*/ 980, /*target*/ 1000));
+	EXPECT_TRUE(dut.isInDeadZone);
+	EXPECT_EQ(RPM_DEAD_ZONE, dut.idleState);
+	EXPECT_FLOAT_EQ(-60, dut.getIdlePid()->getPrevError());
+	dut.getIdlePid()->postState(engine->outputChannels.idleStatus);
+	EXPECT_FLOAT_EQ(-60, engine->outputChannels.idleStatus.error);
+	EXPECT_FLOAT_EQ(-0.6f, engine->outputChannels.idleStatus.pTerm);
+	EXPECT_FLOAT_EQ(0, engine->outputChannels.idleStatus.iTerm);
+}
+
 TEST(idle_v2, RunningToIdleTransition) {
   EngineTestHelper eth(engine_type_e::TEST_ENGINE);
   IdleController dut;
   dut.init();
 
-  engineConfiguration->idleRpmPid.pFactor = 0.0040;	// 0.5 output per 1 RPM error = 50% per 100 rpm
-  engineConfiguration->idleRpmPid.iFactor = 0.0040;
-  engineConfiguration->idleRpmPid.dFactor = 0.0001;
+  engineConfiguration->idleRpmPid.pFactor = 0.0040f;	// 0.5 output per 1 RPM error = 50% per 100 rpm
+  engineConfiguration->idleRpmPid.iFactor = 0.0040f;
+  engineConfiguration->idleRpmPid.dFactor = 0.0001f;
   engineConfiguration->idleRpmPid.periodMs = 0;
   engineConfiguration->idleRpmPid.minValue = -50;
   engineConfiguration->idleRpmPid.maxValue = 50;
@@ -559,7 +795,7 @@ TEST(idle_v2, IntegrationAutomatic) {
 	Sensor::setMockValue(SensorType::DriverThrottleIntent, expectedTps.Value);
 	Sensor::setMockValue(SensorType::Clt, expectedClt);
 	Sensor::setMockValue(SensorType::VehicleSpeed, 15.0);
-  
+
   TgtInfo target{1000, 1100, 1100};
 
 	// Target of 1000 rpm

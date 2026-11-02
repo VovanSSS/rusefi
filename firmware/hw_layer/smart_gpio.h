@@ -7,6 +7,10 @@
 
 #pragma once
 
+#ifndef BOARD_HBRIDGE_GPIO_COUNT
+#define BOARD_HBRIDGE_GPIO_COUNT 0
+#endif
+
 #if EFI_PROD_CODE
 #include "drivers/gpio/mc33810.h"
 #include "drivers/gpio/tle6240.h"
@@ -15,6 +19,8 @@
 #include "drivers/gpio/tle9201.h"
 #include "drivers/gpio/drv8860.h"
 #include "drivers/gpio/can_gpio_msiobox.h"
+#include "drivers/adc/ads7128.h"
+#include "drivers/gpio/pca9685.h"
 // we seem OK without L9779 here do we need those includes at all?
 #endif /* EFI_PROD_CODE */
 
@@ -32,6 +38,9 @@ BOARD_MC33810_COUNT + \
 BOARD_L9779_COUNT + \
 BOARD_CAN_GPIO_COUNT + \
 BOARD_TLE9104_COUNT + \
+BOARD_HBRIDGE_GPIO_COUNT + \
+BOARD_ADS7128_COUNT + \
+BOARD_PCA9685_COUNT + \
 0)
 #endif
 

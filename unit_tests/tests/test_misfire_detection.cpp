@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "misfire_detection.h"
 #include "idle_thread.h"
+#include "malfunction_central.h"
 
 #include <cmath>
 
@@ -192,6 +193,16 @@ TEST(MisfireDetection, repeatedMisfireLatchesMil) {
 
 	EXPECT_GE(getMc().misfireTotalCount, engineConfiguration->misfireCountThreshold);
 	EXPECT_TRUE(getMc().misfireLatched);
+
+	getMc().onSlowCallback();
+	error_codes_set_s errors;
+	getErrorCodes(&errors);
+	ASSERT_EQ(1, errors.count);
+	EXPECT_EQ(ObdCode::OBD_Random_Misfire, errors.error_codes[0]);
+
+	clearWarnings();
+	getMc().onSlowCallback();
+	EXPECT_TRUE(hasErrorCodes());
 }
 
 // ---- threshold == 0: monitor-only, never latches ----

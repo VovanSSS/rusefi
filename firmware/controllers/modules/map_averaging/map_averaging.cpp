@@ -67,6 +67,8 @@ bool isMapInstantAtArm() {
 		&& get_board_override_result(custom_board_mapInstantAtArm, false);
 }
 
+static size_t currentMapAverager = 0;
+
 SensorResult MapAverager::publishInstant(float volts) {
 	SensorResult result = m_function ? m_function->convert(volts) : unexpected;
 
@@ -79,7 +81,7 @@ SensorResult MapAverager::publishInstant(float volts) {
 
 
 void startAveraging(mapSampler* s) {
-    if (!engine->engineState.mapAveragingDuration) {
+    if (engine->engineState.mapAveragingDuration == 0) {
         // Zero duration means the engine wasn't spinning or something, abort
         return;
     }
@@ -149,7 +151,7 @@ float MapAverager::stop() {
 				minPressure = averagedMapRunningBuffer[i];
 		}
 
-		engine->outputChannels.mapPerCylinder[m_cylinderNumber] = minPressure;
+		engine->outputChannels.mapPerCylinder[m_cylinderNumber] = static_cast<uint8_t>(minPressure);
 		setValidValue(filterMapValue(minPressure), getTimeNowNt());
 
 		return minPressure;
@@ -162,25 +164,25 @@ float MapAverager::stop() {
 	return 0;
 }
 
-#if HAL_USE_ADC
-
 /**
  * This method is invoked from ADC callback.
  * @note This method is invoked OFTEN, this method is a potential bottleneck - the implementation should be
  * as fast as possible
  */
-void mapAveragingAdcCallback(float instantVoltage) {
-	if (isMapInstantAtArm()) {
-		// Variant B: the raw latch (rawMapFast) is already written by the
-		// fast-ADC ISR; the conversion moves out of this 6 kHz hot path into
-		// the 200 Hz tick (onFastCallback) and the per-cylinder injection arm
-		// (refreshInjectionMassForCylinder). Nothing to do here.
+void MapAverager::onAdcSample(float instantVoltage, bool channelReady) {
+	efiAssertVoid(ObdCode::CUSTOM_ERR_6650, hasLotsOfRemainingStack(), "lowstck#9a");
+
+	// Hardware starts ADC callbacks before the channel token and initMap's
+	// converter are ready. Missing initialization is not a sensor fault.
+	if (!channelReady || !m_function) {
+		engine->outputChannels.isMapValid = false;
+#if EFI_TUNER_STUDIO
+		engine->outputChannels.instantMAPValue = 0;
+#endif
 		return;
 	}
 
-	efiAssertVoid(ObdCode::CUSTOM_ERR_6650, hasLotsOfRemainingStack(), "lowstck#9a");
-
-	SensorResult mapResult = getMapAvg(0).submit(instantVoltage);
+	SensorResult mapResult = submit(instantVoltage);
 
 	if (!mapResult) {
 		// The very first fast-ADC samples can arrive before the MAP sensor
@@ -204,6 +206,19 @@ void mapAveragingAdcCallback(float instantVoltage) {
 	float instantMap = mapResult.value_or(0);
 	engine->outputChannels.instantMAPValue = instantMap;
 #endif // EFI_TUNER_STUDIO
+}
+
+#if HAL_USE_ADC
+void mapAveragingAdcCallback(float instantVoltage, bool channelReady) {
+	if (isMapInstantAtArm()) {
+		// Variant B (m74_9): the raw latch (rawMapFast) is already written by
+		// the fast-ADC ISR; the conversion moves out of this 6 kHz hot path
+		// into the 200 Hz tick (onFastCallback) and the per-cylinder injection
+		// arm (refreshInjectionMassForCylinder). Nothing to do here.
+		return;
+	}
+
+	getMapAvg(currentMapAverager).onAdcSample(instantVoltage, channelReady);
 }
 #endif
 

@@ -30,6 +30,7 @@ public class SlcanClient implements Closeable {
     private static final Logging log = Logging.getLogging(SlcanClient.class);
 
     private static final int RESPONSE_TIMEOUT_MS = 700;
+    private static final int EXPLICIT_INIT_FLUSH_PROBES = 12;
     private static final char CR = '\r';
     private static final char BELL = 7;
 
@@ -47,9 +48,7 @@ public class SlcanClient implements Closeable {
         return port;
     }
 
-    /**
-     * @return response to the 'V' probe, e.g. "V1220"
-     */
+    /** @return response to the 'V' probe, e.g. "V1220" */
     public String getVersion() {
         return version;
     }
@@ -64,46 +63,163 @@ public class SlcanClient implements Closeable {
      */
     @Nullable
     public static SlcanClient findAndConnect(Consumer<String> logger) {
-        for (String port : LinkManager.getCommPorts()) {
+        return findAndConnect(LinkManager.getCommPorts(), logger);
+    }
+
+    /**
+     * Connect only to the requested SLCAN port, without falling back to another ECU.
+     * Unlike automatic discovery, an explicitly selected port skips the TunerStudio binary
+     * probe and first closes/drains a possibly stale streaming SLCAN session.
+     */
+    @Nullable
+    public static SlcanClient connect(String port, Consumer<String> logger) {
+        IoStream stream = BufferedSerialIoStream.openPort(port);
+        if (stream == null) {
+            logger.accept(port + ": failed to open");
+            return null;
+        }
+        try {
+            return connectExplicit(stream, port, logger);
+        } catch (IOException e) {
+            logger.accept(port + ": IO error: " + e);
+            return null;
+        }
+    }
+
+    @Nullable
+    private static SlcanClient findAndConnect(Iterable<String> ports, Consumer<String> logger) {
+        for (String port : ports) {
+            if (Thread.currentThread().isInterrupted()) {
+                return null;
+            }
             IoStream stream = BufferedSerialIoStream.openPort(port);
             if (stream == null) {
                 logger.accept(port + ": failed to open, skipping");
                 continue;
             }
-            boolean keepOpen = false;
             try {
-                String signature = SerialAutoChecker.checkResponse(stream, null);
-                if (signature != null) {
-                    logger.accept(port + ": rusEFI TS console [" + signature + "], skipping");
-                    continue;
-                }
-                // the TS HELLO probe above may have confused the SLCAN parser, drain leftovers
-                stream.getDataBuffer().dropPending();
-
-                String version = command(stream, "V");
-                if (version == null || version.isEmpty() || version.charAt(0) != 'V') {
-                    logger.accept(port + ": not SLCAN (V response: " + printable(version) + ")");
-                    continue;
-                }
-                logger.accept(port + ": SLCAN detected, version response " + version);
-                SlcanClient client = new SlcanClient(stream, port, version);
-                client.openChannel();
-                keepOpen = true;
-                return client;
+                return connect(stream, port, logger);
             } catch (IOException e) {
                 logger.accept(port + ": IO error: " + e);
-            } finally {
-                if (!keepOpen) {
-                    stream.close();
-                }
             }
         }
         return null;
     }
 
+    /** Owns the supplied stream, including closing it when probing or initialization fails. */
+    static SlcanClient connect(IoStream stream, String port, Consumer<String> logger) throws IOException {
+        boolean keepOpen = false;
+        try {
+            String signature = SerialAutoChecker.checkResponse(stream, null);
+            if (signature != null) {
+                throw new IOException("Port is the rusEFI TS console [" + signature + "]");
+            }
+            // the TS HELLO probe above may have confused the SLCAN parser, drain leftovers
+            stream.getDataBuffer().dropPending();
+            String version = command(stream, "V");
+            if (version == null || version.isEmpty()
+                    || (version.charAt(0) != 'V' && !SlcanVersion.isVersionReply(version)
+                        && Frame.parse(version) == null)) {
+                throw new IOException("Not SLCAN (V response: " + printable(version) + ")");
+            }
+            logger.accept(port + ": SLCAN detected, version response " + version);
+            SlcanClient client = new SlcanClient(stream, port, version);
+            client.openChannel();
+            keepOpen = true;
+            return client;
+        } finally {
+            if (!keepOpen) {
+                stream.close();
+            }
+        }
+    }
+
+    /** Owns an explicitly selected stream, including closing it when initialization fails. */
+    static SlcanClient connectExplicit(IoStream stream, String port, Consumer<String> logger) throws IOException {
+        boolean keepOpen = false;
+        try {
+            // Explicit selection already identifies this as the SLCAN VCP. Recover the limited
+            // rusEFI terminal before probing: a stale open channel can be continuously emitting
+            // frames, and the TunerStudio binary probe can itself confuse its command parser.
+            closeAndDrain(stream);
+
+            String version = initializeExplicit(stream, port);
+            logger.accept(port + ": SLCAN detected, version response " + version);
+            SlcanClient client = new SlcanClient(stream, port, version);
+            log.info(port + ": SLCAN channel open");
+            keepOpen = true;
+            return client;
+        } finally {
+            if (!keepOpen) {
+                stream.close();
+            }
+        }
+    }
+
     private void openChannel() throws IOException {
-        // close first in case a previous session left the terminal open; error ack is fine here
+        closeAndDrain(stream);
+        openClosedChannel();
+    }
+
+    private static void closeAndDrain(IoStream stream) throws IOException {
+        // Close first in case a previous session left the terminal open. The response is ignored:
+        // it may be an error ack when already closed or a queued CAN frame from the stale stream.
         command(stream, "C");
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException(e);
+        }
+        stream.getDataBuffer().dropPending();
+    }
+
+    private static String initializeExplicit(IoStream stream, String port) throws IOException {
+        // Some firmware versions do not flush a partially filled USB packet on the secondary
+        // CDC interface. Pipeline the initialization and add enough harmless V responses to force
+        // at least one complete packet out. The ordered V, OK, OK responses synchronize past any
+        // stale reply from the recovery C without relying on USB timing.
+        send(stream, "V");
+        send(stream, "S6");
+        send(stream, "O");
+        for (int i = 0; i < EXPLICIT_INIT_FLUSH_PROBES; i++) {
+            send(stream, "V");
+        }
+
+        long deadline = System.currentTimeMillis() + RESPONSE_TIMEOUT_MS;
+        String version = null;
+        boolean speedAccepted = false;
+        while (true) {
+            int remaining = (int) (deadline - System.currentTimeMillis());
+            if (remaining <= 0) {
+                break;
+            }
+            String response = readLine(stream, remaining);
+            if (response == null) {
+                break;
+            }
+            if (!response.isEmpty() && response.charAt(0) == 'V') {
+                version = response;
+                speedAccepted = false;
+            } else if (Frame.parse(response) != null) {
+                // Frames can start immediately after O and interleave with command responses.
+                continue;
+            } else if (version != null && response.isEmpty()) {
+                if (speedAccepted) {
+                    return version;
+                }
+                speedAccepted = true;
+            } else {
+                version = null;
+                speedAccepted = false;
+            }
+        }
+        throw new IOException("SLCAN initialization failed on " + port
+                + ": did not receive ordered V/S6/O acknowledgments");
+    }
+
+    private void openClosedChannel() throws IOException {
+        // it's a dummy commands, sniffer configured via common settings; and it is opened always
         expectOk("S6");
         expectOk("O");
         log.info(port + ": SLCAN channel open");
@@ -146,6 +262,10 @@ public class SlcanClient implements Closeable {
     }
 
     private void send(String cmd) throws IOException {
+        send(stream, cmd);
+    }
+
+    private static void send(IoStream stream, String cmd) throws IOException {
         stream.write((cmd + CR).getBytes(StandardCharsets.US_ASCII));
         stream.flush();
     }
@@ -155,8 +275,7 @@ public class SlcanClient implements Closeable {
      */
     @Nullable
     private static String command(IoStream stream, String cmd) throws IOException {
-        stream.write((cmd + CR).getBytes(StandardCharsets.US_ASCII));
-        stream.flush();
+        send(stream, cmd);
         return readLine(stream, RESPONSE_TIMEOUT_MS);
     }
 
@@ -197,6 +316,9 @@ public class SlcanClient implements Closeable {
         public final String raw;
         public final boolean extended;
         public final boolean rtr;
+        /** Zero-based CAN bus index, or null for untagged legacy traffic. */
+        @Nullable
+        public final Integer busIndex;
         public final int id;
         public final int dlc;
         public final byte[] data;
@@ -206,8 +328,9 @@ public class SlcanClient implements Closeable {
         @Nullable
         public final String timestamp;
 
-        private Frame(String raw, boolean extended, boolean rtr, int id, int dlc, byte[] data, @Nullable String timestamp) {
+        private Frame(String raw, Integer busIndex, boolean extended, boolean rtr, int id, int dlc, byte[] data, @Nullable String timestamp) {
             this.raw = raw;
+            this.busIndex = busIndex;
             this.extended = extended;
             this.rtr = rtr;
             this.id = id;
@@ -223,6 +346,15 @@ public class SlcanClient implements Closeable {
         public static Frame parse(String line) {
             if (line == null || line.isEmpty()) {
                 return null;
+            }
+            String raw = line;
+            Integer busIndex = 0;
+            if (line.charAt(0) == '&' || line.charAt(0) == '$') {
+                busIndex = line.charAt(0) == '&' ? 1 : 2;
+                line = line.substring(1);
+                if (line.isEmpty()) {
+                    return null;
+                }
             }
             char type = line.charAt(0);
             if (type != 't' && type != 'T' && type != 'r' && type != 'R') {
@@ -250,7 +382,7 @@ public class SlcanClient implements Closeable {
                 }
                 int leftover = line.length() - (dataStart + 2 * data.length);
                 String timestamp = leftover == 4 ? line.substring(line.length() - 4) : null;
-                return new Frame(line, extended, rtr, id, dlc, data, timestamp);
+                return new Frame(raw, busIndex, extended, rtr, id, dlc, data, timestamp);
             } catch (NumberFormatException e) {
                 return null;
             }
@@ -260,7 +392,8 @@ public class SlcanClient implements Closeable {
          * @return human-readable form, e.g. "ID=0x300 DLC=6 DATA=[02 AF 4E 41 70 45]"
          */
         public String decode() {
-            StringBuilder result = new StringBuilder(String.format("ID=0x%X DLC=%d", id, dlc));
+            StringBuilder result = new StringBuilder(busIndex == null ? "Bus unknown " : "CAN" + (busIndex + 1) + " ");
+            result.append(String.format("ID=0x%X DLC=%d", id, dlc));
             if (rtr) {
                 result.append(" RTR");
             } else {

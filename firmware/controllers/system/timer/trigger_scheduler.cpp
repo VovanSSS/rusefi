@@ -80,7 +80,7 @@ TRIGGER_RAM_CODE void TriggerScheduler::schedule(const char *msg, AngleBasedEven
 		// TODO: This is O(n), consider some other way of detecting if in a list,
 		// and consider doubly linked or other list tricks.
 
-		if (!assertNotInList(m_angleBasedEventsHead, event)) {
+		if (!assertNotInList(m_angleBasedEventsHead, event) && !assertNotInList(m_dueEventsHead, event)) {
 			// Use Append to retain some semblance of event ordering in case of
 			// time skew.  Thus on events are always followed by off events.
 			LL_APPEND2(m_angleBasedEventsHead, event, nextToothEvent);
@@ -91,7 +91,23 @@ TRIGGER_RAM_CODE void TriggerScheduler::schedule(const char *msg, AngleBasedEven
 void TriggerScheduler::cancel(AngleBasedEvent* event) {
 	chibios_rt::CriticalSectionLocker csl;
 
-	LL_DELETE2(m_angleBasedEventsHead, event, nextToothEvent);
+	// utlist LL_DELETE2 dereferences the head with no null check on its search
+	// branch, and either list may legitimately be empty here. On STM32 the null
+	// walk does not even fault immediately: it reads the flash alias of the
+	// vector table at address 0x1c and chases that junk into a wild-pointer bus
+	// fault, see https://github.com/rusefi/rusefi/issues/9435
+	if (m_angleBasedEventsHead) {
+		LL_DELETE2(m_angleBasedEventsHead, event, nextToothEvent);
+	}
+	// The event may instead be awaiting promotion to the time-based scheduler
+	// inside scheduleEventsUntilNextTriggerTooth() - a canceled event must not
+	// fire, so remove it from there as well
+	if (m_dueEventsHead) {
+		LL_DELETE2(m_dueEventsHead, event, nextToothEvent);
+	}
+
+	// LL_DELETE2 does not clear the removed element's link
+	event->nextToothEvent = nullptr;
 }
 
 TRIGGER_RAM_CODE void TriggerScheduler::scheduleEventsUntilNextTriggerTooth(float rpm,
@@ -149,10 +165,10 @@ TRIGGER_RAM_CODE void TriggerScheduler::scheduleEventsUntilNextTriggerTooth(floa
 				current->getAngleFromNow(currentPhase),
 				current->action
 			);
-	} else {
-		keeptail = current; // Used for fast list concatenation
+		} else {
+			keeptail = current; // Used for fast list concatenation
+		}
 	}
-}
 
 	if (keephead) {
 		chibios_rt::CriticalSectionLocker csl;

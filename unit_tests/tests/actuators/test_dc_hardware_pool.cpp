@@ -1,0 +1,232 @@
+/**
+ * @file test_dc_hardware_pool.cpp
+ *
+ * Coverage for the shared DcHardware pool in dc_motors.cpp: the ETB/DC-actuator
+ * functions own slots [0..ETB_COUNT) while the H-bridge idle stepper claims slots
+ * [ETB_COUNT..ETB_COUNT+DC_PER_STEPPER) - see initIdleHardware().
+ * Also covers the pickEtbOrStepper() conflict guard between those two users.
+ *
+ * https://github.com/rusefi/rusefi/pull/9466 refactors this pool - these tests pin
+ * down the legacy behavior that refactoring must preserve (or consciously change).
+ */
+
+#include "pch.h"
+
+#include "dc_motors.h"
+#include "electronic_throttle.h"
+#include "gpio/hbridge_gpio.h"
+
+TEST(DcHardwarePool, EtbAndStepperSlotsAreDistinct) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+
+	// ETB functions use the dc_io overload with slots 0..ETB_COUNT-1
+	DcMotor* etb0 = initDcMotor("ETB disable", engineConfiguration->etbIo[0], 0, false);
+	DcMotor* etb1 = initDcMotor("ETB disable", engineConfiguration->etbIo[1], 1, false);
+	// the H-bridge idle stepper claims the two slots right after the ETBs, see initIdleHardware()
+	DcMotor* stepperA = initDcMotor(Gpio::Unassigned, Gpio::Unassigned, ETB_COUNT + 0);
+	DcMotor* stepperB = initDcMotor(Gpio::Unassigned, Gpio::Unassigned, ETB_COUNT + 1);
+
+	ASSERT_NE(nullptr, etb0);
+	ASSERT_NE(nullptr, etb1);
+	ASSERT_NE(nullptr, stepperA);
+	ASSERT_NE(nullptr, stepperB);
+
+	// all four users must get their own hardware
+	EXPECT_NE(etb0, etb1);
+	EXPECT_NE(etb0, stepperA);
+	EXPECT_NE(etb0, stepperB);
+	EXPECT_NE(etb1, stepperA);
+	EXPECT_NE(etb1, stepperB);
+	EXPECT_NE(stepperA, stepperB);
+
+	// driving one slot must not leak into any other slot
+	stepperA->set(0.7f);
+	EXPECT_FLOAT_EQ(0.7f, stepperA->get());
+	EXPECT_FLOAT_EQ(0, etb0->get());
+	EXPECT_FLOAT_EQ(0, etb1->get());
+	EXPECT_FLOAT_EQ(0, stepperB->get());
+}
+
+TEST(DcHardwarePool, SlotIdentityIsStable) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+
+	DcMotor* first = initDcMotor("ETB disable", engineConfiguration->etbIo[0], 0, false);
+
+	// re-initialization of a started slot is a no-op returning the same hardware,
+	// even via the other overload - the isStarted latch protects the slot
+	EXPECT_EQ(first, initDcMotor("ETB disable", engineConfiguration->etbIo[0], 0, true));
+	EXPECT_EQ(first, initDcMotor(Gpio::Unassigned, Gpio::Unassigned, 0));
+	EXPECT_EQ(first, getDcMotorForUnitTest(0));
+}
+
+TEST(DcHardwarePool, ConsoleDutyCommandRoutesToSlot) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+
+	// start an ETB slot and a stepper slot
+	initDcMotor("ETB disable", engineConfiguration->etbIo[0], 0, false);
+	initDcMotor(Gpio::Unassigned, Gpio::Unassigned, ETB_COUNT + 0);
+
+	// console 'set_dc' style control must reach the same motor the subsystem got at init;
+	// note that today indices beyond ETB_COUNT address the idle stepper's motors
+	setDcMotorDuty(0, 0.25f);
+	setDcMotorDuty(ETB_COUNT + 0, -0.5f);
+
+	EXPECT_FLOAT_EQ(0.25f, getDcMotorForUnitTest(0)->get());
+	EXPECT_TRUE(getDcMotorForUnitTest(0)->isOpenDirection());
+
+	EXPECT_FLOAT_EQ(-0.5f, getDcMotorForUnitTest(ETB_COUNT + 0)->get());
+	EXPECT_FALSE(getDcMotorForUnitTest(ETB_COUNT + 0)->isOpenDirection());
+}
+
+TEST(DcHardwarePool, TooHighEtbFrequencyIsFatal) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+
+	// TEST_ENGINE configures DC_Wastegate, so slot 0 was already started during engine
+	// initialization and the isStarted latch would swallow the re-init - reset the pool
+	// so start() actually runs with the bad frequency
+	resetDcHardwareForUnitTest();
+
+	engineConfiguration->etbFreq = ETB_HW_MAX_FREQUENCY + 1;
+	EXPECT_FATAL_ERROR(initDcMotor("ETB disable", engineConfiguration->etbIo[0], 0, false));
+}
+
+TEST(DcHardwarePool, HbridgeGpioDrivesSelectedDcSlot) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+
+	engineConfiguration->etbFunctions[0] = DC_Gpio;
+	engineConfiguration->etbFunctions[1] = DC_None;
+	resetDcHardwareForUnitTest();
+
+	auto& gpio = getHbridgeGpioForUnitTest();
+	ASSERT_EQ(0, gpio.init());
+
+	auto motor = getDcMotorForUnitTest(0);
+	ASSERT_NE(nullptr, motor->msg());
+
+	// OutputPin writes the safe state before changing the pin to output mode.
+	EXPECT_EQ(0, gpio.writePad(0, 0));
+	EXPECT_EQ(0, gpio.setPadMode(0, PAL_MODE_OUTPUT_PUSHPULL));
+	EXPECT_EQ(nullptr, motor->msg());
+	EXPECT_FLOAT_EQ(0, motor->get());
+
+	EXPECT_EQ(0, gpio.writePad(0, 1));
+	EXPECT_EQ(1, gpio.readPad(0));
+	EXPECT_FLOAT_EQ(1, motor->get());
+
+	EXPECT_EQ(0, gpio.writePad(0, 0));
+	EXPECT_EQ(0, gpio.setPadMode(0, static_cast<iomode_t>(1)));
+	EXPECT_NE(nullptr, motor->msg());
+	EXPECT_FLOAT_EQ(0, motor->get());
+
+	EXPECT_EQ(-1, gpio.writePad(1, 1));
+	EXPECT_EQ(-1, gpio.writePad(ETB_COUNT, 1));
+}
+
+// PWM on an H-bridge GPIO pin: setPadPWM() hands the duty straight to the bridge's
+// own hardware PWM, so startSimplePwm() picks it up through gpiochip_tryInitPwm()
+// instead of bit-banging the motor from the software PWM scheduler.
+TEST(DcHardwarePool, HbridgeGpioPwmDrivesMotorDuty) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+
+	engineConfiguration->etbFunctions[0] = DC_Gpio;
+	engineConfiguration->etbFunctions[1] = DC_None;
+	resetDcHardwareForUnitTest();
+
+	auto& gpio = getHbridgeGpioForUnitTest();
+	ASSERT_EQ(0, gpio.init());
+	ASSERT_EQ(0, gpio.setPadMode(0, PAL_MODE_OUTPUT_PUSHPULL));
+
+	auto motor = getDcMotorForUnitTest(0);
+
+	EXPECT_EQ(0, gpio.setPadPWM(0, 100, 0.5f));
+	EXPECT_FLOAT_EQ(0.5f, motor->get());
+
+	// external_hardware_pwm::setDuty() re-calls setPadPWM() with the original frequency
+	EXPECT_EQ(0, gpio.setPadPWM(0, 100, 0.25f));
+	EXPECT_FLOAT_EQ(0.25f, motor->get());
+
+	EXPECT_EQ(0, gpio.setPadPWM(0, 100, 0));
+	EXPECT_FLOAT_EQ(0, motor->get());
+	EXPECT_EQ(0, gpio.readPad(0));
+
+	// slot without DC_Gpio function
+	EXPECT_EQ(-1, gpio.setPadPWM(1, 100, 0.5f));
+}
+
+namespace {
+// Stands in for the STM32 timer channel behind the bridge's PWM pin
+struct FakeHardwarePwm : public hardware_pwm {
+	float duty = -1;
+	float frequency = 0;
+	int frequencyCalls = 0;
+	bool acceptFrequency = true;
+
+	void setDuty(float d) override {
+		duty = d;
+	}
+
+	bool setFrequency(float hz) override {
+		frequencyCalls++;
+		if (!acceptFrequency) {
+			return false;
+		}
+		frequency = hz;
+		return true;
+	}
+};
+}
+
+// The consumer's PWM frequency is programmed into the bridge's timer on the first PWM request;
+// repeats with the same frequency (external_hardware_pwm::setDuty()) do not touch the timer.
+TEST(DcHardwarePool, HbridgeGpioPwmAppliesRequestedFrequency) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+
+	engineConfiguration->etbFunctions[0] = DC_Gpio;
+	engineConfiguration->etbFunctions[1] = DC_None;
+	resetDcHardwareForUnitTest();
+
+	FakeHardwarePwm timer;
+	setDcHardwarePwmForUnitTest(0, &timer);
+
+	auto& gpio = getHbridgeGpioForUnitTest();
+	ASSERT_EQ(0, gpio.init());
+	ASSERT_EQ(0, gpio.setPadMode(0, PAL_MODE_OUTPUT_PUSHPULL));
+
+	// boost-solenoid style consumer: 300 Hz
+	EXPECT_EQ(0, gpio.setPadPWM(0, 300, 0.5f));
+	EXPECT_FLOAT_EQ(0.5f, timer.duty);
+	EXPECT_EQ(1, timer.frequencyCalls);
+	EXPECT_FLOAT_EQ(300, timer.frequency);
+
+	EXPECT_EQ(0, gpio.setPadPWM(0, 300, 0.75f));
+	EXPECT_FLOAT_EQ(0.75f, timer.duty);
+	EXPECT_EQ(1, timer.frequencyCalls);
+}
+
+// A frequency the timer cannot do makes setPadPWM() fail, so gpiochip_tryInitPwm() falls back to
+// software PWM through writePad(); the bridge must be left as it was.
+TEST(DcHardwarePool, HbridgeGpioPwmRefusedFrequencyLeavesBridgeAlone) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+
+	engineConfiguration->etbFunctions[0] = DC_Gpio;
+	engineConfiguration->etbFunctions[1] = DC_None;
+	resetDcHardwareForUnitTest();
+
+	FakeHardwarePwm timer;
+	timer.acceptFrequency = false;
+	setDcHardwarePwmForUnitTest(0, &timer);
+
+	auto& gpio = getHbridgeGpioForUnitTest();
+	ASSERT_EQ(0, gpio.init());
+	ASSERT_EQ(0, gpio.setPadMode(0, PAL_MODE_OUTPUT_PUSHPULL));
+	ASSERT_FLOAT_EQ(0, timer.duty);
+
+	EXPECT_EQ(-1, gpio.setPadPWM(0, 10, 0.5f));
+	EXPECT_EQ(1, timer.frequencyCalls);
+	EXPECT_FLOAT_EQ(0, timer.duty);
+	EXPECT_FLOAT_EQ(0, getDcMotorForUnitTest(0)->get());
+
+	// the on/off path is still available for the software PWM fallback
+	EXPECT_EQ(0, gpio.writePad(0, 1));
+	EXPECT_FLOAT_EQ(1, timer.duty);
+}

@@ -20,7 +20,7 @@ uint32_t rusEfiLastXLockCaller = 0;
 uint32_t rusEfiLastXLockState = 0;
 
 extern "C" {
-void logHardFault(uint32_t /*type*/, uintptr_t /*faultAddress*/, void* /*sp*/, struct port_extctx* /*ctx*/, uint32_t /*csfr*/) { }
+void logHardFault(uint32_t /*type*/, uintptr_t /*faultAddress*/, void* /*sp*/, uint32_t /*csfr*/) { }
 }
 
 void setPinConfigurationOverrides() { }

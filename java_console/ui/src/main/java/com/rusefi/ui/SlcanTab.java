@@ -1,7 +1,15 @@
 package com.rusefi.ui;
 
 import com.devexperts.logging.Logging;
+import com.rusefi.io.can.HexUtil;
 import com.rusefi.io.can.slcan.SlcanClient;
+import com.opensr5.ini.DialogModel;
+import com.opensr5.ini.IniFileModel;
+import com.rusefi.binaryprotocol.BinaryProtocol;
+import com.opensr5.ConfigurationImage;
+import com.opensr5.ini.field.EnumIniField;
+import com.opensr5.ini.field.IniField;
+import com.opensr5.ini.field.ScalarIniField;
 
 import javax.swing.*;
 import javax.swing.Timer;
@@ -16,6 +24,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.function.Consumer;
 
 import static com.devexperts.logging.Logging.getLogging;
 
@@ -29,7 +38,19 @@ import static com.devexperts.logging.Logging.getLogging;
  * recording duration and buffer size, 'Stop' ends recording and offers a 'Save file as'
  * dialog, 'Reset' clears the buffer.
  * <p>
- * Shown in ConsoleUI behind the 'show_slcan_sniffer' flag; construct lazily (the reader
+ * "Scanning for SLCAN port..." mechanics: the constructor starts a daemon reader threadt
+ * ({@link #readerLoop()}) which calls {@link SlcanClient#findAndConnect(Consumer)} -- that
+ * enumerates all serial ports, opens each one, skips any port answering the TunerStudio
+ * HELLO with a rusEFI signature (the primary console VCP), then probes the rest with the
+ * SLCAN 'V' (version) command and opens the CAN channel (C/S6/O sequence) on the first
+ * port that responds. While nothing is found the loop retries every {@link #RESCAN_PERIOD_MS};
+ * once connected it blocks reading frame lines, using a periodic 'F' status write as a
+ * liveness probe on a silent bus, and on any IOException drops back to scanning. The
+ * connection state is published via the volatile {@link #connectedPort} (null while
+ * scanning); a 250 ms Swing timer ({@link #refresh()}) renders it as the status text
+ * ("Scanning for SLCAN port..." vs "Connected to ...") and the indicator color.
+ * <p>
+ * Shown when the connected INI advertises CAN sniffing, or forced by 'show_slcan_sniffer'; construct lazily (the reader
  * thread starts scanning serial ports as soon as the tab is instantiated).
  *
  * @see com.rusefi.UiProperties#isSlcanSnifferEnabled()
@@ -49,6 +70,9 @@ public class SlcanTab {
     private final List<FrameRecord> buffer = new ArrayList<>(); // unlimited recording buffer
     private final ArrayDeque<FrameRecord> lastFrames = new ArrayDeque<>(); // newest first
 
+    private volatile boolean closed;
+    private final Timer refreshTimer;
+    private final Thread reader;
     private volatile boolean recording;
     private volatile long recordStartMs;
     private volatile String connectedPort; // null while disconnected
@@ -60,8 +84,24 @@ public class SlcanTab {
     private final JButton resetButton = new JButton("Reset");
     private final JButton recordButton = new JButton("Record");
     private final JButton stopButton = new JButton("Stop");
+    private final Consumer<String> messageHandler;
+    private final UIContext uiContext;
+    private final List<Consumer<ConfigurationImage>> configImageListeners = new ArrayList<>();
 
-    public SlcanTab() {
+    public SlcanTab(UIContext uiContext) {
+        this(uiContext, null);
+    }
+
+    public SlcanTab(UIContext uiContext, Consumer<String> messageHandler) {
+        this(uiContext, messageHandler, true);
+    }
+
+    // Lifecycle tests build the real controls without scanning hardware or starting the UI timer.
+    SlcanTab(UIContext uiContext, Consumer<String> messageHandler, boolean startBackgroundWork) {
+        this.uiContext = uiContext;
+        this.messageHandler = messageHandler != null
+            ? messageHandler
+            : message -> JOptionPane.showMessageDialog(content, message, "SLCAN", JOptionPane.INFORMATION_MESSAGE);
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT));
         buttons.add(resetButton);
         buttons.add(recordButton);
@@ -69,8 +109,8 @@ public class SlcanTab {
         stopButton.setEnabled(false);
 
         indicator.setPreferredSize(new Dimension(22, 22));
-        indicator.setBackground(Color.RED);
-        indicator.setBorder(BorderFactory.createLineBorder(Color.DARK_GRAY));
+        indicator.setBackground(Color.RED); // [tag:fixed_color] connection lamp, red or green in every theme
+        indicator.setBorder(BorderFactory.createLineBorder(Color.DARK_GRAY)); // [tag:fixed_color] rim of the lamp
         JPanel indicatorWrapper = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         indicatorWrapper.setOpaque(false);
         indicatorWrapper.add(indicator);
@@ -79,6 +119,11 @@ public class SlcanTab {
         top.add(buttons, BorderLayout.WEST);
         top.add(statusLabel, BorderLayout.CENTER);
         top.add(indicatorWrapper, BorderLayout.EAST);
+
+        JPanel busPanel = createBusPanel();
+        if (busPanel != null) {
+            top.add(busPanel, BorderLayout.SOUTH);
+        }
 
         framesArea.setEditable(false);
         framesArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
@@ -105,19 +150,34 @@ public class SlcanTab {
             saveBuffer();
         });
 
-        new Timer(250, e -> refresh()).start();
+        refreshTimer = new Timer(250, e -> refresh());
 
-        Thread reader = new Thread(this::readerLoop, "SLCAN tab reader");
+        reader = new Thread(this::readerLoop, "SLCAN tab reader");
         reader.setDaemon(true);
-        reader.start();
+        if (startBackgroundWork) {
+            refreshTimer.start();
+            reader.start();
+        }
     }
 
     public JPanel getContent() {
         return content;
     }
 
+    /** Called on the EDT when this board's tab is removed. The reader closes its port in finally. */
+    public void close() {
+        closed = true;
+        recording = false;
+        refreshTimer.stop();
+        reader.interrupt();
+        for (Consumer<ConfigurationImage> listener : configImageListeners) {
+            uiContext.removeConfigImageListener(listener);
+        }
+        configImageListeners.clear();
+    }
+
     private void readerLoop() {
-        while (true) {
+        while (!closed) {
             SlcanClient client = SlcanClient.findAndConnect(log::info);
             if (client == null) {
                 try {
@@ -130,7 +190,7 @@ public class SlcanTab {
             connectedPort = client.getPort();
             try {
                 long lastActivity = System.currentTimeMillis();
-                while (true) {
+                while (!closed) {
                     String line = client.readLine(READ_TIMEOUT_MS);
                     if (line == null) {
                         if (System.currentTimeMillis() - lastActivity > LIVENESS_POLL_PERIOD_MS) {
@@ -175,7 +235,7 @@ public class SlcanTab {
      */
     private void refresh() {
         String port = connectedPort;
-        indicator.setBackground(port != null ? new Color(0, 160, 0) : Color.RED);
+        indicator.setBackground(port != null ? new Color(0, 160, 0) : Color.RED); // [tag:fixed_color] connection lamp
         indicator.setToolTipText(port != null ? "Connected to " + port : "No SLCAN port");
 
         int bufferSize;
@@ -183,8 +243,8 @@ public class SlcanTab {
         synchronized (lock) {
             bufferSize = buffer.size();
             for (FrameRecord record : lastFrames) {
-                text.append(String.format("%s %-30s %s%n",
-                    timeFormat.format(new Date(record.wallClockMs)), record.frame.raw, record.frame.decode()));
+                text.append(String.format("%s %s%n",
+                    timeFormat.format(new Date(record.wallClockMs)), record.frame.decode()));
             }
         }
 
@@ -203,13 +263,109 @@ public class SlcanTab {
         }
     }
 
+    private JPanel createBusPanel() {
+        if (uiContext == null) {
+            return null;
+        }
+        IniFileModel ini = uiContext.iniFileState.getIniFileModel();
+        if (ini == null) {
+            return null;
+        }
+
+        JPanel busPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        busPanel.add(new JLabel("Listen:"));
+
+        for (int i = 1; i <= 3; i++) {
+            String dialogKey = "canHw" + i;
+            DialogModel dialog = ini.getDialogs().get(dialogKey);
+            if (dialog == null) {
+                continue;
+            }
+
+            String busName = dialog.getUiName();
+            String fieldName1 = "canSniffer" + i + "_listenOurs";
+            String fieldName2 = "canSniffer" + i + "_read";
+
+            // Verify the fields exist
+            try {
+                ini.getIniField(fieldName1);
+                ini.getIniField(fieldName2);
+            } catch (Exception e) {
+                // Skip if not found
+                continue;
+            }
+
+            JCheckBox cb = new JCheckBox(busName);
+
+            Consumer<ConfigurationImage> listener = image -> updateCheckbox(cb, fieldName1, fieldName2, ini, image);
+            configImageListeners.add(listener);
+            uiContext.addConfigImageListener(listener);
+
+            // Initial state
+            BinaryProtocol bp = uiContext.getBinaryProtocol();
+            if (bp != null) {
+                ConfigurationImage image = bp.getBinaryProtocolState().getConfigurationImage();
+                if (image != null) {
+                    updateCheckbox(cb, fieldName1, fieldName2, ini, image);
+                }
+            }
+
+            cb.addActionListener(e -> {
+                BinaryProtocol bp2 = uiContext.getBinaryProtocol();
+                if (bp2 == null) return;
+                ConfigurationImage image = bp2.getBinaryProtocolState().getConfigurationImage();
+                if (image == null) return;
+
+                int newValue = cb.isSelected() ? 1 : 0;
+                applyValue(image, ini.getIniField(fieldName1), newValue);
+                applyValue(image, ini.getIniField(fieldName2), newValue);
+
+                ConfigurationImage snapshot = image.clone();
+                uiContext.getLinkManager().submit(() -> bp2.uploadChangesWithoutBurn(snapshot));
+                uiContext.fireConfigImageChanged(image);
+            });
+
+            busPanel.add(cb);
+        }
+
+        return busPanel;
+    }
+
+    private void updateCheckbox(JCheckBox cb, String field1, String field2, IniFileModel ini, ConfigurationImage image) {
+        Double v1 = image.readNumericValue(ini.getIniField(field1));
+        Double v2 = image.readNumericValue(ini.getIniField(field2));
+        if (v1 == null || v2 == null) return;
+
+        boolean b1 = v1 != 0;
+        boolean b2 = v2 != 0;
+
+        if (b1 == b2) {
+            cb.setSelected(b1);
+            cb.setBackground(null);
+        } else {
+            cb.setSelected(true); // show as checked but grayed
+            java.awt.Color mixed = UIManager.getColor("Console.Checkbox.mixedBackground");
+            cb.setBackground(mixed != null ? mixed : java.awt.Color.LIGHT_GRAY);
+        }
+    }
+
+    private void applyValue(ConfigurationImage image, IniField field, int newValue) {
+        if (field instanceof EnumIniField) {
+            image.setBitValue((EnumIniField) field, newValue);
+        } else if (field instanceof ScalarIniField) {
+            ScalarIniField sf = (ScalarIniField) field;
+            java.nio.ByteBuffer bb = image.getByteBuffer(sf.getOffset(), sf.getSize());
+            sf.getType().writeRawValue(bb, newValue);
+        }
+    }
+
     private void saveBuffer() {
         List<FrameRecord> snapshot;
         synchronized (lock) {
             snapshot = new ArrayList<>(buffer);
         }
         if (snapshot.isEmpty()) {
-            JOptionPane.showMessageDialog(content, "Buffer is empty, nothing to save", "SLCAN", JOptionPane.INFORMATION_MESSAGE);
+            messageHandler.accept("Buffer is empty, nothing to save");
             return;
         }
         JFileChooser chooser = new JFileChooser();
@@ -219,19 +375,23 @@ public class SlcanTab {
             return;
         }
         File file = chooser.getSelectedFile();
-        long firstMs = snapshot.get(0).wallClockMs;
         try (PrintWriter writer = new PrintWriter(Files.newBufferedWriter(file.toPath(), StandardCharsets.US_ASCII))) {
-            writer.println("; rusEFI SLCAN capture " + new Date() + ", " + snapshot.size() + " frame(s)");
-            writer.println("; relative-ms raw-slcan-line decoded");
             for (FrameRecord record : snapshot) {
-                writer.printf("%d %s %s%n", record.wallClockMs - firstMs, record.frame.raw, record.frame.decode());
+                writer.println(formatCandump(record.wallClockMs, record.frame));
             }
         } catch (IOException e) {
-            JOptionPane.showMessageDialog(content, "Failed to save: " + e, "SLCAN", JOptionPane.ERROR_MESSAGE);
+            messageHandler.accept("Failed to save: " + e);
             return;
         }
-        JOptionPane.showMessageDialog(content, "Saved " + snapshot.size() + " frame(s) to " + file.getAbsolutePath(),
-            "SLCAN", JOptionPane.INFORMATION_MESSAGE);
+        messageHandler.accept("Saved " + snapshot.size() + " frame(s) to " + file.getAbsolutePath());
+    }
+
+    static String formatCandump(long wallClockMs, SlcanClient.Frame frame) {
+        String bus = frame.busIndex == null ? "canUnknown" : "can" + frame.busIndex;
+        String payload = frame.rtr ? "R" + frame.dlc : HexUtil.asString(frame.data);
+        String id = String.format(frame.extended ? "%08X" : "%03X", frame.id);
+        return String.format(java.util.Locale.ROOT, "(%d.%06d) %s %s#%s",
+                wallClockMs / 1000, (wallClockMs % 1000) * 1000, bus, id, payload);
     }
 
     private static class FrameRecord {

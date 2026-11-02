@@ -27,7 +27,6 @@ bit isTriggerError;Error: Trigger
 bit hasCriticalError;Error: Active
 bit isWarnNow;Warning: Active
 bit isPedalError;Error: Pedal
-bit launchTriggered;Launch Control Triggered
 bit isTps2Error;Error: TPS2
 bit injectorFault;Injector Fault
 bit ignitionFault;Ignition Fault
@@ -43,7 +42,6 @@ bit hasFaultReportFile
 bit isAnalogFailure;Analog sensors supply failure
 bit isTuningNow
 bit sd_formating; SD: formating is in progress
-! bit 31 - last one!
   bit isMapAveraging
 
 uint16_t RPMValue;@@GAUGE_NAME_RPM@@;"RPM",1, 0, 0, 8000, 0
@@ -52,7 +50,6 @@ int16_t rpmAcceleration;dRPM;"RPM acceleration/Rate of Change/ROC",1, 0, 0, 5, 2
 
 	uint16_t autoscale speedToRpmRatio;@@GAUGE_NAME_GEAR_RATIO@@;"value",{1/@@PACK_MULT_PERCENT@@}, 0, 0, 0, 2
 
-	int8_t internalMcuTemperature;@@GAUGE_NAME_CPU_TEMP@@;"deg C",1, 0, 0, 0, 0
 	int16_t autoscale internalVref;;"V",{1/@@PACK_MULT_VOLTAGE@@}, 0, 0, 5, 3
 	int16_t autoscale internalVbat;;"V",{1/@@PACK_MULT_VOLTAGE@@}, 0, 0, 5, 3
 
@@ -86,15 +83,12 @@ int16_t rpmAcceleration;dRPM;"RPM acceleration/Rate of Change/ROC",1, 0, 0, 5, 2
   uint8_t stopEngineCode
 
 	uint8_t autoscale injectorDutyCycle;@@GAUGE_NAME_FUEL_INJ_DUTY@@;"%",{1/2}, 0, 0, 0, 0
-	uint8_t tempLogging1
+	int8_t internalMcuTemperature;@@GAUGE_NAME_CPU_TEMP@@;"deg C",1, 0, 0, 0, 0
 	int16_t injectionOffset;@@GAUGE_NAME_FUEL_INJECTION_TIMING@@;"deg", 1, 0, 0, 0, 0
 
 !  Corrections
 ! we want a hash of engineMake+engineCode+vehicleName in the log file in order to match TS logs to rusEFI Online tune
 	uint16_t engineMakeCodeNameCrc16;@@GAUGE_NAME_ENGINE_CRC16@@;"crc16",1, 0, 0, 0, 0
-! Wall model AE
-	uint16_t autoscale wallFuelAmount;@@GAUGE_NAME_FUEL_WALL_AMOUNT@@;"mg",{1/@@PACK_MULT_FUEL_MASS@@}, 0, 0, 0, 3
-	int16_t autoscale wallFuelCorrectionValue;@@GAUGE_NAME_FUEL_WALL_CORRECTION@@;"mg",{1/@@PACK_MULT_FUEL_MASS@@}, 0, 0, 0, 3
 
 ! Flex fuel transient compensation multipliers (1.0 = neutral)
 	uint16_t autoscale flexAeMultiplier;Flex: AE multiplier;"mult", 0.001, 0, 0, 5, 3
@@ -104,7 +98,8 @@ int16_t rpmAcceleration;dRPM;"RPM acceleration/Rate of Change/ROC",1, 0, 0, 5, 2
 	uint16_t revolutionCounterSinceStart;;"",1, 0, 0, 0, 0
 
 	uint16_t canReadCounter;@@GAUGE_NAME_CAN_READ_OK@@;"",1, 0, 0, 64000, 0
-	int16_t autoscale tpsAccelFuel;@@GAUGE_NAME_FUEL_TPS_EXTRA@@;"ms",{1/@@PACK_MULT_MS@@}, 0, 0, 0, 3
+! MS Adder: milliseconds. Percent Adder: fraction before injection-mode scaling. MAP Prediction: zero.
+	int16_t autoscale tpsAccelFuel;@@GAUGE_NAME_FUEL_TPS_EXTRA@@;@@TPS_ACCEL_UNITS@@,{1/@@PACK_MULT_MS@@}, 0, 0, 0, 3
 ! Ignition
 	uint8_t currentIgnitionMode;@@GAUGE_NAME_IGNITION_MODE@@
 	uint8_t currentInjectionMode;@@GAUGE_NAME_INJECTION_MODE@@
@@ -120,7 +115,6 @@ int16_t rpmAcceleration;dRPM;"RPM acceleration/Rate of Change/ROC",1, 0, 0, 5, 2
 
 	int16_t autoscale TPS2Value;@@GAUGE_NAME_TPS2@@;"%",{1/@@PACK_MULT_PERCENT@@}, 0, 0, 0, 2
 	uint16_t tuneCrc16;@@GAUGE_NAME_TUNE_CRC16@@;"crc16", 1, 0, 0, 0, 0
-	uint16_t autoscale veValue;@@GAUGE_NAME_FUEL_VE@@;"ratio",{1/10}, 0, 0, 0, 1
 
 ! integration magic: TS requires exact 'seconds' name
 	uint32_t seconds;@@GAUGE_NAME_UPTIME@@;"sec", 1, 0, 0, 0, 0
@@ -133,7 +127,7 @@ int16_t rpmAcceleration;dRPM;"RPM acceleration/Rate of Change/ROC",1, 0, 0, 5, 2
 	int16_t autoscale accelerationLat;@@GAUGE_NAME_ACCEL_LAT@@;"G",{1/1000}, 0, 0, 0, 0
 	int16_t autoscale accelerationLon;@@GAUGE_NAME_ACCEL_LON@@;"G",{1/1000}, 0, 0, 0, 0
 
-	uint8_t detectedGear;@@GAUGE_NAME_DETECTED_GEAR@@;"", 1, 0, 0, @@TCU_GEAR_COUNT@@, 0
+	int8_t detectedGear;@@GAUGE_NAME_DETECTED_GEAR@@;"", 1, 0, 0, @@TCU_GEAR_COUNT@@, 0
 	uint8_t maxTriggerReentrant;;"", 1, 0, 0, 100, 0
 
 	int16_t autoscale rawLowFuelPressure;;"V",{1/@@PACK_MULT_VOLTAGE@@}, 0, 0, 5, 3
@@ -145,9 +139,6 @@ int16_t rpmAcceleration;dRPM;"RPM acceleration/Rate of Change/ROC",1, 0, 0, 5, 2
 	uint8_t autoscale flexPercent;@@GAUGE_NAME_FLEX@@;"%",{1/@@PACK_MULT_FLEX@@}, 0, 0, 0, 1
 
 	int16_t autoscale wastegatePositionSensor;@@GAUGE_NAME_WG_POSITION@@;"%",{1/@@PACK_MULT_PERCENT@@}, 0, 0, 0, 2
-	int16_t autoscale highFuelPressure;@@GAUGE_NAME_FUEL_PRESSURE_HIGH@@;"bar",{1/@@PACK_MULT_HIGH_PRESSURE@@}, 0, 0, 0, 0
-	uint8_t tempLogging3
-	uint8_t tempLogging4
 
 	! These two fields indicate to TS that we'd like to set a particular field to a particular value
 	! We use a maintainConstantValue in TS for each field we'd like to set, like this:
@@ -160,8 +151,6 @@ int16_t rpmAcceleration;dRPM;"RPM acceleration/Rate of Change/ROC",1, 0, 0, 5, 2
 	! The ECU simply has to sequentially set a mode/value, wait briefly, then repeat until all the values
 	! it wants to send have been sent.
 	float calibrationValue;;"", 1, 0, 0, 0, 0
-	uint8_t calibrationMode;;"", 1, 0, 0, 0, 0
-	uint8_t idleStepperTargetPosition;Idle: Stepper target position;"", 1, 0, 0, 0, 0
 
 ! Errors
 	uint32_t totalTriggerErrorCounter;@@GAUGE_NAME_TRG_ERR@@;"counter",1, 0, 0, 0, 0
@@ -214,7 +203,6 @@ int16_t rpmAcceleration;dRPM;"RPM acceleration/Rate of Change/ROC",1, 0, 0, 5, 2
 	uint16_t autoscale SmoothedAFRValue;@@SMOOTHED_GAUGE_NAME_AFR@@;"AFR",{1/@@PACK_MULT_AFR@@}, 0, 0, 0, 2
 	uint16_t autoscale SmoothedAFRValue2;@@SMOOTHED_GAUGE_NAME_AFR2@@;"AFR",{1/@@PACK_MULT_AFR@@}, 0, 0, 0, 2
 
-	uint16_t autoscale VssAcceleration;Vss Accel;"m/s2",{1/@@PACK_MULT_MS@@}, 0, 0, 0, 2
 	uint16_t autoscale lambdaValue2;@@GAUGE_NAME_LAMBDA2@@;"",{1/@@PACK_MULT_LAMBDA@@}, 0, 0, 0, 3
 
 	int16_t autoscale vvtPositionB1E;@@GAUGE_NAME_VVT_B1E@@;"deg",{1/@@PACK_MULT_ANGLE@@}, 0, 0, 0, 1
@@ -259,6 +247,9 @@ int16_t rpmAcceleration;dRPM;"RPM acceleration/Rate of Change/ROC",1, 0, 0, 5, 2
 	uint16_t autoscale rawMap;;"V",{1/@@PACK_MULT_VOLTAGE@@}, 0, 0, 5, 3
 	uint16_t autoscale rawMapFast;;"V",{1/@@PACK_MULT_VOLTAGE@@}, 0, 0, 5, 3
 	uint16_t autoscale rawAfr;;"V",{1/@@PACK_MULT_VOLTAGE@@}, 0, 0, 5, 3
+	int8_t sparkCutReasonBlinker
+	int8_t fuelCutReasonBlinker
+	int16_t autoscale highFuelPressure;@@GAUGE_NAME_FUEL_PRESSURE_HIGH@@;"bar",{1/@@PACK_MULT_HIGH_PRESSURE@@}, 0, 0, 0, 0
 
 	float calibrationValue2;;"", 1, 0, 0, 0, 0
 
@@ -329,9 +320,9 @@ int16_t rpmAcceleration;dRPM;"RPM acceleration/Rate of Change/ROC",1, 0, 0, 5, 2
 	int16_t[VE_BLEND_COUNT iterate] autoscale veBlendYAxis;;"", 0.1, 0, -1000, 1000, 1
 
 	int16_t autoscale secondVeBlendParameter;;"", 0.1, 0, -1000, 1000, 1
+	int16_t autoscale secondIgnitionBlendParameter;;"", 0.1, 0, -1000, 1000, 1
 	uint8_t autoscale secondVeBlendBias;;"%", 0.5, 0, 0, 100, 1
 
-	int16_t autoscale secondIgnitionBlendParameter;;"", 0.1, 0, -1000, 1000, 1
 	uint8_t autoscale secondIgnitionBlendBias;;"%", 0.5, 0, 0, 100, 1
 
 	int16_t[BOOST_BLEND_COUNT iterate] autoscale boostOpenLoopBlendParameter;;"", 0.1, 0, -1000, 1000, 1
@@ -349,6 +340,8 @@ int16_t rpmAcceleration;dRPM;"RPM acceleration/Rate of Change/ROC",1, 0, 0, 5, 2
 	int16_t[TARGET_AFR_BLEND_COUNT iterate] autoscale targetAfrBlendOutput;;"%", 0.1, 0, -1000, 1000, 1
 	int16_t[TARGET_AFR_BLEND_COUNT iterate] autoscale targetAfrBlendYAxis;;"", 0.1, 0, -1000, 1000, 1
 
+	! 2 bytes here keep the following bit word 4-byte aligned without fill
+	uint16_t autoscale actualLastInjectionStage2;@@GAUGE_NAME_FUEL_LAST_INJECTION_STAGE_2@@;"ms",{1/@@PACK_MULT_MS@@}, 0, 0, 0, 3
 bit coilState1
 bit coilState2
 bit coilState3
@@ -413,13 +406,14 @@ float mapFast
 
 	uint16_t autoscale afrGasolineScale;@@GAUGE_NAME_AFR_GAS_SCALE@@;"AFR",{1/@@PACK_MULT_AFR@@}, 0, 0, 0, 2
 	uint16_t autoscale afr2GasolineScale;@@GAUGE_NAME_AFR2_GAS_SCALE@@;"AFR",{1/@@PACK_MULT_AFR@@}, 0, 0, 0, 2
+	uint8_t calibrationMode;;"", 1, 0, 0, 0, 0
+	uint8_t idleStepperTargetPosition;Idle: Stepper target position;"", 1, 0, 0, 0, 0
 
 	float wheelSlipRatio
 
 	uint8_t[MAX_CYLINDER_COUNT iterate] ignitorDiagnostic
 	uint8_t[MAX_CYLINDER_COUNT iterate] injectorDiagnostic
 
-	uint16_t autoscale actualLastInjectionStage2;@@GAUGE_NAME_FUEL_LAST_INJECTION_STAGE_2@@;"ms",{1/@@PACK_MULT_MS@@}, 0, 0, 0, 3
 	float actualLastInjectionRatioStage2;@@GAUGE_NAME_FUEL_LAST_INJECTION_RATIO_STAGE_2@@;"", 1, 0, 0, 0, 3
 
 	uint8_t autoscale injectorDutyCycleStage2;@@GAUGE_NAME_FUEL_INJ_DUTY_STAGE_2@@;"%",{1/2}, 0, 0, 0, 0
@@ -430,7 +424,6 @@ float mapFast
 	uint16_t mc33810spiErrorCounter
 
 	uint8_t injectionPrimingCounter
-	uint8_t tempLogging2
 
 	float acPressure;@@GAUGE_NAME_AC_PRESSURE@@;"kPa", 1, 0, 0, 0, 0
 
@@ -448,8 +441,6 @@ float mapFast
 	int16_t autoscale rawAmbientTemp;;"V",{1/@@PACK_MULT_VOLTAGE@@}, 0, 0, 5, 3
 	uint32_t rtcUnixEpochTime
 
-	int8_t sparkCutReasonBlinker
-	int8_t fuelCutReasonBlinker
 
 	int16_t hp
 	int16_t torque
@@ -478,6 +469,9 @@ float mapFast
 
   uint8_t[MAX_CYLINDER_COUNT iterate] mapPerCylinder;;"kPa", 1, 0, 0, 0, 0
 
+	! Counts complete primary/optional-mux/auxiliary cycles on F4/F7 background ADC.
+	uint16_t slowAdcScanCount;ECU: Slow ADC complete scans;"N", 1, 0, 0, 65535, 0
+
 	! Live measured thermistor resistance, exact value computed by ResistanceFunc, see issue #9788
 	float cltResistance;CLT: measured resistance;"Ohm", 1, 0, 0, 1000000, 0
 	float iatResistance;IAT: measured resistance;"Ohm", 1, 0, 0, 1000000, 0
@@ -486,7 +480,7 @@ float mapFast
 
 	uint16_t instantRpmRange;sync: instant RPM range\nMax minus min instant RPM within the last complete engine cycle, 0 when RPM is perfectly steady;"rpm", 1, 0, 0, 65535, 0
 
-	! L9779 WDA watchdog root-cause state (m74_9 / any L9779 board; zeros elsewhere)
+! L9779 WDA watchdog root-cause state (m74_9 / any L9779 board; zeros elsewhere)
 	uint8_t l9779WdaEc;L9779: WDA error counter;"", 1, 0, 0, 7, 0
 	bit l9779WdaInt;L9779: WDA_INT flag
 	bit l9779WdaKill;L9779: Power stage killed (EC>4)
@@ -495,4 +489,24 @@ float mapFast
 	uint16_t l9779WdaOk;L9779: WDA answered bursts;"", 1, 0, 0, 65535, 0
 	uint8_t l9779WdaWrong;L9779: WDA wrong-value rejections;"", 1, 0, 0, 255, 0
 	uint8_t l9779WdaMiss;L9779: WDA timing misses;"", 1, 0, 0, 255, 0
+! TunerStudio/MLV integration requires channel 'engine' and exact log label 'Engine'.
+! Bits: 0 running, 1 cranking, 2 after-start enrichment, 3 warmup enrichment,
+! 4 TPS acceleration (including MAP Prediction), 5 TPS deceleration or DFCO.
+! Bits 6/7 (MAP-rate acceleration/deceleration) are unused.
+	uint8_t engine;Engine;"", 1, 0, 0, 255, 0
+	! SD_MODE from mmc_card.h: 0 idle, 1 ECU, 2 PC, 3 unmounted, 4 formatting.
+	uint8_t sdCardMode;SD: Mount mode;"code", 1, 0, 0, 4, 0
+! Dash light indicators, set from Lua via setDashLight(index, state) - see lua_hooks.cpp.
+! Only the fixed-size bit word is reserved here; the firmware itself never sets these.
+! Index order matches the setDashLight() argument: 0 left turn, 1 right turn, 2 check engine, 3 high beams, 4 parking brake.
+	bit dashLeftTurn;Dash: Left turn
+	bit dashRightTurn;Dash: Right turn
+	bit dashCheckEngine;Dash: Check engine
+	bit dashHighBeams;Dash: High beams
+	bit dashParkingBrake;Dash: Parking brake
+	! not a dash light: set by firmware, shares the dash bit word to avoid a separate 4-byte word
+	bit transmissionSlipValid;Transmission slip valid
+
+	float outputShaftSpeed;Output Shaft Speed;"RPM", 1, 0, 0, 30000, 0
+	float transmissionSlipPercent;@@GAUGE_NAME_TRANS_SLIP@@;"%", 1, 0, -100, 1000, 1
 end_struct

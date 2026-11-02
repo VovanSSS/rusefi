@@ -27,19 +27,32 @@
 #include <optional>
 #include "rusefi_types.h"
 #include "engine_configuration.h"
+#include "obd_error_codes.h"
 
 // function with no parameters and returning void
 using setup_custom_board_overrides_type = void (*)();
 using setup_custom_board_config_type = void (*)(const engine_configuration_s * /*previousConfiguration*/);
 using setup_custom_board_output_type = int (*)();
+using setup_custom_board_outputs_type = Gpio* (*)();
 using setup_custom_board_engine_type_type = void (*)(engine_type_e);
 using setup_custom_get_float_type = float (*)();
+using setup_custom_get_adc_float_type = float (*)(adc_channel_e /*hwChannel*/);
 using setup_custom_board_adjust_voltage_type = float (*)(float /*voltage*/, adc_channel_e /*hwChannel*/);
 using setup_custom_on_board_standby_type = void (*)();
 using setup_custom_hack_hellen_board_id_type = int (*)(int /*detectedId*/);
 using setup_custom_get_cylinder_ignition_trim_type = angle_t (*)(size_t /*cylinderNumber*/, float /*rpm*/, float /*ignitionLoad*/);
 using setup_custom_get_cylinder_fuel_trim_type = float (*)(size_t /*cylinderNumber*/, float /*rpm*/, float /*fuelLoad*/);
 using setup_custom_bool_type = bool (*)();
+
+// Read-only MIL display policy. Return true to blink a stored code; an absent
+// hook accepts all codes. This never filters diagnostic storage or warning().
+// Install during board setup, before periodic callbacks begin.
+using board_mil_code_filter_type = bool (*)(ObdCode);
+extern std::optional<board_mil_code_filter_type> custom_board_milCodeFilter;
+// Translate long OBD code to some short that can be blinked by Check Engine indicator
+// Install during board setup, before periodic callbacks begin.
+using board_mil_code_translator_type = uint32_t (*)(ObdCode);
+extern std::optional<board_mil_code_translator_type> custom_board_milCodeTranslator;
 
 // Five hooks touch configuration at different lifecycle moments: DefaultConfiguration,
 // ConfigOverrides, fix_configuration, validateConfig, OnConfigurationChange.
@@ -65,6 +78,11 @@ extern std::optional<custom_fix_configuration_type> custom_board_fix_configurati
 
 using setup_custom_board_ts_command_override_type = void (*)(uint16_t /*subsystem*/, uint16_t /*index*/);
 extern std::optional<setup_custom_board_ts_command_override_type> custom_board_ts_command;
+
+enum class BasicConfigurationAction : uint16_t;
+// Applies board pin/ADC changes for a supported Basic Configurations action.
+using board_basic_configuration_type = bool (*)(BasicConfigurationAction);
+extern std::optional<board_basic_configuration_type> custom_board_applyBasicConfiguration;
 
 // Board-specific TunerStudio binary command handler. Unlike custom_board_ts_command
 // (which rides on TS_EXECUTE and is fire-and-forget), this hook receives the channel and
@@ -163,7 +181,9 @@ extern std::optional<setup_custom_board_overrides_type> custom_board_onEngineSto
 
 // Board hardware related:
 extern std::optional<setup_custom_board_output_type> custom_board_getMetaOutputsCount;
-extern std::optional<setup_custom_board_output_type> custom_board_getMetaLowSideOutputs;
+extern std::optional<setup_custom_board_output_type> custom_board_getMetaLowSideOutputsCount;
+extern std::optional<setup_custom_board_outputs_type> custom_board_getMetaOutputs;
+extern std::optional<setup_custom_board_output_type> custom_board_getMetaDcOutputsCount;
 
 // LTFT to VE table custom apply algo
 extern std::optional<setup_custom_board_overrides_type> custom_board_LtftTrimToVeApply;
@@ -183,6 +203,12 @@ extern std::optional<setup_custom_board_overrides_type> custom_board_ConfigOverr
 
 extern std::optional<setup_custom_get_float_type> custom_board_getFuncPairAllowedSplit;
 extern std::optional<setup_custom_board_adjust_voltage_type> custom_board_boardAdjustVoltage;
+// Physical input voltage / MCU ADC voltage, by channel. Without an override,
+// getAnalogInputDividerCoefficient uses analogInputDividerCoefficient.
+extern std::optional<setup_custom_get_adc_float_type> custom_board_getAnalogInputDividerCoefficient;
+// Voltage supplying the thermistor divider, in the same units as the scaled
+// sensor voltage. Defaults to 5 V; used only for resistive temperature sensors.
+extern std::optional<setup_custom_get_adc_float_type> custom_board_getThermistorSupplyVoltage;
 extern std::optional<setup_custom_on_board_standby_type> custom_board_onBoardStandBy;
 extern std::optional<setup_custom_hack_hellen_board_id_type> custom_board_hackHellenBoardId;
 extern std::optional<setup_custom_get_cylinder_ignition_trim_type> custom_board_getCylinderIgnitionTrim;
@@ -314,9 +340,15 @@ extern std::optional<setup_custom_get_float_type> custom_board_vvtDriftLimit;
 extern std::optional<setup_custom_get_float_type> custom_board_triggerDebounceUs;
 
 extern std::optional<setup_custom_bool_type> custom_board_getAcrState;
+// Return true to replace the complete ACR strategy, including the movement
+// and additive-hold gates. Outputs correspond to acrPin and acrPin2.
+// Called from slow/trigger contexts: consume cached states, do not advance
+// a controller here. Return false to retain the existing strategy.
+using board_acr_outputs_type = bool (*)(bool& /*primary*/, bool& /*secondary*/);
+extern std::optional<board_acr_outputs_type> custom_board_getAcrOutputs;
 // Additive ACR hold: when set and returning true, the Harley ACR valve is kept
-// energized regardless of the acrRevolutions countdown (the engineMovedRecently
-// power-save guard still wins). Unlike custom_board_getAcrState this does NOT
+// energized regardless of the acrRevolutions countdown, even before engine
+// movement. Unlike custom_board_getAcrState this does NOT
 // replace the default strategy - it only extends the open window, e.g. while a
 // board-side cranking-phase detector is holding fuel/spark off and needs the
 // compression signature to stay stationary. Defined in harley_acr.cpp.

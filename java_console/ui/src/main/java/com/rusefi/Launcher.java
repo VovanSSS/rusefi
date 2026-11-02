@@ -10,7 +10,6 @@ import com.rusefi.core.preferences.storage.PersistentConfiguration;
 
 import javax.swing.*;
 import java.util.Arrays;
-import java.util.Date;
 import java.util.concurrent.CompletableFuture;
 
 import static com.devexperts.logging.Logging.getLogging;
@@ -28,7 +27,6 @@ import static com.devexperts.logging.Logging.getLogging;
  */
 public class Launcher implements rusEFIVersion {
     private static final Logging log = getLogging(Launcher.class);
-    public static final String TOOLS_PATH = System.getProperty("tools_path", ".");
 
     /**
      * rusEfi console entry point
@@ -38,15 +36,15 @@ public class Launcher implements rusEFIVersion {
     public static void main(final String[] args) throws Exception {
         if (!JavaVersionHelper.isAtLeastJava11()) {
             String version = System.getProperty("java.version");
-            String message = "Java 11 or newer is required to run rusEFI console\n" +
+            String message = "Java 11 or newer is required to run " + UiProperties.getDisplayName() + "\n" +
                     "Your current version is " + version;
-            JOptionPane.showMessageDialog(null, message, "Error", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(null, message, UiProperties.getDisplayName() + " - Error", JOptionPane.ERROR_MESSAGE);
             System.err.println(message);
             System.exit(-1);
         }
         FileLogger.init();
-        log.info("rusEFI UI console " + UiVersion.CONSOLE_VERSION);
-        log.info("Compiled " + new Date(rusEFIVersion.classBuildTimeMillis()));
+        log.info(UiProperties.getDisplayName() + " " + UiVersion.CONSOLE_VERSION);
+        log.info("Compiled " + rusEFIVersion.classBuildTimeString());
         log.info("\n\n");
         PersistentConfiguration.registerShutdownHook();
         com.rusefi.maintenance.ManualIniFilePicker.register();
@@ -55,7 +53,7 @@ public class Launcher implements rusEFIVersion {
         // rusefi_console.jar now that the previous instance has fully exited.
         Autoupdate.finalizePendingUpdate();
 
-        // Older rusefi_updater.exe launchers pass "basic-ui" — that mode is gone, fall through to the full UI.
+        // Legacy rusefi_updater.exe launchers pass "basic-ui" — that mode is gone, fall through to the full UI.
         String[] effectiveArgs = (args.length > 0 && "basic-ui".equalsIgnoreCase(args[0]))
             ? Arrays.copyOfRange(args, 1, args.length) // we want the rest of the args
             : args; // or all the args if we don't have basic-ui as the first one

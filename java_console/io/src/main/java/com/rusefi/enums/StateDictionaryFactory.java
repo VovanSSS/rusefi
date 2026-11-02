@@ -1,5 +1,5 @@
 package com.rusefi.enums;
-//was generated automatically by rusEFI tool config_definition_base-all.jar based on StateDictionaryGenerator integration/LiveData.yaml on Sat Jun 20 20:47:00 UTC 2026
+//was generated automatically by rusEFI tool config_definition_base-all.jar based on StateDictionaryGenerator integration/LiveData.yaml on Sun Oct 18 04:10:03 UTC 2026
 
 import com.rusefi.config.generated.*;
 import com.rusefi.ldmp.StateDictionary;
@@ -48,9 +48,15 @@ public class StateDictionaryFactory {
         stateDictionary.register(live_data_e.LDS_vvt, "vvt");
         stateDictionary.register(live_data_e.LDS_lambda_monitor, "lambda_monitor");
         stateDictionary.register(live_data_e.LDS_mc33810_state, "mc33810");
+        stateDictionary.register(live_data_e.LDS_ads7128_state, "ads7128");
         stateDictionary.register(live_data_e.LDS_long_term_fuel_trim_state, "long_term_fuel_trim");
         stateDictionary.register(live_data_e.LDS_short_term_fuel_trim_state, "short_term_fuel_trim");
         stateDictionary.register(live_data_e.LDS_vvl_controller_state, "vvl_controller_state");
         stateDictionary.register(live_data_e.LDS_live_data_rotational_idle, "live_data_rotational_idle");
+        stateDictionary.register(live_data_e.LDS_injector_deadtime_autotune_state, "injector_deadtime_autotune_state");
+        stateDictionary.register(live_data_e.LDS_rolling_launch_state, "rolling_launch_state");
+        stateDictionary.register(live_data_e.LDS_burst_knock_state, "burst_knock_state");
+        stateDictionary.register(live_data_e.LDS_engine_state_machine_state, "engine_state_machine_state");
+        stateDictionary.register(live_data_e.LDS_wot_enrichment_state, "wot_enrichment_state");
     }
 }

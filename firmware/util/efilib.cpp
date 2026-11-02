@@ -33,7 +33,7 @@ float efiFloor(float value, float precision) {
  */
 float efiRound(float value, float precision) {
 	efiAssert(ObdCode::CUSTOM_ERR_ASSERT, precision != 0, "Zero precision is not valid for efiRound maybe you mean '1'?", NAN);
-	float a = round(value / precision);
+	float a = roundf(value / precision);
 	return fixNegativeZero(a * precision);
 }
 
@@ -142,29 +142,6 @@ int djb2lowerCase(const char *str) {
 	}
 
 	return hash;
-}
-
-/**
- * @brief This function knows how to print a histogram_s summary
- */
-void printHistogram(Logging *logging, histogram_s *histogram) {
-#if EFI_HISTOGRAMS && ! EFI_UNIT_TEST
-	int report[5];
-	int len = hsReport(histogram, report);
-
-	logging->reset();
-	logging.append(PROTOCOL_MSG LOG_DELIMITER);
-	logging.appendPrintf("histogram %s *", histogram->name);
-	for (int i = 0; i < len; i++)
-	logging.appendPrintf("%d ", report[i]);
-	logging.appendPrintf("*");
-	logging.append(LOG_DELIMITER);
-	scheduleLogging(logging);
-#else
-	UNUSED(logging);
-	UNUSED(histogram);
-
-#endif /* EFI_HISTOGRAMS */
 }
 
 float limitRateOfChange(float newValue, float oldValue, float incrLimitPerSec, float decrLimitPerSec, float secsPassed) {

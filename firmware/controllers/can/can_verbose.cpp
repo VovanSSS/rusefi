@@ -10,7 +10,7 @@
  */
 
 #include "pch.h"
-#if EFI_CAN_SUPPORT
+#if EFI_CAN_SUPPORT || EFI_UNIT_TEST
 
 #include "efi_scaled_channel.h"
 #include "can_msg_tx.h"
@@ -62,7 +62,7 @@ void populateFrame(Status& msg) {
 	msg.fan = enginePins.fanRelay.getLogicValue();
 	msg.fan2 = enginePins.fanRelay2.getLogicValue();
 
-	msg.gear = Sensor::getOrZero(SensorType::DetectedGear);
+	msg.gear = static_cast<uint8_t>(Sensor::getOrZero(SensorType::DetectedGear));
 
 #ifdef MODULE_ODOMETER
 	// scale to units of 0.1km
@@ -89,7 +89,7 @@ struct Speeds {
 
 void populateFrame(Speeds& msg) {
 	auto rpm = Sensor::getOrZero(SensorType::Rpm);
-	msg.rpm = rpm;
+	msg.rpm = static_cast<uint16_t>(rpm);
 
 	auto timing = engine->engineState.timingAdvance[0];
 	msg.timing = timing > 360 ? timing - 720 : timing;
@@ -97,9 +97,9 @@ void populateFrame(Speeds& msg) {
 	msg.injDuty = getInjectorDutyCycle(rpm);
 	msg.coilDuty = getCoilDutyCycle(rpm);
 #endif // EFI_ENGINE_CONTROL
-	msg.vssKph = Sensor::getOrZero(SensorType::VehicleSpeed);
+	msg.vssKph = static_cast<uint8_t>(Sensor::getOrZero(SensorType::VehicleSpeed));
 
-	msg.EthanolPercent = Sensor::getOrZero(SensorType::FuelEthanolPercent);
+	msg.EthanolPercent = static_cast<uint8_t>(Sensor::getOrZero(SensorType::FuelEthanolPercent));
 }
 
 struct PedalAndTps {
@@ -130,14 +130,14 @@ struct Sensors1 {
 void populateFrame(Sensors1& msg) {
 	msg.map = Sensor::getOrZero(SensorType::Map);
 
-	msg.clt = Sensor::getOrZero(SensorType::Clt) + PACK_ADD_TEMPERATURE;
-	msg.iat = Sensor::getOrZero(SensorType::Iat) + PACK_ADD_TEMPERATURE;
+	msg.clt = static_cast<uint8_t>(Sensor::getOrZero(SensorType::Clt) + PACK_ADD_TEMPERATURE);
+	msg.iat = static_cast<uint8_t>(Sensor::getOrZero(SensorType::Iat) + PACK_ADD_TEMPERATURE);
 
-	msg.aux1 = Sensor::getOrZero(SensorType::AuxTemp1) + PACK_ADD_TEMPERATURE;
-	msg.aux2 = Sensor::getOrZero(SensorType::AuxTemp2) + PACK_ADD_TEMPERATURE;
+	msg.aux1 = static_cast<uint8_t>(Sensor::getOrZero(SensorType::AuxTemp1) + PACK_ADD_TEMPERATURE);
+	msg.aux2 = static_cast<uint8_t>(Sensor::getOrZero(SensorType::AuxTemp2) + PACK_ADD_TEMPERATURE);
 
 #if	HAL_USE_ADC
-	msg.mcuTemp = getMCUInternalTemperature() + PACK_ADD_TEMPERATURE;
+	msg.mcuTemp = static_cast<uint8_t>(getMCUInternalTemperature() + PACK_ADD_TEMPERATURE);
 #endif
 
 	msg.fuelLevel = Sensor::getOrZero(SensorType::FuelLevel);
@@ -154,8 +154,8 @@ struct Sensors2 {
 
 void populateFrame(Sensors2& msg) {
 	msg.oilPressure = Sensor::get(SensorType::OilPressure).value_or(-1);
-	msg.oilTemp = Sensor::getOrZero(SensorType::OilTemperature) + PACK_ADD_TEMPERATURE;
-	msg.fuelTemp = Sensor::getOrZero(SensorType::FuelTemperature) + PACK_ADD_TEMPERATURE;
+	msg.oilTemp = static_cast<uint8_t>(Sensor::getOrZero(SensorType::OilTemperature) + PACK_ADD_TEMPERATURE);
+	msg.fuelTemp = static_cast<uint8_t>(Sensor::getOrZero(SensorType::FuelTemperature) + PACK_ADD_TEMPERATURE);
 	msg.vbatt = Sensor::getOrZero(SensorType::BatteryVoltage);
 }
 
@@ -229,10 +229,10 @@ struct Cams {
 
 void populateFrame(Cams& msg) {
 #if EFI_SHAFT_POSITION_INPUT
-	msg.Bank1IntakeActual  = engine->triggerCentral.getVVTPosition(0, 0);
-	msg.Bank1ExhaustActual = engine->triggerCentral.getVVTPosition(0, 1);
-	msg.Bank2IntakeActual  = engine->triggerCentral.getVVTPosition(1, 0);
-	msg.Bank2ExhaustActual = engine->triggerCentral.getVVTPosition(1, 1);
+	msg.Bank1IntakeActual  = static_cast<int8_t>(engine->triggerCentral.getVVTPosition(0, 0));
+	msg.Bank1ExhaustActual = static_cast<int8_t>(engine->triggerCentral.getVVTPosition(0, 1));
+	msg.Bank2IntakeActual  = static_cast<int8_t>(engine->triggerCentral.getVVTPosition(1, 0));
+	msg.Bank2ExhaustActual = static_cast<int8_t>(engine->triggerCentral.getVVTPosition(1, 1));
 #endif // EFI_SHAFT_POSITION_INPUT
 
 	// TODO: maybe don't rely on outputChannels here
@@ -247,8 +247,8 @@ struct Egts {
 };
 
 void populateFrame(Egts& msg) {
-	msg.egt[0] = Sensor::getOrZero(SensorType::EGT1) / 5;
-	msg.egt[1] = Sensor::getOrZero(SensorType::EGT2) / 5;
+	msg.egt[0] = static_cast<uint8_t>(Sensor::getOrZero(SensorType::EGT1) / 5);
+	msg.egt[1] = static_cast<uint8_t>(Sensor::getOrZero(SensorType::EGT2) / 5);
 	// DBC Defines signals Egt3 through Egt8 but we do not have the code
 }
 
@@ -277,4 +277,4 @@ void sendCanVerbose() {
 	transmitStruct<Status11>	(CanCategory::VERBOSE, base + 11, isExt, canChannel);
 }
 
-#endif // EFI_CAN_SUPPORT
+#endif // EFI_CAN_SUPPORT || EFI_UNIT_TEST

@@ -236,7 +236,7 @@ public:
 			);
 
 	bool someSortOfTriggerError() const {
-		return !m_timeSinceDecodeError.hasElapsedSec(0.3);
+		return !m_timeSinceDecodeError.hasElapsedSec(0.3f);
 	}
 
 protected:

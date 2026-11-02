@@ -32,7 +32,7 @@ void initializeNissanK11(TriggerWaveform *s) {
     s->addEvent720(720, TriggerValue::FALL, TriggerWheel::T_PRIMARY);
 
     s->tdcPosition = 10;
-    s->setTriggerSynchronizationGap3(/*gapIndex*/0, 0.40, 0.50);
+    s->setTriggerSynchronizationGap3(/*gapIndex*/0, 0.40f, 0.50f);
 }
 
 /**
@@ -43,7 +43,7 @@ void initializeNissanSR20VE_4(TriggerWaveform *s) {
 
 	s->tdcPosition = 630;
 
-	s->setTriggerSynchronizationGap2(9.67 * 0.75, 16);
+	s->setTriggerSynchronizationGap2(9.67f * 0.75f, 16);
 
 	float width = 4;
 
@@ -96,9 +96,9 @@ void initializeNissanVQ35crank(TriggerWaveform *s) {
 
 	// 6 cylinder = 36 tooth wheel, missing 2 teeth in 3 spots
 	makeNissanPattern(s, 3, 36, 2);
-	s->setTriggerSynchronizationGap3(/*gapIndex*/0, 0.2, 0.5);
+	s->setTriggerSynchronizationGap3(/*gapIndex*/0, 0.2f, 0.5f);
 	s->setTriggerSynchronizationGap3(/*gapIndex*/1, 2, 4);
-	s->setTriggerSynchronizationGap3(/*gapIndex*/2, 0.6, 1.4);
+	s->setTriggerSynchronizationGap3(/*gapIndex*/2, 0.6f, 1.4f);
 }
 
 void initializeNissanMR18crank(TriggerWaveform *s) {
@@ -108,12 +108,49 @@ void initializeNissanMR18crank(TriggerWaveform *s) {
 
 	// 4 cylinder = 36 tooth wheel, missing 2 teeth in 2 spots
 	makeNissanPattern(s, 2, 36, 2);
-	s->setTriggerSynchronizationGap(0.33);
+	s->setTriggerSynchronizationGap(0.33f);
+}
+
+void initializeNissanVK56DEcrank(TriggerWaveform *s) {
+	s->initialize(FOUR_STROKE_SYMMETRICAL_CRANK_SENSOR, SyncEdge::RiseOnly);
+
+	// Two groups of 17 teeth: one missing tooth every 180 crank degrees.
+	// Physical TDC offset and cam phase must be established on the engine.
+	makeNissanPattern(s, 2, 36, 1);
+	// Sync on the second rise after the gap: 10/20, preceded by 20/10.
+	s->setTriggerSynchronizationGap2(0.4f, 0.6f);
+	s->setSecondTriggerSynchronizationGap2(1.6f, 2.4f);
+}
+
+void initializeNissanVK56DEcam(TriggerWaveform *s) {
+	s->initialize(FOUR_STROKE_CAM_SENSOR, SyncEdge::RiseOnly);
+
+	// PHASE sensor, not the separate intake valve timing sensors.
+	// Nominal geometry inferred from Matt Wallace's VK56DE scope screenshots:
+	// https://rotkee.com/en/wavebase/good-timing-ckp-cmp-signal-nissan-titan-2003-2015?system=51
+	// Groups 1, 3, 4, 2 start 180 crank degrees apart. Each group begins
+	// with a 20-degree pulse; subsequent 10-degree pulses start at +35,
+	// +61 and +87 degrees. Physical TDC reference is not established.
+	static constexpr int counts[] = {1, 3, 4, 2};
+	for (size_t group = 0; group < efi::size(counts); group++) {
+		const angle_t base = 135 + 180 * group;
+		s->addEvent720(base, TriggerValue::RISE);
+		s->addEvent720(base + 20, TriggerValue::FALL);
+		for (int tooth = 1; tooth < counts[group]; tooth++) {
+			const angle_t rise = base + 35 + 26 * (tooth - 1);
+			s->addEvent720(rise, TriggerValue::RISE);
+			s->addEvent720(rise + 10, TriggerValue::FALL);
+		}
+	}
+
+	// First rise of the single-pulse group: 145/35, preceded by 35/93.
+	s->setTriggerSynchronizationGap2(3.5f, 4.8f);
+	s->setSecondTriggerSynchronizationGap2(0.32f, 0.42f);
 }
 
 void initializeNissanQR25crank(TriggerWaveform *s) {
 	s->initialize(FOUR_STROKE_SYMMETRICAL_CRANK_SENSOR, SyncEdge::RiseOnly);
-	s->setTriggerSynchronizationGap(0.33);
+	s->setTriggerSynchronizationGap(0.33f);
 	s->setSecondTriggerSynchronizationGap(3);
 
 	s->tdcPosition = 585;
@@ -167,9 +204,9 @@ void initializeNissanVQ30cam(TriggerWaveform *s) {
 	addvq30tooth(s, x - (52 + 9 * 1));
 	addvq30tooth(s, x - (52 + 9 * 0));
 
-	s->setTriggerSynchronizationGap4(/*gapIndex*/0, 5.78);
-	s->setTriggerSynchronizationGap4(/*gapIndex*/1, 0.38);
-	s->setTriggerSynchronizationGap4(/*gapIndex*/2, 2.67);
+	s->setTriggerSynchronizationGap4(/*gapIndex*/0, 5.78f);
+	s->setTriggerSynchronizationGap4(/*gapIndex*/1, 0.38f);
+	s->setTriggerSynchronizationGap4(/*gapIndex*/2, 2.67f);
 }
 
 void initializeNissanMRvvt(TriggerWaveform *s) {
@@ -203,10 +240,10 @@ void initializeNissanMRvvt(TriggerWaveform *s) {
 	addvq30tooth(s, x + 270 + 1 * toothSpacing);
 
 	// nominal gap 4.31
-	s->setTriggerSynchronizationGap2(3.8, 5);
+	s->setTriggerSynchronizationGap2(3.8f, 5);
 
 	// nominal gap 0.44
-	s->setSecondTriggerSynchronizationGap2(0.3, 0.55);
+	s->setSecondTriggerSynchronizationGap2(0.3f, 0.55f);
 }
 
 void initialize_one_of_36_2_2(TriggerWaveform *s, int firstCount, int secondCount) {
@@ -240,11 +277,11 @@ void initializeNissanHRcrank(TriggerWaveform *s) {
 
     s->tdcPosition = 155 + 360;
 
- s->setTriggerSynchronizationGap3(/*gapIndex*/0, 1.7, 5);
+ s->setTriggerSynchronizationGap3(/*gapIndex*/0, 1.7f, 5);
   for (size_t i = 1 ; i < count ; i++) {
-    s->setTriggerSynchronizationGap3(/*gapIndex*/i, 0.6, 1.5);
+    s->setTriggerSynchronizationGap3(/*gapIndex*/i, 0.6f, 1.5f);
   }
-  s->setTriggerSynchronizationGap3(/*gapIndex*/count, 0.1, 0.5);
+  s->setTriggerSynchronizationGap3(/*gapIndex*/count, 0.1f, 0.5f);
   }
 
 
@@ -252,6 +289,5 @@ void initializeNissanHRvvtIn(TriggerWaveform *s) {
 	static const angle_t angles[] = { 120, 120 + 22, 240, 360 };
 	initializeRiseOnlyTrigger(s, 10, angles, efi::size(angles));
 
-	s->setTriggerSynchronizationGap3(/*gapIndex*/0, 0.1, 0.3);
+	s->setTriggerSynchronizationGap3(/*gapIndex*/0, 0.1f, 0.3f);
 }
-

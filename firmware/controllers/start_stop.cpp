@@ -26,6 +26,9 @@ void initStartStopButton() {
 void doStartCranking() {
 		bool wasStarterEngaged = enginePins.starterControl.getAndSet(1);
 		if (!wasStarterEngaged) {
+#if EFI_ENGINE_CONTROL
+		    getLimpManager()->shutdownController.cancelStop();
+#endif // EFI_ENGINE_CONTROL
 		    engine->startStopState.startStopStateLastPush.reset();
 		    efiPrintf("Let's crank this engine for up to %d seconds via %s!",
 		    		engineConfiguration->startCrankingDuration,
@@ -65,6 +68,11 @@ PUBLIC_API_WEAK bool isCrankingSuppressed() {
 }
 
 void slowStartStopButtonCallback() {
+	// Always service an active starter before checks that can reject a new start.
+	if (enginePins.starterControl.getLogicValue()) {
+		disengageStarterIfNeeded();
+	}
+
   if (!isIgnVoltage()) {
     // nothing to crank if we are powered only via USB
     engine->startStopState.timeSinceIgnitionPower.reset();
@@ -81,10 +89,10 @@ void slowStartStopButtonCallback() {
     }
 
   if (engine->rpmCalculator.isStopped()) {
-    if (engineConfiguration->crankingCondition == CC_BRAKE && !engine->brakePedalSwitchedState) {
+    if (engineConfiguration->crankingCondition == CC_BRAKE && !engine->engineState.brakePedalState) {
       return;
     }
-    if (engineConfiguration->crankingCondition == CC_CLUTCH && !engine->clutchUpSwitchedState) {
+    if (engineConfiguration->crankingCondition == CC_CLUTCH && !engine->engineState.clutchUpState) {
       return;
     }
     if (engineConfiguration->crankingCondition == CC_CLUTCH_DOWN && !engine->engineState.clutchDownState) {
@@ -105,11 +113,5 @@ void slowStartStopButtonCallback() {
 	// todo: we shall extract start_stop.txt from engine_state.txt
 	engine->engineState.startStopState = startStopState;
 	engine->engineState.startStopPhysicalState = engine->startStopState.startStopButtonDebounce.getPhysicalState();
-
-    bool isStarterEngaged = enginePins.starterControl.getLogicValue();
-
-	if (isStarterEngaged) {
-	    disengageStarterIfNeeded();
-   	}
 }
 #endif // EFI_SHAFT_POSITION_INPUT

@@ -424,7 +424,7 @@ void TunerStudio::handleCrc32Check(TsChannelBase *tsChannel, uint32_t page, uint
 		return;
 	}
 
-	uint32_t crc = SWAP_UINT32(crc32(start, count));
+	uint32_t crc = wireBe32(crc32(start, count));
 	tsChannel->sendResponse(TS_CRC, (const uint8_t *) &crc, 4);
 	if (page == TS_PAGE_SETTINGS && offset == 0 && count == sizeof(persistent_config_s)) {
 		finishPendingBurn(tsChannel);
@@ -436,6 +436,11 @@ void TunerStudio::handleCrc32Check(TsChannelBase *tsChannel, uint32_t page, uint
 }
 
 #if EFI_TS_SCATTER
+// Each page-2 entry packs a 3-bit type in the top bits: 0 = unused, 1..4 = 1/2/4/8 byte field.
+// Types 5..7 have no meaning in the TS protocol and would decode to 16/32/64 bytes.
+static constexpr uint16_t TS_SCATTER_MAX_TYPE = 4;
+static constexpr size_t TS_SCATTER_MAX_FIELD_SIZE = 1 << (TS_SCATTER_MAX_TYPE - 1);
+
 void TunerStudio::handleScatteredReadCommand(TsChannelBase* tsChannel) {
 	tsState.readScatterCommandsCounter++;
 
@@ -443,6 +448,14 @@ void TunerStudio::handleScatteredReadCommand(TsChannelBase* tsChannel) {
 	for (size_t i = 0; i < TS_SCATTER_OFFSETS_COUNT; i++) {
 		uint16_t packed = tsChannel->page2.highSpeedOffsets[i];
 		uint16_t type = packed >> 13;
+
+		// Page 2 is host-writable and its contents are never validated on write, so reject
+		// malformed entries here, before any part of the response goes out (#10155)
+		if (type > TS_SCATTER_MAX_TYPE) {
+			tunerStudioError(tsChannel, "ERROR: scatter entry type out of range");
+			sendErrorCode(tsChannel, TS_RESPONSE_OUT_OF_RANGE);
+			return;
+		}
 
 		size_t size = type == 0 ? 0 : 1 << (type - 1);
 #if EFI_SIMULATOR
@@ -457,15 +470,18 @@ void TunerStudio::handleScatteredReadCommand(TsChannelBase* tsChannel) {
 	// Command part of CRC
 	uint32_t crc = tsChannel->writePacketHeader(TS_RESPONSE_OK, totalResponseSize);
 
-	uint8_t dataBuffer[8];
+	uint8_t dataBuffer[TS_SCATTER_MAX_FIELD_SIZE];
 	for (size_t i = 0; i < TS_SCATTER_OFFSETS_COUNT; i++) {
 		uint16_t packed = tsChannel->page2.highSpeedOffsets[i];
 		uint16_t type = packed >> 13;
 		uint16_t offset = packed & 0x1FFF;
 
-		if (type == 0)
+		if (type == 0) {
 			continue;
+		}
 		size_t size = 1 << (type - 1);
+		// validated by the loop above; keep the invariant visible next to the copy
+		criticalAssertVoid(size <= sizeof(dataBuffer), "scatter field size");
 
 		// write each data point and CRC incrementally
 		copyRange(dataBuffer, getLiveDataFragments(), offset, size);
@@ -476,7 +492,7 @@ void TunerStudio::handleScatteredReadCommand(TsChannelBase* tsChannel) {
 //	printf("CRC %x\n", crc);
 #endif /* EFI_SIMULATOR */
 	// now write total CRC
-	*(uint32_t*)dataBuffer = SWAP_UINT32(crc);
+	*(uint32_t*)dataBuffer = wireBe32(crc);
 	tsChannel->write(dataBuffer, 4, true);
 	tsChannel->flush();
 }
@@ -511,6 +527,17 @@ void TunerStudio::handlePageReadCommand(TsChannelBase* tsChannel, uint32_t page,
 		sendErrorCode(tsChannel, TS_RESPONSE_OUT_OF_RANGE, "ERROR: RD invalid page");
 		return;
 	}
+
+  // todo: do we need this in PROD code?
+#if EFI_SIMULATOR
+	// An oversized request is a client bug (clients must chunk by blockingFactor) - answer
+	// with a protocol error so the client can fall back to smaller chunks; remote input
+	// must never criticalError() the ECU like sendResponse would for a too-long response.
+	if (tsChannel->isBigPacket(count)) {
+		sendErrorCode(tsChannel, TS_RESPONSE_OUT_OF_RANGE, "ERROR: RD chunk too large");
+		return;
+	}
+#endif
 
 	tsChannel->sendResponse(TS_CRC, addr, count);
 #if EFI_TUNER_STUDIO_VERBOSE
@@ -842,7 +869,7 @@ static int tsProcessOne(TsChannelBase* tsChannel) {
 
 	uint32_t expectedCrc = *(uint32_t*) (tsChannel->scratchBuffer + incomingPacketSize);
 
-	expectedCrc = SWAP_UINT32(expectedCrc);
+	expectedCrc = wireBe32(expectedCrc);
 
 	uint32_t actualCrc = crc32(tsChannel->scratchBuffer, incomingPacketSize);
 	if (actualCrc != expectedCrc) {
@@ -1093,8 +1120,8 @@ int TunerStudio::handleCrcCommand(TsChannelBase* tsChannel, char *data, int inco
 		//	I need test this functionality with simulator as well. We need to review the cases when we really need to turn off
 		//	`TS_IO_TEST_COMMAND` processing. Do we really need guards below?
 		{
-			uint16_t subsystem = SWAP_UINT16(data16[0]);
-			uint16_t index = SWAP_UINT16(data16[1]);
+			uint16_t subsystem = wireBe16(data16[0]);
+			uint16_t index = wireBe16(data16[1]);
 
 			executeTSCommand(subsystem, index);
 		}

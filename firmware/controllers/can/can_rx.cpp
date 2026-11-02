@@ -10,6 +10,42 @@
 
 #include "pch.h"
 
+#include "can_rx.h"
+
+#if EFI_CAN_SUPPORT || EFI_UNIT_TEST
+uint32_t getFourBytesLsb(const CANRxFrame& frame, int offset) {
+	return (frame.data8[offset + 3] << 24) +
+	    (frame.data8[offset + 2] << 16) +
+	    (frame.data8[offset + 1] << 8) +
+	    frame.data8[offset];
+}
+
+uint16_t getTwoBytesLsb(const CANRxFrame& frame, int offset) {
+	return (frame.data8[offset + 1] << 8) + frame.data8[offset];
+}
+
+uint16_t getTwoBytesMsb(const CANRxFrame& frame, int offset) {
+	return (frame.data8[offset] << 8) + frame.data8[offset + 1];
+}
+#endif
+
+#if EFI_USE_OPENBLT || EFI_UNIT_TEST
+#include "openblt/efi_blt_ids.h"
+
+bool isOpenBltCanFrame(const CANRxFrame& frame) {
+	static constexpr uint32_t ExtendedIdFlag = 0x80000000U;
+	static constexpr uint32_t OpenBltCanId = BOOT_COM_CAN_RX_MSG_ID & ~ExtendedIdFlag;
+	static constexpr bool IsExtendedId = (BOOT_COM_CAN_RX_MSG_ID & ExtendedIdFlag) != 0;
+
+	return !CAN_ISRTR(frame)
+		&& (CAN_ISX(frame) == IsExtendedId)
+		&& (CAN_ID(frame) == OpenBltCanId)
+		&& (frame.DLC == 2)
+		&& (frame.data8[0] == 0xFF)
+		&& (frame.data8[1] == 0x00);
+}
+#endif
+
 #if EFI_CAN_SUPPORT
 
 #include "rusefi_lua.h"
@@ -17,8 +53,8 @@
 #include "bench_test.h"
 #include "can_common.h"
 
-#include "can_rx.h"
 #include "obd2.h"
+#include "uds.h"
 #include "can_sensor.h"
 #include "can_vss.h"
 #include "rusefi_wideband.h"
@@ -128,8 +164,8 @@ void registerCanSensor(CanSensorBase& sensor) {
 #define VAG_YAW_ACCEL_G_LONG 0x131
 
 /* Bosch Acceleration Sensor MM5.10 quantizations */
-#define MM5_10_RATE_QUANT			0.005
-#define MM5_10_ACC_QUANT			0.0001274
+#define MM5_10_RATE_QUANT			0.005f
+#define MM5_10_ACC_QUANT			0.0001274f
 
 /* Bosch Acceleration Sensor MM5.10 CAN IDs */
 #define MM5_10_YAW_Y				0x174
@@ -139,21 +175,6 @@ void registerCanSensor(CanSensorBase& sensor) {
 /* Mercedes pn: A 006 542 26 18 CAN IDs */
 #define MM5_10_MB_YAW_Y_CANID		0x150
 #define MM5_10_MB_ROLL_X_CANID		0x151
-
-uint32_t getFourBytesLsb(const CANRxFrame& frame, int offset) {
-	return (frame.data8[offset + 3] << 24) +
-	    (frame.data8[offset + 2] << 16) +
-	    (frame.data8[offset + 1] << 8) +
-	    frame.data8[offset];
-}
-
-uint16_t getTwoBytesLsb(const CANRxFrame& frame, int offset) {
-	return (frame.data8[offset + 1] << 8) + frame.data8[offset];
-}
-
-uint16_t getTwoBytesMsb(const CANRxFrame& frame, int offset) {
-	return (frame.data8[offset] << 8) + frame.data8[offset + 1];
-}
 
 static int16_t getShiftedLSB_intel(const CANRxFrame& frame, int offset) {
 	return getTwoBytesLsb(frame, offset) - 0x8000;
@@ -264,11 +285,17 @@ static Timer dashAliveTimer;
 	processCanQcBenchTest(frame);
 	processCanEcuControl(frame);
 
+#if EFI_LUA
 	processLuaCan(busIndex, frame);
+#endif // EFI_LUA
 
 	{
 		obdOnCanPacketRx(frame, busIndex);
 	}
+
+#if EFI_UDS
+	udsOnCanPacketRx(frame, busIndex);
+#endif
 
 #if EFI_ENGINE_CONTROL
 	if (CAN_EID(frame) == GDI4_BASE_ADDRESS && frame.data8[7] == GDI4_MAGIC) {
@@ -287,11 +314,7 @@ static Timer dashAliveTimer;
 	uint32_t frameId = CAN_ISX(frame) ? (CAN_EID(frame) | 0x80000000u) : CAN_SID(frame);
 	if ((frameId == BOOT_COM_CAN_RX_MSG_ID) && (frame.DLC == 2)) {
 		/* TODO: graceful shutdown? */
-		// todo: kill the unused (?) openblt option #9733?
-		if (((busIndex == 0) && (engineConfiguration->canOpenBLT)) ||
-			((busIndex == 1) && (engineConfiguration->can2OpenBLT))) {
-			jump_to_openblt();
-		}
+		jump_to_openblt();
 	}
 #endif
 }

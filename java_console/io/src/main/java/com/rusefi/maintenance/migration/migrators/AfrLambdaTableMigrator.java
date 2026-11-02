@@ -41,31 +41,27 @@ public enum AfrLambdaTableMigrator implements TuneMigrator {
             ) {
                 final int updatedTableFieldCols = updatedTableField.getCols();
                 final Constant prevValue = context.getPrevTune().getConstantsAsMap().get(LAMBDA_TABLE_FIELD_NAME);
-                if (prevValue != null) {
+                final Constant updatedValue = context.getUpdatedTune().getConstantsAsMap().get(LAMBDA_TABLE_FIELD_NAME);
+                if (prevValue != null && updatedValue != null) {
                     final Optional<String[][]> migratedValues = AfrLambdaTableValuesConverter.INSTANCE.convertTableValues(
                         prevTableField.getValues(prevValue.getValue()),
                         context
                     );
                     if (migratedValues.isPresent()) {
-                        final String migratedText = updatedTableField.formatValue(migratedValues.get());
-                        final Constant updatedValue = context.getUpdatedTune().getConstantsAsMap().get(LAMBDA_TABLE_FIELD_NAME);
-                        if (updatedValue != null && Objects.equals(migratedText, updatedValue.getValue())) {
-                            // The table already holds exactly these values - skip, otherwise the
-                            // lambdaTable shows up in the restore list on every load even though
-                            // nothing changed (values round-trip byte-identically).
-                            return;
-                        }
-                        context.addMigration(
+                        final Constant migratedValue = new Constant(
                             LAMBDA_TABLE_FIELD_NAME,
-                            new Constant(
-                                LAMBDA_TABLE_FIELD_NAME,
-                                updatedTableField.getUnits(),
-                                migratedText,
-                                updatedTableField.getDigits(),
-                                Integer.toString(updatedTableField.getRows()),
-                                Integer.toString(updatedTableFieldCols)
-                            )
+                            updatedTableField.getUnits(),
+                            updatedTableField.formatValue(migratedValues.get()),
+                            updatedTableField.getDigits(),
+                            Integer.toString(updatedTableField.getRows()),
+                            Integer.toString(updatedTableFieldCols)
                         );
+                        final String formattedUpdatedValue = updatedTableField.formatValue(
+                            updatedTableField.getValues(updatedValue.getValue())
+                        );
+                        if (!Objects.equals(migratedValue.getValue(), formattedUpdatedValue)) {
+                            context.addMigration(LAMBDA_TABLE_FIELD_NAME, migratedValue);
+                        }
                     }
                 }
             }

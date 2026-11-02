@@ -11,6 +11,7 @@
 #include "engine_parts.h"
 #include "engine_state_generated.h"
 #include "trigger_decoder.h"
+#include "malfunction_central.h"
 
 class EngineState : public engine_state_s {
 public:
@@ -80,6 +81,10 @@ public:
 	multispark_state multispark{};
 
 	bool shouldUpdateInjectionTiming = true;
+
+private:
+	bool m_tChargeCltInitialized = false;
+	bool m_tChargeIatInitialized = false;
 };
 
 EngineState * getEngineState();

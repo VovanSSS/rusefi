@@ -1,6 +1,6 @@
 #include "global.h"
 #include "engine_types.h"
-// was generated automatically by rusEFI tool  from engine_types.h // by enum_to_string.jar tool on Sun Aug 09 03:05:40 UTC 2026
+// was generated automatically by rusEFI tool  from engine_types.h // by enum_to_string.jar tool on Sat Oct 17 23:34:51 UTC 2026
 // see also gen_config_and_enums.bat
 
 
@@ -53,6 +53,8 @@ const char *getBench_mode_e(bench_mode_e value) {
 			return "BENCH_MAIN_RELAY";
 		case BENCH_SECOND_IDLE_VALVE:
 			return "BENCH_SECOND_IDLE_VALVE";
+		case BENCH_SPEEDO_TEST:
+			return "BENCH_SPEEDO_TEST";
 		case BENCH_STARTER_DISABLE_RELAY:
 			return "BENCH_STARTER_DISABLE_RELAY";
 		case BENCH_STARTER_ENABLE_RELAY:
@@ -296,6 +298,8 @@ const char *getTrigger_type_e(trigger_type_e value) {
 			return "TT_GM_60_2_2_2";
 		case trigger_type_e::TT_GM_7X:
 			return "TT_GM_7X";
+		case trigger_type_e::TT_GM_LT1_OPTISPARK_8:
+			return "TT_GM_LT1_OPTISPARK_8";
 		case trigger_type_e::TT_HALF_MOON:
 			return "TT_HALF_MOON";
 		case trigger_type_e::TT_HONDA_CBR_600:
@@ -348,6 +352,10 @@ const char *getTrigger_type_e(trigger_type_e value) {
 			return "TT_NISSAN_QR25";
 		case trigger_type_e::TT_NISSAN_SR20VE:
 			return "TT_NISSAN_SR20VE";
+		case trigger_type_e::TT_NISSAN_VK56DE:
+			return "TT_NISSAN_VK56DE";
+		case trigger_type_e::TT_NISSAN_VK56DE_CAM:
+			return "TT_NISSAN_VK56DE_CAM";
 		case trigger_type_e::TT_NISSAN_VQ30:
 			return "TT_NISSAN_VQ30";
 		case trigger_type_e::TT_NISSAN_VQ35:
@@ -374,6 +382,8 @@ const char *getTrigger_type_e(trigger_type_e value) {
 			return "TT_SUBARU_SVX_CAM_VVT";
 		case trigger_type_e::TT_SUBARU_SVX_CRANK_1:
 			return "TT_SUBARU_SVX_CRANK_1";
+		case trigger_type_e::TT_SUZUKI_36_2_2:
+			return "TT_SUZUKI_36_2_2";
 		case trigger_type_e::TT_SUZUKI_G13B:
 			return "TT_SUZUKI_G13B";
 		case trigger_type_e::TT_SUZUKI_G16B:
@@ -439,6 +449,8 @@ const char *getTs_14_command(ts_14_command value) {
 			return "COMMAND_X14_UNUSED_15";
 		case COMMAND_X14_UNUSED_2:
 			return "COMMAND_X14_UNUSED_2";
+		case TS_DTC_MANAGER_SHOT:
+			return "TS_DTC_MANAGER_SHOT";
 		case TS_ESTIMATE_TORQUE_TABLE:
 			return "TS_ESTIMATE_TORQUE_TABLE";
 		case TS_ETB_AUTOCAL_0:

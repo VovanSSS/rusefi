@@ -133,6 +133,7 @@ float getRunningFuel(float baseFuel) {
 
 #if EFI_LAUNCH_CONTROL
 	correction *= engine->launchController.getFuelCoefficient();
+	correction *= engine->module<RollingLaunchControl>().unmock().getFuelCoefficient();
 	correction *= engine->module<NitrousController>().unmock().getFuelCoefficient();
 #endif
 
@@ -173,7 +174,8 @@ AirmassModelBase* getAirmassModel(engine_load_mode_e mode) {
 	case engine_load_mode_e::LM_LUA: return &(getLuaAirmassModel());
 #endif
 	default:
-		firmwareError(ObdCode::CUSTOM_ERR_ASSERT, "Invalid airmass mode %d", engineConfiguration->fuelAlgorithm);
+		// [tag:user_facing_ini_labels] The INI calls this setting "Fuel strategy".
+		firmwareError(ObdCode::CUSTOM_ERR_ASSERT, "Invalid Fuel strategy: %d", engineConfiguration->fuelAlgorithm);
 		return nullptr;
 	}
 }
@@ -190,7 +192,8 @@ static float getBaseFuelMass(float rpm) {
 
 	// airmass modes - get airmass first, then convert to fuel
 	auto model = getAirmassModel(engineConfiguration->fuelAlgorithm);
-	efiAssert(ObdCode::CUSTOM_ERR_ASSERT, model != nullptr, "Invalid airmass mode", 0.0f);
+	// [tag:user_facing_ini_labels] Use the same INI label for the null-model fallback.
+	efiAssert(ObdCode::CUSTOM_ERR_ASSERT, model != nullptr, "Invalid Fuel strategy", 0.0f);
 
 	auto airmass = model->getAirmass(rpm, true);
 
@@ -256,11 +259,16 @@ TRIGGER_RAM_CODE int getNumberOfInjections(injection_mode_e mode) {
 	case IM_SINGLE_POINT:
 		return engineConfiguration->cylindersCount;
 	case IM_BATCH:
-		return 2;
+		// Batch pairs each injector with the cylinder 360 degrees later in the firing order, so
+		// every injector fires twice per cycle. A single cylinder has no distinct twin -
+		// InjectionEvent::update() resolves secondIndex to the same injector - and FuelSchedule
+		// holds one event per cylinder, so exactly one pulse is produced. #8345
+		return engineConfiguration->cylindersCount == 1 ? 1 : 2;
 	case IM_SEQUENTIAL:
 		return 1;
 	default:
-		firmwareError(ObdCode::CUSTOM_ERR_INVALID_INJECTION_MODE, "Unexpected injection_mode_e %d", mode);
+		// [tag:user_facing_ini_labels] "Mode" in the Injection INI dialog.
+		firmwareError(ObdCode::CUSTOM_ERR_INVALID_INJECTION_MODE, "Invalid Injection Mode: %d", mode);
 		return 1;
 	}
 }
@@ -283,9 +291,12 @@ float getInjectionModeDurationMultiplier() {
 	case IM_SINGLE_POINT:
 		return 1;
 	case IM_BATCH:
-		return 0.5f;
+		// See getNumberOfInjections(): a single cylinder only gets one pulse per cycle, so halving
+		// the fuel for a second pulse which never happens leaves the engine running lean. #8345
+		return engineConfiguration->cylindersCount == 1 ? 1 : 0.5f;
 	default:
-		firmwareError(ObdCode::CUSTOM_ERR_INVALID_INJECTION_MODE, "Unexpected injection_mode_e %d", mode);
+		// [tag:user_facing_ini_labels] "Mode" in the Injection INI dialog.
+		firmwareError(ObdCode::CUSTOM_ERR_INVALID_INJECTION_MODE, "Invalid Injection Mode: %d", mode);
 		return 0;
 	}
 }
@@ -339,11 +350,13 @@ float getInjectionMass(float rpm) {
 		engine->module<InjectorModelSecondary>()->prepare();
 	}
 
-	// This variable will hold the extra fuel mass from legacy AE modes
+	// Extra fuel mass per injection from the selected AE implementation.
 	float tpsFuelMass = 0;
 
-	// Get the AE value (it will be 0 if predictive mode is active)
-	float tpsAccelEnrich = engine->module<TpsAccelEnrichment>()->getTpsEnrichment();
+	auto& ae = engine->module<TpsAccelEnrichment>();
+	// Legacy units stay separate from Lua's grams-per-cycle diagnostic.
+	float tpsAccelEnrich = ae->getTpsEnrichment();
+	float luaAccelEnrich = ae->getLuaEnrichment();
 	efiAssert(ObdCode::CUSTOM_ERR_ASSERT, !std::isnan(tpsAccelEnrich), "NaN tpsAccelEnrich", 0);
 	engine->engineState.tpsAccelEnrich = tpsAccelEnrich;
 
@@ -367,8 +380,16 @@ float getInjectionMass(float rpm) {
 			// corrected MAP value to the getBaseFuelMass() calculation.
 			break;
 
+		case AE_MODE_LUA:
+			// [tag:lua_accel_enrichment] Convert extra cycle mass to mass per injection.
+			tpsFuelMass = durationMultiplier * luaAccelEnrich;
+			break;
+
 		default:
-			criticalError("Invalid accelEnrichmentMode %d", engineConfiguration->accelEnrichmentMode);
+			// [tag:user_facing_ini_labels] Match the "Accel Enrichment Mode" field label
+			// in tunerstudio.template.ini so users can find the setting (#10363).
+			// See error_handling.h for the diagnostic naming rule.
+			criticalError("Invalid Accel Enrichment Mode: %d", engineConfiguration->accelEnrichmentMode);
 			break;
 	}
 
@@ -526,13 +547,13 @@ float getStage2InjectionFraction(float rpm, float load) {
 	);
 
 	// don't allow very small fraction, with some hysteresis
-	if (!stage2Hysteresis.test(frac, 0.1, 0.03)) {
+	if (!stage2Hysteresis.test(frac, 0.1f, 0.03f)) {
 		return 0;
 	}
 
 	// Clamp to 90%
 	if (frac > 0.9) {
-		frac = 0.9;
+		frac = 0.9f;
 	}
 
 	return frac;

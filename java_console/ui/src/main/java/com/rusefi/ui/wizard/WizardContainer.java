@@ -10,6 +10,7 @@ import com.rusefi.binaryprotocol.BinaryProtocol;
 import com.rusefi.ui.UIContext;
 
 import javax.swing.*;
+import javax.swing.text.JTextComponent;
 import java.awt.*;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -17,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.IntPredicate;
 import java.util.function.Predicate;
+import java.util.function.Consumer;
 
 import static com.devexperts.logging.Logging.getLogging;
 
@@ -28,9 +30,16 @@ public class WizardContainer extends JPanel {
 
     private final UIContext uiContext;
     private final WizardProgressPanel progressPanel = new WizardProgressPanel();
+    private final JLabel wizardTitle = new JLabel("rusEFI Setup Wizard");
     private final JPanel stepContentPanel = new JPanel(new CardLayout());
     private final JButton cancelButton = new JButton("Exit Wizard");
     private final JButton dontShowAgainButton = new JButton("Don't Show Again");
+    private final JPanel exitPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, WizardStyle.GAP / 2, 0));
+    /** Right side of the footer: the shown step's Skip and Continue buttons, the same place on every step. */
+    private final JPanel navigationPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, WizardStyle.GAP / 2, 0));
+    private final JLabel footerHint = new JLabel();
+    private final JButton returnToConsoleButton = new JButton("Return to Console");
+    private final JPanel footerPanel = new JPanel(new BorderLayout(WizardStyle.GAP, 0));
     private final List<WizardStep> steps = new ArrayList<>();
     private final List<Integer> visibleCatalogIndices = new ArrayList<>();
 
@@ -45,9 +54,14 @@ public class WizardContainer extends JPanel {
     private int activeStepIndex = -1;
     private boolean singleStepMode;
     private int selectedCylinders = 4; // default, updated by step 0
+    private Consumer<String> messageHandler = message -> JOptionPane.showMessageDialog(this, message, "Error", JOptionPane.WARNING_MESSAGE);
 
     public WizardContainer(UIContext uiContext) {
         this(uiContext, false);
+    }
+
+    public void setMessageHandler(Consumer<String> messageHandler) {
+        this.messageHandler = messageHandler;
     }
 
     /**
@@ -60,16 +74,29 @@ public class WizardContainer extends JPanel {
         this.uiContext = uiContext;
 
         JPanel headerPanel = new JPanel(new BorderLayout());
-        headerPanel.setBorder(BorderFactory.createEmptyBorder(
-            compact ? WizardStyle.GAP : WizardStyle.LARGE_GAP,
-            WizardStyle.LARGE_GAP,
-            WizardStyle.GAP,
-            WizardStyle.LARGE_GAP));
+        headerPanel.setBackground(WizardStyle.barBackground());
+        headerPanel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(0, 0, 1, 0, WizardStyle.separator()),
+            BorderFactory.createEmptyBorder(
+                compact ? WizardStyle.GAP : WizardStyle.LARGE_GAP,
+                WizardStyle.LARGE_GAP,
+                WizardStyle.GAP / 2,
+                WizardStyle.LARGE_GAP)));
+        wizardTitle.setFont(wizardTitle.getFont().deriveFont(Font.BOLD, compact ? 16f : 20f));
+        wizardTitle.setForeground(WizardStyle.text());
+        // title on the left and the way out at the top right, where people look to leave a full-window flow
+        JPanel titleRow = new JPanel(new BorderLayout());
+        titleRow.setOpaque(false);
+        titleRow.setBorder(BorderFactory.createEmptyBorder(0, 0, WizardStyle.GAP / 2, 0));
+        titleRow.add(wizardTitle, BorderLayout.WEST);
+        titleRow.add(exitPanel, BorderLayout.EAST);
+        headerPanel.add(titleRow, BorderLayout.NORTH);
         headerPanel.add(progressPanel, BorderLayout.CENTER);
 
-        AbstractWizardStep.stylePrimaryAction(cancelButton);
+        AbstractWizardStep.styleFooterAction(cancelButton);
+        cancelButton.setIcon(WizardStyle.ActionIcon.CANCEL);
         cancelButton.addActionListener(e -> exitWizard());
-        AbstractWizardStep.stylePrimaryAction(dontShowAgainButton);
+        AbstractWizardStep.styleFooterAction(dontShowAgainButton);
         dontShowAgainButton.setVisible(false);
         dontShowAgainButton.addActionListener(e -> {
             if (onDontShowAgain != null) {
@@ -77,11 +104,15 @@ public class WizardContainer extends JPanel {
             }
             exitWizard();
         });
-        JPanel exitPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, WizardStyle.GAP, 0));
-        exitPanel.setBorder(BorderFactory.createEmptyBorder(
-            WizardStyle.GAP, WizardStyle.LARGE_GAP, WizardStyle.LARGE_GAP, WizardStyle.LARGE_GAP));
-        exitPanel.add(cancelButton);
+        exitPanel.setOpaque(false);
         exitPanel.add(dontShowAgainButton);
+        exitPanel.add(cancelButton);
+        navigationPanel.setOpaque(false);
+        footerHint.setForeground(WizardStyle.muted());
+        footerHint.setHorizontalAlignment(SwingConstants.RIGHT);
+        AbstractWizardStep.styleContinueAction(returnToConsoleButton);
+        returnToConsoleButton.setText("Return to Console");
+        returnToConsoleButton.addActionListener(e -> exitWizard());
         progressPanel.setOnCompletedSelected(this::showStep);
 
         add(headerPanel, BorderLayout.NORTH);
@@ -92,18 +123,20 @@ public class WizardContainer extends JPanel {
         // Debug panel at the bottom showing wizard flag states
         buildDebugPanel();
         debugPanel.setVisible(false);
-        JPanel footerPanel = new JPanel(new BorderLayout());
-        footerPanel.add(debugPanel, BorderLayout.CENTER);
-        footerPanel.add(exitPanel, BorderLayout.EAST);
+        footerPanel.setBackground(WizardStyle.barBackground());
+        footerPanel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(1, 0, 0, 0, WizardStyle.separator()),
+            BorderFactory.createEmptyBorder(WizardStyle.GAP, WizardStyle.LARGE_GAP, WizardStyle.GAP, WizardStyle.LARGE_GAP)));
+        footerPanel.add(debugPanel, BorderLayout.NORTH);
+        footerPanel.add(footerHint, BorderLayout.CENTER);
+        footerPanel.add(navigationPanel, BorderLayout.EAST);
         add(footerPanel, BorderLayout.SOUTH);
     }
 
     private void buildDebugPanel() {
         debugPanel.setLayout(new FlowLayout(FlowLayout.LEFT, 15, 5));
-        debugPanel.setBorder(BorderFactory.createCompoundBorder(
-            BorderFactory.createMatteBorder(1, 0, 0, 0, Color.GRAY),
-            BorderFactory.createEmptyBorder(5, 10, 5, 10)
-        ));
+        debugPanel.setOpaque(false);
+        debugPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
 
         JLabel header = new JLabel("Debug flags:");
         header.setFont(header.getFont().deriveFont(Font.BOLD));
@@ -157,13 +190,13 @@ public class WizardContainer extends JPanel {
 
             if (ini == null || image == null) {
                 label.setText(shortName + ": --");
-                label.setForeground(Color.GRAY);
+                label.setForeground(WizardStyle.muted());
                 continue;
             }
 
             if (!d.applicable.test(uiContext)) {
                 label.setText(shortName + ": N/A");
-                label.setForeground(Color.GRAY);
+                label.setForeground(WizardStyle.muted());
                 continue;
             }
 
@@ -171,7 +204,7 @@ public class WizardContainer extends JPanel {
             if (field == null) {
                 // Board's INI doesn't declare this wizard flag — render as unsupported.
                 label.setText(shortName + ": --");
-                label.setForeground(Color.GRAY);
+                label.setForeground(WizardStyle.muted());
                 continue;
             }
             if (field instanceof EnumIniField) {
@@ -180,10 +213,10 @@ public class WizardContainer extends JPanel {
                 int ordinal = ConfigurationImage.getBitRange(raw, ef.getBitPosition(), ef.getBitSize0() + 1);
                 boolean isSet = ordinal == 1;
                 label.setText(shortName + ": " + (isSet ? "yes" : "no"));
-                label.setForeground(isSet ? new Color(0, 160, 0) : Color.RED);
+                label.setForeground(isSet ? WizardStyle.success() : WizardStyle.error());
             } else {
                 label.setText(shortName + ": ?");
-                label.setForeground(Color.GRAY);
+                label.setForeground(WizardStyle.muted());
             }
         }
     }
@@ -232,75 +265,83 @@ public class WizardContainer extends JPanel {
         stepContentPanel.add(firingOrderPlaceholder, "step1");
         steps.add(null); // placeholder slot
 
-        // Step 2: Base VE Table (wizardDisplacement — silently skipped on older firmware)
+        // Step 2: Optional Base VE Table (wizardVeTable — silently skipped on older firmware)
         VeTableWizardStep veStep = new VeTableWizardStep(uiContext);
         wireStep(veStep, 2);
         steps.add(veStep);
         stepContentPanel.add(veStep.getPanel(), "step2");
 
-        // Step 3: MAP Sensor Type
+        // Step 3: Required engine displacement, independent of VE Apply/Skip
+        DisplacementPanel displacementPanel = new DisplacementPanel(uiContext);
+        wireStep(displacementPanel, 3);
+        steps.add(displacementPanel);
+        stepContentPanel.add(displacementPanel.getPanel(), "step3");
+
+        // Step 4: MAP Sensor Type
         MapSensorTypePanel mapPanel = new MapSensorTypePanel(uiContext);
-        wireStep(mapPanel, 3);
+        wireStep(mapPanel, 4);
         steps.add(mapPanel);
-        stepContentPanel.add(mapPanel.getPanel(), "step3");
+        stepContentPanel.add(mapPanel.getPanel(), "step4");
 
-        // Step 4: TPS
+        // Step 5: TPS
         TpsPanel tpsPanel = new TpsPanel(uiContext);
-        wireStep(tpsPanel, 4);
+        wireStep(tpsPanel, 5);
         steps.add(tpsPanel);
-        stepContentPanel.add(tpsPanel.getPanel(), "step4");
+        stepContentPanel.add(tpsPanel.getPanel(), "step5");
 
-        // Step 5: CLT Sensor
+        // Step 6: CLT Sensor
         CltSensorPanel cltPanel = new CltSensorPanel(uiContext);
-        wireStep(cltPanel, 5);
+        wireStep(cltPanel, 6);
         steps.add(cltPanel);
-        stepContentPanel.add(cltPanel.getPanel(), "step5");
+        stepContentPanel.add(cltPanel.getPanel(), "step6");
 
-        // Step 6: Crank Trigger
+        // Step 7: Crank Trigger
         CrankTriggerPanel crankPanel = new CrankTriggerPanel(uiContext);
-        wireStep(crankPanel, 6);
+        wireStep(crankPanel, 7);
         steps.add(crankPanel);
-        stepContentPanel.add(crankPanel.getPanel(), "step6");
+        stepContentPanel.add(crankPanel.getPanel(), "step7");
 
-        // Step 7: Cam Trigger
+        // Step 8: Cam Trigger
         CamTriggerPanel camPanel = new CamTriggerPanel(uiContext);
-        wireStep(camPanel, 7);
+        wireStep(camPanel, 8);
         steps.add(camPanel);
-        stepContentPanel.add(camPanel.getPanel(), "step7");
+        stepContentPanel.add(camPanel.getPanel(), "step8");
 
-        // Step 8: Ignition Outputs
+        // Step 9: Ignition Outputs
         OutputAssignmentPanel ignitionOutputs = new OutputAssignmentPanel(
             uiContext, OutputAssignmentPanel.OutputType.IGNITION);
-        wireStep(ignitionOutputs, 8);
+        wireStep(ignitionOutputs, 9);
         steps.add(ignitionOutputs);
-        stepContentPanel.add(ignitionOutputs.getPanel(), "step8");
+        stepContentPanel.add(ignitionOutputs.getPanel(), "step9");
 
-        // Step 9: Injector Outputs
+        // Step 10: Injector Outputs
         OutputAssignmentPanel injectorOutputs = new OutputAssignmentPanel(
             uiContext, OutputAssignmentPanel.OutputType.INJECTOR);
-        wireStep(injectorOutputs, 9);
+        wireStep(injectorOutputs, 10);
         steps.add(injectorOutputs);
-        stepContentPanel.add(injectorOutputs.getPanel(), "step9");
+        stepContentPanel.add(injectorOutputs.getPanel(), "step10");
 
-        // Step 10: Injector Flow
+        // Step 11: Injector Flow
         InjectorFlowPanel injPanel = new InjectorFlowPanel(uiContext);
-        wireStep(injPanel, 10);
+        wireStep(injPanel, 11);
         steps.add(injPanel);
-        stepContentPanel.add(injPanel.getPanel(), "step10");
+        stepContentPanel.add(injPanel.getPanel(), "step11");
 
         // Completion card
         JPanel completionPanel = new JPanel(new GridBagLayout());
-        JLabel doneLabel = new JLabel("Wizard Complete!");
-        doneLabel.setHorizontalAlignment(SwingConstants.CENTER);
-        AbstractWizardStep.styleTitle(doneLabel);
-        completionPanel.add(doneLabel);
-        JButton doneButton = new JButton("Return to Console");
-        AbstractWizardStep.stylePrimaryAction(doneButton);
-        doneButton.addActionListener(e -> exitWizard());
+        JPanel completionCard = new JPanel(new GridBagLayout());
+        WizardStyle.styleCard(completionCard, 32, 48);
+        JLabel doneLabel = WizardStyle.cardTitle("Wizard Complete!");
+        doneLabel.setIcon(WizardStyle.ActionIcon.CONFIRM);
+        doneLabel.setIconTextGap(WizardStyle.GAP);
+        doneLabel.setForeground(WizardStyle.success());
         GridBagConstraints gbc = new GridBagConstraints();
+        gbc.gridy = 0;
+        completionCard.add(doneLabel, gbc);
         gbc.gridy = 1;
-        gbc.insets = new Insets(20, 0, 0, 0);
-        completionPanel.add(doneButton, gbc);
+        gbc.insets = new Insets(WizardStyle.GAP, 0, 0, 0);
+        completionCard.add(WizardStyle.description("All setup steps are saved to the ECU."), gbc);
+        completionPanel.add(completionCard);
         stepContentPanel.add(completionPanel, "complete");
 
         // If step 0 is already done, read cylindersCount before building the remaining flow.
@@ -352,6 +393,53 @@ public class WizardContainer extends JPanel {
         refreshProgress();
         CardLayout cl = (CardLayout) stepContentPanel.getLayout();
         cl.show(stepContentPanel, "complete");
+        setNavigation(null, returnToConsoleButton, null);
+    }
+
+    /**
+     * Exit sits first in focus order (top right), so the window's initial focus would land on it and a stray
+     * Space would leave the wizard; start in the step's first control instead.
+     */
+    private void moveFocusOffExit(Container stepPanel) {
+        if (cancelButton.isFocusOwner() || dontShowAgainButton.isFocusOwner()) {
+            Component first = firstFocusable(stepPanel);
+            if (first != null) {
+                first.requestFocusInWindow();
+            }
+        }
+    }
+
+    private static Component firstFocusable(Container root) {
+        for (Component child : root.getComponents()) {
+            if (!child.isShowing() || !child.isEnabled()) {
+                continue;
+            }
+            if ((child instanceof AbstractButton || child instanceof JComboBox || child instanceof JTextComponent
+                || child instanceof JList) && child.isFocusable()) {
+                return child;
+            }
+            if (child instanceof Container) {
+                Component found = firstFocusable((Container) child);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Puts the shown page's actions at the right of the footer, or its hint when it has no Continue. */
+    private void setNavigation(JButton skip, JButton next, String hint) {
+        navigationPanel.removeAll();
+        if (skip != null) {
+            navigationPanel.add(skip);
+        }
+        if (next != null) {
+            navigationPanel.add(next);
+        }
+        footerHint.setText(next == null && hint != null ? hint : "");
+        navigationPanel.revalidate();
+        navigationPanel.repaint();
     }
 
     private int readCylindersCountFromEcu() {
@@ -497,17 +585,13 @@ public class WizardContainer extends JPanel {
     private void onStepCompleted(WizardStepResult result, WizardStep step) {
         BinaryProtocol bp = uiContext.getBinaryProtocol();
         if (bp == null) {
-            JOptionPane.showMessageDialog(this,
-                "ECU is not connected. Please reconnect and try again.",
-                "Not Connected", JOptionPane.WARNING_MESSAGE);
+            messageHandler.accept("ECU is not connected. Please reconnect and try again.");
             return;
         }
         IniFileModel ini = uiContext.iniFileState.getIniFileModel();
         ConfigurationImage image = bp.getControllerConfiguration();
         if (ini == null || image == null) {
-            JOptionPane.showMessageDialog(this,
-                "Configuration not loaded. Please reconnect and try again.",
-                "Error", JOptionPane.WARNING_MESSAGE);
+            messageHandler.accept("Configuration not loaded. Please reconnect and try again.");
             return;
         }
 
@@ -550,6 +634,15 @@ public class WizardContainer extends JPanel {
     }
 
     static void clearDependentWizardFlags(String completedFlag, IniFileModel ini, ConfigurationImage image) {
+        if ("wizardVeTable".equals(completedFlag)) {
+            // Older consoles used wizardDisplacement for VE completion. Always require
+            // a separate displacement confirmation after applying or skipping VE.
+            IniField displacementFlag = ini.findIniField("wizardDisplacement").orElse(null);
+            if (displacementFlag instanceof EnumIniField) {
+                image.setBitValue((EnumIniField) displacementFlag, 0);
+            }
+            return;
+        }
         if (!"wizardNumberOfCylinders".equals(completedFlag)) return;
 
         for (String flagName : new String[]{
@@ -624,6 +717,10 @@ public class WizardContainer extends JPanel {
         cl.show(stepContentPanel, "step" + index);
         if (step != null) {
             step.onShow();
+            setNavigation(step.getSkipButton(), step.getContinueButton(), step.getFooterHint());
+            SwingUtilities.invokeLater(() -> moveFocusOffExit(step.getPanel()));
+        } else {
+            setNavigation(null, null, null);
         }
     }
 
@@ -656,12 +753,32 @@ public class WizardContainer extends JPanel {
         return progressPanel.isVisible();
     }
 
+    String getWizardTitleForTests() {
+        return wizardTitle.getText();
+    }
+
     String getCancelButtonTextForTests() {
         return cancelButton.getText();
     }
 
     boolean isDontShowAgainVisibleForTests() {
         return dontShowAgainButton.isVisible();
+    }
+
+    Object getExitPanelConstraintForTests() {
+        return ((BorderLayout) exitPanel.getParent().getLayout()).getConstraints(exitPanel);
+    }
+
+    Object getNavigationConstraintForTests() {
+        return ((BorderLayout) footerPanel.getLayout()).getConstraints(navigationPanel);
+    }
+
+    List<Component> getNavigationForTests() {
+        return java.util.Arrays.asList(navigationPanel.getComponents());
+    }
+
+    String getFooterHintForTests() {
+        return footerHint.getText();
     }
 
     void clickDontShowAgainForTests() {

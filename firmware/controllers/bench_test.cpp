@@ -21,6 +21,8 @@
  */
 
 #include "pch.h"
+#include "bench_test.h"
+#include "speedometer.h"
 #include "tunerstudio.h"
 #include "tunerstudio_calibration_channel.h"
 #include "long_term_fuel_trim.h"
@@ -36,6 +38,13 @@
 
 #include "fw_configuration.h"
 #include "board_overrides.h"
+#include "basic_configuration.h"
+#include "main_trigger_callback.h"
+#include "electronic_throttle.h"
+#include "malfunction_central.h"
+#include "trigger_emulator_algo.h"
+#include "vvt.h"
+#include "rusefi_wideband.h"
 
 static bool isRunningBench = false;
 static OutputPin *outputOnTheBenchTest = nullptr;
@@ -48,19 +57,22 @@ const OutputPin *getOutputOnTheBenchTest() {
     return outputOnTheBenchTest;
 }
 
+#if EFI_UNIT_TEST
+void setOutputOnTheBenchTestForUnitTest(OutputPin* output) {
+	outputOnTheBenchTest = output;
+}
+#endif
+
 #if !EFI_UNIT_TEST
 
 #include "flash_main.h"
-#include "bench_test.h"
-#include "main_trigger_callback.h"
 #include "periodic_thread_controller.h"
-#include "electronic_throttle.h"
 #include "electronic_throttle_impl.h"
-#include "malfunction_central.h"
-#include "trigger_emulator_algo.h"
-#include "vvt.h"
 #include "microsecond_timer.h"
-#include "rusefi_wideband.h"
+
+#if MODULE_DTC_MANAGER
+#include "dtc_manager.h"
+#endif
 
 #if EFI_PROD_CODE
 #include "rusefi.h"
@@ -111,8 +123,8 @@ static void benchOff(OutputPin* output) {
 }
 
 static void runBench(OutputPin *output, float onTimeMs, float offTimeMs, int count, bool swapOnOff) {
-	int onTimeUs = MS2US(std::max(0.1f, onTimeMs));
-	int offTimeUs = MS2US(std::max(0.1f, offTimeMs));
+	int onTimeUs = static_cast<int>(MS2US(std::max(0.1f, onTimeMs)));
+	int offTimeUs = static_cast<int>(MS2US(std::max(0.1f, offTimeMs)));
 
 	if (onTimeUs > TOO_FAR_INTO_FUTURE_US) {
 		firmwareError(ObdCode::CUSTOM_ERR_BENCH_PARAM, "onTime above limit %dus", TOO_FAR_INTO_FUTURE_US);
@@ -157,18 +169,24 @@ static void runBench(OutputPin *output, float onTimeMs, float offTimeMs, int cou
 	isRunningBench = false;
 }
 
+#endif // !EFI_UNIT_TEST
+
+// Bench request layer. A TS/console/CAN bench command only *queues* a request here; the bench
+// thread (below, not built for unit tests) executes it. This layer and handleBenchCategory() build
+// in every configuration so that the command dispatch itself has unit test coverage - #10285 was a
+// TS button whose bench_mode_e value was never routed anywhere, i.e. a reboot on click.
+
 // todo: migrate to smarter getOutputOnTheBenchTest() approach?
 static volatile bool isBenchTestPending = false;
-static bool widebandUpdatePending = false;
-static bool widebandUpdateFromFile = false;
-static uint8_t widebandUpdateHwId = 0;
 static float globalOnTimeMs;
 static float globalOffTimeMs;
 static int globalCount;
 static OutputPin* pinX;
 static bool swapOnOff = false;
 
+#if !EFI_UNIT_TEST
 static chibios_rt::CounterSemaphore benchSemaphore(0);
+#endif // !EFI_UNIT_TEST
 
 static void pinbench(float ontimeMs, float offtimeMs, int iterations,
 	OutputPin* pinParam, bool p_swapOnOff = false)
@@ -184,13 +202,31 @@ static void pinbench(float ontimeMs, float offtimeMs, int iterations,
 	swapOnOff = p_swapOnOff;
 	// let's signal bench thread to wake up
 	isBenchTestPending = true;
+#if !EFI_UNIT_TEST
 	benchSemaphore.signal();
+#endif // !EFI_UNIT_TEST
 }
+
+#if EFI_UNIT_TEST
+BenchRequestForUnitTest takePendingBenchRequestForUnitTest() {
+	BenchRequestForUnitTest request{};
+	if (isBenchTestPending) {
+		request.pin = pinX;
+		request.onTimeMs = globalOnTimeMs;
+		request.offTimeMs = globalOffTimeMs;
+		request.count = globalCount;
+		request.swapOnOff = swapOnOff;
+		isBenchTestPending = false;
+	}
+	return request;
+}
+#endif // EFI_UNIT_TEST
 
 static void cancelBenchTest() {
 	isRunningBench = false;
 }
 
+// Bench output indices are human (1-based).
 static void doRunFuelInjBench(size_t humanIndex, float onTimeMs, float offTimeMs, int count) {
 	if (humanIndex < 1 || humanIndex > engineConfiguration->cylindersCount) {
 		efiPrintf("Invalid index: %d", humanIndex);
@@ -225,6 +261,7 @@ void doRunBenchTestLuaOutput(size_t humanIndex, float onTimeMs, float offTimeMs,
 		&enginePins.luaOutputPins[humanIndex - 1]);
 }
 
+#if !EFI_UNIT_TEST
 /**
  * cylinder #2, 5ms ON, 1000ms OFF, repeat 3 times
  * fuelInjBenchExt 2 5 1000 3
@@ -262,6 +299,7 @@ static void sparkBench(float onTime, float offTimeMs, float count) {
 static void tcuSolenoidBench(float humanIndex, float onTime, float offTimeMs, float count) {
 	doRunSolenoidBench((int)humanIndex, onTime, offTimeMs, (int)count);
 }
+#endif // !EFI_UNIT_TEST
 
 static void fanBenchExt(float onTimeMs) {
 	pinbench(onTimeMs, 100.0, 1, &enginePins.fanRelay);
@@ -284,6 +322,20 @@ void milBench() {
 
 void starterRelayBench() {
 	pinbench(BENCH_STARTER_DURATION, 100.0, 1, &enginePins.starterControl);
+}
+
+static void starterRelayDisableBench() {
+	pinbench(BENCH_STARTER_DURATION, 100.0, 1, &enginePins.starterRelayDisable);
+}
+
+/**
+ * Pulses the second coil of a double solenoid (Subaru/BMW style) idle valve on its own, same pulse
+ * train as the other solenoid benches. The "Idle Air Valve" button is different: startIdleBench()
+ * lets the idle controller drive the valve, which in double solenoid mode means both coils.
+ */
+static void secondIdleValveBench() {
+	pinbench(engineConfiguration->benchTestOnTime, engineConfiguration->benchTestOffTime, engineConfiguration->benchTestCount,
+		&enginePins.secondIdleSolenoidPin);
 }
 
 static void fuelPumpBenchExt(float durationMs) {
@@ -313,20 +365,31 @@ void fuelPumpBench() {
 	fuelPumpBenchExt(BENCH_FUEL_PUMP_DURATION);
 }
 
-#if EFI_VVT_PID
+static void speedoBench() {
+	startSpeedoBenchTest(engineConfiguration->speedometerBenchTestFrequency);
+}
+
+#if EFI_VVT_PID || EFI_UNIT_TEST
 static void vvtValveBench(int vvtIndex) {
 	pinbench(BENCH_VVT_DURATION, 100.0, 1, getVvtOutputPin(vvtIndex));
 }
-#endif // EFI_VVT_PID
+#endif // EFI_VVT_PID || EFI_UNIT_TEST
+
+static bool widebandUpdatePending = false;
+static bool widebandUpdateFromFile = false;
+static uint8_t widebandUpdateHwId = 0;
 
 static void requestWidebandUpdate(int hwIndex, bool fromFile)
 {
 	widebandUpdateHwId = hwIndex;
 	widebandUpdateFromFile = fromFile;
 	widebandUpdatePending = true;
+#if !EFI_UNIT_TEST
 	benchSemaphore.signal();
+#endif // !EFI_UNIT_TEST
 }
 
+#if !EFI_UNIT_TEST
 class BenchController : public ThreadController<4 * UTILITY_THREAD_STACK_SIZE> {
 public:
 	BenchController() : ThreadController("BenchTest", PRIO_BENCH_TEST) { }
@@ -361,6 +424,7 @@ private:
 RUSEFI_STACK_ROOT(BenchController, ThreadTask);
 
 static BenchController instance;
+#endif // !EFI_UNIT_TEST
 
 static void auxOutBench(int index) {
     // todo!
@@ -378,7 +442,7 @@ int luaCommandCounters[LUA_BUTTON_COUNT] = {};
 
 void handleBenchCategory(uint16_t index) {
 	switch(index) {
-#if EFI_VVT_PID
+#if EFI_VVT_PID || EFI_UNIT_TEST
 	case BENCH_VVT0_VALVE:
 	    vvtValveBench(0);
 		return;
@@ -391,7 +455,7 @@ void handleBenchCategory(uint16_t index) {
 	case BENCH_VVT3_VALVE:
 	    vvtValveBench(3);
 		return;
-#endif // EFI_VVT_PID
+#endif // EFI_VVT_PID || EFI_UNIT_TEST
 	case BENCH_AUXOUT0:
 	    auxOutBench(0);
 		return;
@@ -417,16 +481,16 @@ void handleBenchCategory(uint16_t index) {
 	    auxOutBench(7);
 		return;
 	case LUA_COMMAND_1:
-		luaCommandCounters[0]++;
-		return;
 	case LUA_COMMAND_2:
-		luaCommandCounters[1]++;
-		return;
 	case LUA_COMMAND_3:
-		luaCommandCounters[2]++;
-		return;
 	case LUA_COMMAND_4:
-		luaCommandCounters[3]++;
+	case LUA_COMMAND_5:
+	case LUA_COMMAND_6:
+	case LUA_COMMAND_7:
+	case LUA_COMMAND_8:
+	case LUA_COMMAND_9:
+	case LUA_COMMAND_10:
+		luaCommandCounters[index - LUA_COMMAND_1]++;
 		return;
 #if EFI_LTFT_CONTROL
 	case LTFT_RESET:
@@ -453,6 +517,9 @@ void handleBenchCategory(uint16_t index) {
 	case BENCH_BOOST_VALVE:
 		boostValveBench();
 		return;
+	case BENCH_SPEEDO_TEST:
+		speedoBench();
+		return;
 	case BENCH_FUEL_PUMP:
 		// cmd_test_fuel_pump
 		fuelPumpBench();
@@ -462,6 +529,9 @@ void handleBenchCategory(uint16_t index) {
 		return;
 	case BENCH_STARTER_ENABLE_RELAY:
 		starterRelayBench();
+		return;
+	case BENCH_STARTER_DISABLE_RELAY:
+		starterRelayDisableBench();
 		return;
 	case BENCH_CHECK_ENGINE_LIGHT:
 		// cmd_test_check_engine_light
@@ -479,6 +549,9 @@ void handleBenchCategory(uint16_t index) {
 		startIdleBench();
 #endif /* EFI_IDLE_CONTROL */
 		return;
+	case BENCH_SECOND_IDLE_VALVE:
+		secondIdleValveBench();
+		return;
 	case BENCH_FAN_RELAY_2:
 		fan2Bench();
 		return;
@@ -486,7 +559,9 @@ void handleBenchCategory(uint16_t index) {
 		cancelBenchTest();
 		return;
 	default:
-		criticalError("Unexpected bench function %d", index);
+		// a bench index this build does not know (a button the .ini offers but this firmware never
+		// wired up, or an .ini from another build) must not reboot the ECU - #10285
+		warning(ObdCode::CUSTOM_ERR_BENCH_PARAM, "Unexpected bench function %d", index);
 	}
 }
 
@@ -547,17 +622,18 @@ static void handleCommandX14(uint16_t index) {
 		#endif /* EFI_CONFIGURATION_STORAGE */
 		return;
 	case TS_TRIGGER_STIMULATOR_ENABLE:
-		#if EFI_EMULATE_POSITION_SENSORS == TRUE
+		// Trigger generation is not built in the unit-test host.
+		#if EFI_EMULATE_POSITION_SENSORS && !EFI_UNIT_TEST
 			enableTriggerStimulator();
 		#endif /* EFI_EMULATE_POSITION_SENSORS == TRUE */
 		return;
 	case TS_TRIGGER_STIMULATOR_DISABLE:
-		#if EFI_EMULATE_POSITION_SENSORS == TRUE
+		#if EFI_EMULATE_POSITION_SENSORS && !EFI_UNIT_TEST
 			disableTriggerStimulator();
 		#endif /* EFI_EMULATE_POSITION_SENSORS == TRUE */
 		return;
 	case TS_EXTERNAL_TRIGGER_STIMULATOR_ENABLE:
-		#if EFI_EMULATE_POSITION_SENSORS == TRUE
+		#if EFI_EMULATE_POSITION_SENSORS && !EFI_UNIT_TEST
 			enableExternalTriggerStimulator();
 		#endif /* EFI_EMULATE_POSITION_SENSORS == TRUE */
 		return;
@@ -636,10 +712,16 @@ static void handleCommandX14(uint16_t index) {
 	case TS_SD_DELETE_REPORTS:
 		sdCardRemoveReportFiles();
 		return;
+
+#if MODULE_DTC_MANAGER
+	case TS_DTC_MANAGER_SHOT:
+		DtcTriggerEvent("TS");
+		return;
+#endif // MODULE_DTC_MANAGER
 #endif // EFI_FILE_LOGGING
 
 	default:
-		criticalError("Unexpected bench x14 %d", index);
+		warning(ObdCode::CUSTOM_ERR_BENCH_PARAM, "Unexpected bench x14 %d", index);
 	}
 }
 
@@ -655,7 +737,7 @@ static void applyPreset(int index) {
 // placeholder to force custom_board_ts_command migration
 void boardTsAction(uint16_t index) { UNUSED(index); }
 
-#if EFI_CAN_SUPPORT
+#if EFI_CAN_SUPPORT && !EFI_UNIT_TEST
 /**
  * for example to bench test injector 1
  * 0x77000C 0x66 0x00 ?? ?? ?? ??
@@ -842,11 +924,10 @@ void executeTSCommand(uint16_t subsystem, uint16_t index) {
 		applyPreset(index);
 		break;
 
-  case TS_BOARD_ACTION:
-      // TODO: use call_board_override
-	  if (custom_board_ts_command.has_value()) {
-		  custom_board_ts_command.value()(subsystem, index);
-	  }
+	case TS_BOARD_ACTION:
+		if (!handleBasicConfigurationAction(index)) {
+			call_board_override(custom_board_ts_command, subsystem, index);
+		}
 		break;
 
 	case TS_SET_DEFAULT_ENGINE:
@@ -865,23 +946,18 @@ void executeTSCommand(uint16_t subsystem, uint16_t index) {
 
 	case REBOOT_COMMAND:
 #if EFI_PROD_CODE
+		// record that this reset was a deliberate command (issue #9931) before we go down
+		logDeliberateReboot(RebootReason::Command);
 		rebootNow();
 #endif /* EFI_PROD_CODE */
 		break;
 
-#if EFI_USE_OPENBLT
-	case JUMP_BLT_COMMAND:
-	  // todo: is _anyone_ using this? console seems to use CMD_REBOOT_OPENBLT text command?
-		/* Jump to OpenBLT if present */
-		jump_to_openblt();
-		break;
-#endif
-
 	default:
-		criticalError("Unexpected bench subsystem %d %d", subsystem, index);
+		warning(ObdCode::CUSTOM_ERR_BENCH_PARAM, "Unexpected bench subsystem %d %d", subsystem, index);
 	}
 }
 
+#if !EFI_UNIT_TEST
 void onConfigurationChangeBenchTest() {
 	// default values if configuration was not specified
 	if (engineConfiguration->benchTestOnTime == 0) {

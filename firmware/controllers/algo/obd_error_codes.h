@@ -201,7 +201,7 @@ enum class ObdCode : uint16_t {
 	//P0166 02 Sensor Circuit No Activity Detected (Bank 2 Sensor 3)
 	//P0167 02 Sensor Heater Circuit Malfunction (Bank 2 Sensor 3)
 	//P0170 Fuel Trim Malfunction (Bank 1)
-	//P0171 System too Lean (Bank 1)
+	OBD_System_Too_Lean_Bank_1 = 171,
 	//P0172 System too Rich (Bank 1)
 	//P0173 Fuel Trim Malfunction (Bank 2)
 	//P0174 System too Lean (Bank 2)
@@ -279,7 +279,7 @@ enum class ObdCode : uint16_t {
 	//P0231 Fuel Pump Secondary Circuit Low
 	//P0232 Fuel Pump Secondary Circuit High
 	//P0233 Fuel Pump Secondary Circuit Intermittent
-	//P0234 Engine Turbocharger/Supercharger Overboost Condition
+	OBD_Engine_Overboost = 234,
 	//P0235 Turbocharger Boost Sensor A Circuit Malfunction
 	//P0236 Turbocharger Boost Sensor A Circuit Range/Performance
 	//P0237 Turbocharger Boost Sensor A Circuit Low
@@ -2122,6 +2122,9 @@ enum class ObdCode : uint16_t {
 	CUSTOM_VVT_MODE_NOT_SELECTED = 6727,
 	CUSTOM_VVT_PHASE_JUMP = 6728,
 	CUSTOM_ARTIFICIAL_MISFIRE = 6729,
+	// C6730: Lua VM allocation/setup failures and protected callback errors.
+	// Report through warning(); exhausting script memory must not latch a fatal ECU error.
+	CUSTOM_LUA_ERROR = 6730,
 
 	CUSTOM_INSTANT_MAP_DECODING = 6899,
 	STACK_USAGE_COMMUNICATION = 6900,

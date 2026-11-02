@@ -88,6 +88,11 @@ angle_t TriggerCentral::getVVTPosition(uint8_t bankIndex, uint8_t camIndex) {
 	return vvtPosition[bankIndex][camIndex];
 }
 
+bool TriggerCentral::isVvtPositionFresh(uint8_t bankIndex, uint8_t camIndex) const {
+	return bankIndex < BANKS_COUNT && camIndex < CAMS_PER_BANK
+		&& !vvtPositionUpdateTimer[bankIndex][camIndex].hasElapsedSec(1);
+}
+
 /**
  * @return angle since trigger synchronization point, NOT angle since TDC.
  */
@@ -190,15 +195,10 @@ angle_t TriggerCentral::syncEnginePhaseAndReport(int divider, int remainder) {
 
 		// Adjust phase-dependent variables
 		if (expectedNextPhase) {
-			expectedNextPhase.Value = fmod(expectedNextPhase.Value - totalShift + engineCycle, engineCycle);
+			expectedNextPhase.Value = wrapAngleMethod(expectedNextPhase.Value - totalShift, "syncEnginePhase", ObdCode::CUSTOM_ERR_6555);
 		}
-		m_lastToothPhaseFromSyncPoint = fmod(m_lastToothPhaseFromSyncPoint - totalShift + engineCycle, engineCycle);
+		m_lastToothPhaseFromSyncPoint = wrapAngleMethod(m_lastToothPhaseFromSyncPoint - totalShift, "syncEnginePhase", ObdCode::CUSTOM_ERR_6555);
 		triggerToothAngleError = 0;
-
-#if EFI_ENGINE_CONTROL
-		// Reset schedulers to avoid "out-of-order" warnings/errors when transitioning phase
-		engine->injectionEvents.resetOverlapping();
-#endif // EFI_ENGINE_CONTROL
 
 		// On a crank-speed trigger the sync counter parity picks which trigger cycle starts the
 		// engine cycle, so a parity-changing shift means the next trigger index 0 is no longer one
@@ -256,6 +256,7 @@ static angle_t adjustCrankPhase(int camIndex) {
 	case VVT_FORD_ST170:
 	case VVT_BARRA_3_PLUS_1:
 	case VVT_NISSAN_MR:
+	case VVT_NISSAN_VK56DE:
   case VVT_HR12DDR_IN:
 	case VVT_MAZDA_SKYACTIV:
 	case VVT_MAZDA_L:
@@ -539,9 +540,14 @@ void handleVvtCamSignal(TriggerValue front, efitick_t nowNt, int index) {
 
 		tc->vvtPosition[bankIndex][camIndex] = vvtPosition;
 		tc->hasVvtPosition[bankIndex][camIndex] = true;
+		// master moved VVT freshness onto a 1-second timeout timer (isVvtPositionFresh,
+		// used by the merged vvt.cpp observePlant): keep it maintained alongside the
+		// branch's hasVvtPosition flag so VVT does not go permanently stale.
+		tc->vvtPositionUpdateTimer[bankIndex][camIndex].reset(nowNt);
 	} else {
 		tc->vvtPosition[bankIndex][camIndex] = 0;
 		tc->hasVvtPosition[bankIndex][camIndex] = false;
+		tc->vvtPositionUpdateTimer[bankIndex][camIndex].init();
 	}
 }
 
@@ -597,6 +603,51 @@ void printTriggerIsrHistogram() {
 	triggerPhase[2].print("trgPostDecode");
 }
 
+#if EFI_ENGINE_CONTROL
+static scheduling_s kickStartScheduling;
+
+static void kickStartFire() {
+	// Fire both coils!
+	enginePins.coils[0].setLow();
+	enginePins.coils[1].setLow();
+}
+
+/**
+ * Kick-start cranking mode for Ural bikes #4569: while the engine spins too slowly for normal
+ * angle-based spark scheduling, charge both coils right at the trigger mark and fire them
+ * a dwell-time later. LimpManager suppresses normal spark output (ClearReason::KickStart)
+ * while this mode is active.
+ *
+ * "I see the trigger mark, after 3ms I plan to ignite in both cylinders"
+ */
+static void handleKickStart(trigger_event_e signal, efitick_t timestamp) {
+	if (!engineConfiguration->kickStartCranking || !engineConfiguration->isIgnitionEnabled) {
+		return;
+	}
+	if (signal != SHAFT_PRIMARY_RISING) {
+		return;
+	}
+	if (Sensor::getOrZero(SensorType::Rpm) >= KICK_START_MODE_MAX_RPM) {
+		return;
+	}
+	const auto ignitionState = getLimpManager()->allowIgnition();
+	if (!ignitionState && ignitionState.reason != ClearReason::KickStart) {
+		return;
+	}
+	floatms_t dwellMs = engine->ignitionState.getDwell();
+	if (std::isnan(dwellMs) || dwellMs <= 0) {
+		// refuse to charge a coil we would not know when to release
+		return;
+	}
+	// charge both coils now...
+	enginePins.coils[0].setHigh();
+	enginePins.coils[1].setHigh();
+	// ...and fire them once the dwell period is over
+	// if the previous fire event is still pending the scheduler ignores this reschedule
+	engine->scheduler.schedule("kickstart", &kickStartScheduling, sumTickAndFloat(timestamp, MSF2NT(dwellMs)), action_s::make<kickStartFire>());
+}
+#endif // EFI_ENGINE_CONTROL
+
 // Handle all shaft signals - hardware or emulated both
 TRIGGER_RAM_CODE void handleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp, uint32_t acTimestamp) {
 	bool isPrimary = signalIndex == 0;
@@ -626,6 +677,8 @@ TRIGGER_RAM_CODE void handleShaftSignal(int signalIndex, bool isRising, efitick_
 	if (!getLimpManager()->allowTriggerInput()) {
 		return;
 	}
+
+	handleKickStart(signal, timestamp);
 #endif // EFI_ENGINE_CONTROL
 
 #if EFI_TOOTH_LOGGER
@@ -869,10 +922,16 @@ TRIGGER_RAM_CODE bool TriggerCentral::isToothExpectedNow(efitick_t timestamp) {
 
 			// Absolute error from last tooth
 			float absError = absF(angleError);
-			float isRpmEnough = Sensor::getOrZero(SensorType::Rpm) > 1000;
+			bool isRpmEnough = Sensor::getOrZero(SensorType::Rpm) > 1000;
 			// TODO: configurable threshold
-			if (isRpmEnough && absError > 10 && absError < 180) {
-				// This tooth came at a very unexpected time, ignore it
+			bool reportTimingError = isRpmEnough && absError > 10 && absError < 180;
+#if EFI_ENGINE_CONTROL
+			// Keep the measured angle error and doubled-edge rejection above.
+			// Only the timing warning is suppressed during requested coastdown.
+			reportTimingError = reportTimingError && !getLimpManager()->shutdownController.isEngineStop(getTimeNowNt());
+#endif // EFI_ENGINE_CONTROL
+			if (reportTimingError) {
+				// Report the unexpected timing without rejecting this tooth.
 				warning((angleError > 0) ? ObdCode::CUSTOM_PRIMARY_BAD_TOOTH_TIMING_EARLY : ObdCode::CUSTOM_PRIMARY_BAD_TOOTH_TIMING_LATE,
 					"tooth #%d error of %.1f", triggerState.currentCycle.current_index, angleError);
 
@@ -1385,6 +1444,12 @@ void TriggerCentral::applyCamGapOverride() {
 }
 
 void TriggerCentral::applyShapesConfiguration() {
+	for (auto& bank : vvtPositionUpdateTimer) {
+		for (auto& timer : bank) {
+			timer.init();
+		}
+	}
+
 	// Re-read config in case it's changed
 	primaryTriggerConfiguration.update();
 	for (int camIndex = 0;camIndex < CAMS_PER_BANK;camIndex++) {

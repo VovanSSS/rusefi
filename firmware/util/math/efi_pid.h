@@ -24,7 +24,7 @@
 
 #define GET_PERIOD_LIMITED(pid_s_ptr) maxI(PID_MINIMAL_PERIOD_MS, ((pid_s_ptr)->periodMs))
 
-#define MS2SEC(x) (x * 0.001)
+#define MS2SEC(x) ((x) * 0.001f)
 
 struct pid_s;
 
@@ -48,6 +48,9 @@ public:
 	virtual float getOutput(float target, float input, float dTime);
 	// doesn't limit the result (used in incremental CIC PID, see below)
 	float getUnclampedOutput(float target, float input, float dTime);
+	// [tag:vvt_advanced_control] Schedule P without changing the stored PID calibration.
+	// I, D, offset and error amplification retain their normal behavior.
+	float getUnclampedOutputWithPFactor(float target, float input, float dTime, float pFactorOverride);
 	void updateFactors(float pFactor, float iFactor, float dFactor);
 	virtual void reset();
 	float getP() const;
@@ -67,6 +70,11 @@ public:
 	// todo: move this to pid_s one day
 	float iTermMin = -1000000.0;
 	float iTermMax =  1000000.0;
+	// [tag:pid_conditional_integration] Opt in for the clamped getOutput() path.
+	// Admit only the part of an integral step that fits the output limits;
+	// always allow steps back out of saturation. Unclamped/CIC and industrial
+	// controllers keep their own integration behavior. reset() retains this policy.
+	bool conditionalIntegration = false;
 protected:
 	pid_s *parameters = nullptr;
 	virtual void updateITerm(float value);

@@ -1,6 +1,6 @@
 #include "global.h"
 #include "rusefi_enums.h"
-// was generated automatically by rusEFI tool  from rusefi_enums.h // by enum_to_string.jar tool on Sun Aug 09 03:05:39 UTC 2026
+// was generated automatically by rusEFI tool  from rusefi_enums.h // by enum_to_string.jar tool on Sun Oct 18 13:08:52 UTC 2026
 // see also gen_config_and_enums.bat
 
 
@@ -247,6 +247,8 @@ const char *getUiMode(UiMode value) {
 }
 const char *getAccel_enrichment_mode_e(accel_enrichment_mode_e value) {
 	switch (value) {
+		case AE_MODE_LUA:
+			return "AE_MODE_LUA";
 		case AE_MODE_MS_ADDER:
 			return "AE_MODE_MS_ADDER";
 		case AE_MODE_PERCENT_ADDER:
@@ -567,6 +569,8 @@ const char *getCranking_condition_e(cranking_condition_e value) {
 }
 const char *getDc_function_e(dc_function_e value) {
 	switch (value) {
+		case DC_Gpio:
+			return "DC_Gpio";
 		case DC_IdleValve:
 			return "DC_IdleValve";
 		case DC_None:
@@ -577,6 +581,17 @@ const char *getDc_function_e(dc_function_e value) {
 			return "DC_Throttle2";
 		case DC_Wastegate:
 			return "DC_Wastegate";
+	}
+	return NULL;
+}
+const char *getDfco_fuel_cut_mode_e(dfco_fuel_cut_mode_e value) {
+	switch (value) {
+		case dfco_fuel_cut_mode_e::Both:
+			return "Both";
+		case dfco_fuel_cut_mode_e::Decel:
+			return "Decel";
+		case dfco_fuel_cut_mode_e::Overrun:
+			return "Overrun";
 	}
 	return NULL;
 }
@@ -608,6 +623,17 @@ const char *getEgo_sensor_e(ego_sensor_e value) {
 	}
 	return NULL;
 }
+const char *getFan_ac_mode_e(fan_ac_mode_e value) {
+	switch (value) {
+		case fan_ac_mode_e::Disabled:
+			return "Disabled";
+		case fan_ac_mode_e::Pressure:
+			return "Pressure";
+		case fan_ac_mode_e::Relay:
+			return "Relay";
+	}
+	return NULL;
+}
 const char *getFt_region_e(ft_region_e value) {
 	switch (value) {
 		case ftRegionCruise:
@@ -632,6 +658,17 @@ const char *getFuel_pressure_sensor_mode_e(fuel_pressure_sensor_mode_e value) {
 	}
 	return NULL;
 }
+const char *getFuel_pump_mode_e(fuel_pump_mode_e value) {
+	switch (value) {
+		case fuel_pump_mode_e::Dual:
+			return "Dual";
+		case fuel_pump_mode_e::Pwm:
+			return "Pwm";
+		case fuel_pump_mode_e::Single:
+			return "Single";
+	}
+	return NULL;
+}
 const char *getGear_e(gear_e value) {
 	switch (value) {
 		case GEAR_1:
@@ -642,6 +679,16 @@ const char *getGear_e(gear_e value) {
 			return "GEAR_3";
 		case GEAR_4:
 			return "GEAR_4";
+		case GEAR_5:
+			return "GEAR_5";
+		case GEAR_6:
+			return "GEAR_6";
+		case GEAR_7:
+			return "GEAR_7";
+		case GEAR_8:
+			return "GEAR_8";
+		case INVALID:
+			return "INVALID";
 		case NEUTRAL:
 			return "NEUTRAL";
 		case REVERSE:
@@ -1010,6 +1057,26 @@ const char *getPin_output_mode_e(pin_output_mode_e value) {
 	}
 	return NULL;
 }
+const char *getSm_clutch_switch_e(sm_clutch_switch_e value) {
+	switch (value) {
+		case sm_clutch_switch_e::ClutchDown:
+			return "ClutchDown";
+		case sm_clutch_switch_e::ClutchUp:
+			return "ClutchUp";
+		case sm_clutch_switch_e::None:
+			return "None";
+	}
+	return NULL;
+}
+const char *getSm_shift_detection_mode_e(sm_shift_detection_mode_e value) {
+	switch (value) {
+		case sm_shift_detection_mode_e::RpmRate:
+			return "RpmRate";
+		case sm_shift_detection_mode_e::VssRate:
+			return "VssRate";
+	}
+	return NULL;
+}
 const char *getSpi_device_e(spi_device_e value) {
 	switch (value) {
 		case SPI_DEVICE_1:
@@ -1054,6 +1121,8 @@ const char *getStft_state_e(stft_state_e value) {
 			return "stftDisabledDFCO";
 		case stftDisabledFuelCut:
 			return "stftDisabledFuelCut";
+		case stftDisabledLaunch:
+			return "stftDisabledLaunch";
 		case stftDisabledRPM:
 			return "stftDisabledRPM";
 		case stftDisabledSettings:
@@ -1199,6 +1268,8 @@ const char *getVvt_mode_e(vvt_mode_e value) {
 			return "VVT_MITSUBISHI_6G75";
 		case VVT_NISSAN_MR:
 			return "VVT_NISSAN_MR";
+		case VVT_NISSAN_VK56DE:
+			return "VVT_NISSAN_VK56DE";
 		case VVT_NISSAN_VQ:
 			return "VVT_NISSAN_VQ";
 		case VVT_SINGLE_TOOTH:

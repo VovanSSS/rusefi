@@ -28,14 +28,80 @@ The sensor framework decouples sensor *producers* (ADC, CAN, frequency inputs, L
 - `firmware/controllers/sensors/sensor_checker.cpp`: periodic health checks mapping failures to OBD codes.
 - `firmware/libfirmware/util/include/rusefi/expected.h`: the `expected<float>` type underlying `SensorResult`.
 
+The global ADC channel enum can describe more inputs than a port samples.
+The slow ADC getter bounds-checks against the actual sample buffer and returns
+signed -1 for an unsupported channel. `adcGetRawVoltage()` rejects that result,
+so a subscription does not refresh its sensor from unrelated memory. Pin mapping
+alone does not establish ADC acquisition support. Thermistor conversion also
+requires the board's pull-up supply and voltage scaling to agree with the
+converter; initialization defaults to 5 V and supports the per-channel
+`custom_board_getThermistorSupplyVoltage` callback.
+
+On ADCv2, boards may opt into `EFI_ADC3_SLOW` and provide an
+`adc3_slow_config.h` with `ADC3_SLOW_CHANNELS` listing ADC3-only logical inputs
+(EFI_ADC_32 through EFI_ADC_39). `stm32_adc_v2_adc3.cpp` collects eight samples
+per input in a separate linear DMA buffer. The slow-sensor thread requests a
+batch only when ADC3 is ready. Software knock preempts an active slow batch;
+temperature sampling never aborts a knock batch. Completed averages expire at
+6 ms, DMA errors invalidate them, and stalled slow batches are retried after
+2 ms. Invalid raw reads do not refresh the existing sensor timeout.
+
+The feature requires matching scheduler, ADC error and ADC DMA IRQ priorities,
+enforced with static assertions. ADCv2 shares an error IRQ across ADC1/2/3;
+changing ADC3's priority alone is insufficient to serialize HAL state changes.
+The AT32 port selects matching priorities when the feature is enabled. This
+changes interrupt latency and requires physical timing validation on the board.
+Controller mapping also rejects a logical input absent from the chosen ADC;
+fast ADC setup validates membership before inserting a channel in its sequence.
+
 ## Sensor Categories
 - **Thermistors** (CLT/IAT/oil/fuel temp): resistance divider → Steinhart-Hart via `FuncChain`, or linear mode.
+
 - **Pressure** (MAP/oil/fuel/baro): `LinearFunc` with built-in calibrations for common part numbers; `SensorType::Map` is a `FallbackSensor` preferring `MapFast` (crank-synced average) over `MapSlow` (async analog).
 - **TPS/Pedal** (`init/sensor/init_tps.cpp`): redundant primary+secondary pairs with agreement checking (`RedundantSensor`, split-range `RedundantFordTps`); `DriverThrottleIntent` proxies pedal-if-present-else-TPS1.
 - **Lambda**: analog AFR curve or CAN wideband (`AemXSeriesWideband`); configuring both is a `criticalError`.
 - **Frequency-based** (VSS, flex fuel, turbo/input-shaft speed): EXTI edge timing → Hz → converter; rely on `StoredValueSensor` timeouts to fault when edges stop.
 - **CAN/OBD**: `consumeObdSensors` reroutes CLT/IAT/TPS/RPM to OBD PID polling and skips analog init.
 - **Lua**: `LuaSensor` lets scripts publish any `SensorType`; `AuxAnalog1..8` expose raw voltages to Lua.
+
+## MAP Sensor Presets: INI Metadata and C++ Calibration
+
+MAP preset names/IDs are represented in both the generated INI and C++, but the
+built-in voltage-to-pressure calibration values live only in C++. Selecting a
+"Sensor model" writes `map_sensor_type`; it does not copy preset calibration
+points into the tune's custom calibration fields.
+
+| Source | Responsibility |
+|---|---|
+| [`firmware/integration/rusefi_config.txt`](../../firmware/integration/rusefi_config.txt), `custom air_pressure_sensor_type_e` | Ordered display labels used to generate the INI choices for `map_sensor_type` and `baroSensor_type`. Each label's zero-based position is its stored numeric ID. |
+| [`firmware/controllers/algo/rusefi_enums.h`](../../firmware/controllers/algo/rusefi_enums.h), `air_pressure_sensor_type_e` | Explicit C++ IDs (`MT_CUSTOM = 0` through `MT_BOSCH_3_BAR = 16`). These must match the label positions above. |
+| [`firmware/init/sensor/init_map.cpp`](../../firmware/init/sensor/init_map.cpp), `getMapCfg()` | Built-in calibration lookup: `{voltage1, pressure1_kPa, voltage2, pressure2_kPa}`. `configureMapFunction()` uses these points to configure a `LinearFunc`. |
+| [`firmware/tunerstudio/tunerstudio.template.ini`](../../firmware/tunerstudio/tunerstudio.template.ini), `mapSensorAnalog` / `mapCustomCal` | Dialog layout: displays the model selector and shows custom calibration fields only for ID 0. It does not define a second table of MAP calibration values. |
+| `firmware/tunerstudio/generated/rusefi_*.ini` | Generated per-board copies of the labels and dialog layout; edit the inputs above, not these outputs. |
+
+For example, selecting "Bosch 3 Bar" stores ID 16, which maps to
+`MT_BOSCH_3_BAR`. Firmware uses 11 kPa at 0.39 V and 310 kPa at 4.65 V.
+The conversion is linear between the two points; the separate
+`mapErrorDetectionTooLow` / `mapErrorDetectionTooHigh` settings determine
+accepted pressure limits.
+
+For `MT_CUSTOM`, firmware instead reads `mapLowValueVoltage`,
+`map.sensor.lowValue`, `mapHighValueVoltage`, and `map.sensor.highValue` from
+the tune. Named presets ignore those four values. Fast and slow MAP share
+the same converter, as do throttle-inlet and compressor-discharge pressure.
+Analog baro selects its own model through `baroSensor.type` using the same
+lookup. One current caveat: the custom branch always reads the MAP calibration
+fields, even for baro; it does not read `baroSensor.lowValue/highValue`.
+
+When adding a preset, append a stable numeric ID to the C++ enum, add the
+matching label at that ID's position in `rusefi_config.txt`, and implement its
+calibration in `getMapCfg()`. Preserve existing IDs/order for saved-tune
+compatibility. The current INI field uses bits `[0:4]`; adding IDs beyond 31
+also requires reviewing that encoding. Normal builds regenerate the INI.
+When correcting an existing preset's calibration, edit the C++ lookup and
+check any descriptive enum comments. In particular, `MT_MPX4250` and
+`MT_MPX4250A` currently share the same C++ calibration despite the older
+comment describing a distinct MPX4250A curve.
 
 ## Implementation Notes
 - **Redundancy is not fallback**: `RedundantSensor` returns the *average* of two agreeing channels; disagreement beyond `maxDifference` yields `UnexpectedCode::Inconsistent`, not a switch to one channel.
@@ -51,7 +117,37 @@ There is no general-purpose rate-of-change / derivative helper in the sensor fra
 - **Not measurers**: `limitRateOfChange()` (`firmware/util/efilib.cpp`) is a slew-rate *limiter* (used for tCharge); ETB/idle PID derivative terms differentiate their own error internally and are not exposed.
 - A true %/sec rate would require a new time-aware differentiator (value + `Timer`, like the `edgeTimer` pattern in `frequency_sensor.cpp`) or a time-normalized generalization of the `TpsAccelEnrichment` buffer.
 
+## TPS Smoothing
+
+Analog redundant pairs (including Ford split-range sensors) and SENT TPS publish
+calibrated percentages as `Tps1Unfiltered` / `Tps2Unfiltered`. `init_tps.cpp`
+registers `Tps1` / `Tps2` proxies only when an underlying source exists.
+`SmartExpAverage` in `tps_smoothing.h` keeps independent histories with shared
+`tpsExpAverageAlpha` and fast-change reset settings. Alpha defaults to 1, and
+zero reset settings disable transient reset. A change at least as large as the
+threshold resets the average when elapsed time is strictly below the window.
+
+Like PPS smoothing, each resolved read advances the average, including repeated
+reads of the same acquired sample. This is not a fixed-rate filter: adding a
+consumer can change its effective response. Redundancy checks precede smoothing;
+invalid results and timeouts propagate immediately and clear filter history.
+Sensor reinitialization also clears history. Analog primary/secondary values and
+raw voltages remain available before smoothing.
+
+`consumeObdSensors` retains its direct TPS provider. A Lua/CAN provider can still
+register `Tps1` / `Tps2` directly when no native source is configured; such a
+provider bypasses this filter. An unfiltered external provider must exist before
+`initTps()` to acquire a filtering proxy. This port does not add the AlphaX
+external CAN ETB protocol.
+
 ## Unit Testing
+
+An external shaft-speed provider can publish NaN through `StoredValueSensor`.
+Gear classification rejects nonfinite ratios, reporting neutral/unknown (zero)
+and invalid slip measurement. `GearDetector.NonfiniteShaftRatioReportsNeutral`
+in `unit_tests/tests/test_gear_detector.cpp` covers both shaft providers and
+recovery to valid readings; it also checks NaN and infinite ratios directly.
+
 - `Sensor::setMockValue(type, value)` / `setInvalidMockValue(type)` override any sensor; mocks take precedence over real sensors in the registry. `Sensor::resetRegistry()` runs between tests.
 - Framework tests live in `unit_tests/tests/sensor/`; control-logic tests throughout the suite use `setMockValue` to stand up engine state.
 - Console equivalents for live debugging: `set_sensor_mock <name> <value>`, `reset_sensor_mocks`, `show_sensors`.

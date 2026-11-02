@@ -132,12 +132,12 @@ angle_t getRunningAdvance(float rpm, float engineLoad) {
 #if EFI_IDLE_CONTROL
 	// reset ignition table dot, see #8198
 	if(engineConfiguration->useSeparateAdvanceForIdle && engine->module<IdleController>()->isIdlingOrTaper()){
-		engine->ignitionState.rpmForIgnitionIdleTableDot = rpm;
+		engine->ignitionState.rpmForIgnitionIdleTableDot = static_cast<int16_t>(rpm);
 		engine->ignitionState.rpmForIgnitionTableDot = -1;
 		engine->ignitionState.loadForIgnitionTableDot = -1;
 	} else {
 		engine->ignitionState.rpmForIgnitionIdleTableDot = -1;
-		engine->ignitionState.rpmForIgnitionTableDot = rpm;
+		engine->ignitionState.rpmForIgnitionTableDot = static_cast<int16_t>(rpm);
 		engine->ignitionState.loadForIgnitionTableDot = engineLoad;
 	}
 #endif
@@ -223,7 +223,12 @@ angle_t getAdvanceCorrections(float engineLoad) {
 	return engine->ignitionState.timingIatCorrection
 		+ engine->ignitionState.cltTimingCorrection
 		+ engine->ignitionState.timingPidCorrection
-		- engine->ignitionState.dfcoTimingRetard;
+		- engine->ignitionState.dfcoTimingRetard
+		- engine->module<BurstKnock>().unmock().getTimingRetard()
+#if EFI_LAUNCH_CONTROL
+		- engine->module<RollingLaunchControl>().unmock().getTimingRetard()
+#endif
+		;
 }
 
 /**
@@ -315,7 +320,7 @@ size_t getMultiSparkCount(float rpm) {
 		engine->engineState.multispark.delay = (uint32_t)USF2NT(multiDelay);
 		engine->engineState.multispark.dwell = (uint32_t)USF2NT(multiDwell);
 
-		constexpr float usPerDegreeAt1Rpm = 60e6 / 360;
+		constexpr float usPerDegreeAt1Rpm = 60e6f / 360;
 		floatus_t usPerDegree = usPerDegreeAt1Rpm / rpm;
 
 		// How long is there for sparks? The user configured an angle, convert to time.
@@ -327,7 +332,7 @@ size_t getMultiSparkCount(float rpm) {
 		float sparksFitInTime = additionalSparksUs / oneSparkTime;
 
 		// Take the floor (convert to uint8_t) - we want to undershoot, not overshoot
-		uint32_t floored = sparksFitInTime;
+		uint32_t floored = static_cast<uint32_t>(sparksFitInTime);
 
 		// Allow no more than the maximum number of extra sparks
 		return minI(floored, engineConfiguration->multisparkMaxExtraSparkCount);

@@ -41,8 +41,19 @@ static void nucleo_f429_preHalInit() {
 	efiSetPadMode("Ethernet",  Gpio::A1, PAL_MODE_ALTERNATE(0xb));
 }
 
+#if defined(HARDWARE_CI) && defined(HW_NUCLEO_F767)
+#include "../nucleo_f767/hardware_ci_configuration.h"
+
+static void nucleoHardwareCiConfigOverrides() {
+	setNucleoHardwareCiConfiguration(*engineConfiguration);
+}
+#endif
+
 void setup_custom_board_overrides() {
 	custom_board_preHalInit = nucleo_f429_preHalInit;
+#if defined(HARDWARE_CI) && defined(HW_NUCLEO_F767)
+	custom_board_ConfigOverrides = nucleoHardwareCiConfigOverrides;
+#endif
 }
 
 extern "C" {

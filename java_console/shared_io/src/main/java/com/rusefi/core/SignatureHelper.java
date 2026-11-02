@@ -5,7 +5,6 @@ import com.devexperts.logging.Logging;
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLConnection;
 
 import static com.devexperts.logging.Logging.getLogging;
 import static com.rusefi.core.FileUtil.RUSEFI_SETTINGS_FOLDER;
@@ -13,6 +12,7 @@ import static com.rusefi.core.FileUtil.RUSEFI_SETTINGS_FOLDER;
 public class SignatureHelper {
     private static final Logging log = getLogging(SignatureHelper.class);
     private final static String LOCAL_INI_CACHE_FOLDER = RUSEFI_SETTINGS_FOLDER + "ini_database";
+    private static final int HTTP_TIMEOUT_MILLIS = 10_000;
 
     // todo: find a way to reference Fields.PROTOCOL_SIGNATURE_PREFIX
     private static final String PREFIX = "rusEFI ";
@@ -36,10 +36,10 @@ public class SignatureHelper {
     }
 
     /**
-     * @return local .ini file name
+     * Checks the local cache before optionally contacting the remote INI archive.
      */
     public static String downloadIfNotAvailable(Pair<String, String> p) {
-        return downloadIfNotAvailable(p, null, LOCAL_INI_CACHE_FOLDER);
+        return downloadIfNotAvailable(p, null, true, LOCAL_INI_CACHE_FOLDER);
     }
 
     /**
@@ -49,11 +49,25 @@ public class SignatureHelper {
      * hash) is stale, so the entry is dropped and the regular download/manual-picker path takes over.
      */
     public static String downloadIfNotAvailable(Pair<String, String> p, String signature) {
-        return downloadIfNotAvailable(p, signature, LOCAL_INI_CACHE_FOLDER);
+        return downloadIfNotAvailable(p, signature, true, LOCAL_INI_CACHE_FOLDER);
+    }
+
+    /**
+     * @param allowDownload false keeps a manual-picker cache hit without starting a remote lookup (#10158).
+     */
+    public static String downloadIfNotAvailable(Pair<String, String> p, boolean allowDownload) {
+        return downloadIfNotAvailable(p, null, allowDownload, LOCAL_INI_CACHE_FOLDER);
+    }
+
+    /**
+     * Signature-validated cache hit handling combined with the remote-lookup throttle.
+     */
+    public static String downloadIfNotAvailable(Pair<String, String> p, String signature, boolean allowDownload) {
+        return downloadIfNotAvailable(p, signature, allowDownload, LOCAL_INI_CACHE_FOLDER);
     }
 
     // package-private for tests
-    static String downloadIfNotAvailable(Pair<String, String> p, String signature, String cacheFolder) {
+    static String downloadIfNotAvailable(Pair<String, String> p, String signature, boolean allowDownload, String cacheFolder) {
         if (p == null)
             return null;
         new File(cacheFolder).mkdirs();
@@ -72,12 +86,18 @@ public class SignatureHelper {
         if (EXTRA_INI_SOURCE != null) {
             return EXTRA_INI_SOURCE;
         }
+        if (!allowDownload) {
+            return null;
+        }
         log.info(".ini not found in " + cacheFolder + "(" + localIniFile + "), trying to download " + p.first);
 
         // atomic download via .tmp + rename — prevents corrupted partial files from becoming the cache (#10030)
         File tempFile = new File(localIniFile + ".tmp");
+        HttpURLConnection httpURLConnection = null;
         try {
-            HttpURLConnection httpURLConnection = (HttpURLConnection) new URL(p.first).openConnection();
+            httpURLConnection = (HttpURLConnection) new URL(p.first).openConnection();
+            httpURLConnection.setConnectTimeout(HTTP_TIMEOUT_MILLIS);
+            httpURLConnection.setReadTimeout(HTTP_TIMEOUT_MILLIS);
             int statusCode = httpURLConnection.getResponseCode();
             if (statusCode >= 300) {
                 log.info("Unexpected code " + statusCode);
@@ -98,6 +118,10 @@ public class SignatureHelper {
             System.err.println(e.getMessage());
             tempFile.delete();
             return null;
+        } finally {
+            if (httpURLConnection != null) {
+                httpURLConnection.disconnect();
+            }
         }
     }
 

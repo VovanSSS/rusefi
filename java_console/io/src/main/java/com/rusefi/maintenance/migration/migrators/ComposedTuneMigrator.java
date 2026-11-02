@@ -26,6 +26,7 @@ public enum ComposedTuneMigrator implements TuneMigrator {
         VeBlends1BlendParameterMigrator.INSTANCE,
         BoostLoadBinsMigrator.INSTANCE,
         BooleanIniFieldMigrator.INSTANCE,
+        FanAcModeMigrator.INSTANCE,
         DigitsIniFieldMigrator.INSTANCE,
         STFTFieldMigrator.INSTANCE,
         IdleCurveMigrator.INSTANCE,
@@ -34,6 +35,7 @@ public enum ComposedTuneMigrator implements TuneMigrator {
         ScalarToArrayMigrator.INSTANCE,
         MapSamplingValuesMigrator.INSTANCE,
         ImperialUnitsMigrator.INSTANCE,
+        KansasLimaTuningDetectorMigrator.INSTANCE,
 
         // leave the default as the final migrator!
         DefaultTuneMigrator.INSTANCE

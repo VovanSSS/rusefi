@@ -71,6 +71,8 @@ public:
 class CanRxMessageSource {
 public:
   virtual bool get(CanRxMessage &item, int timeout) = 0;
+  virtual void prepareFlowControlWait() = 0;
+  virtual bool getFlowControl(CanRxMessage &item, int timeout) = 0;
 };
 
 class ICanTransmitter {
@@ -82,12 +84,11 @@ class ICanReceiver {
 public:
   virtual can_msg_t receive(CANRxFrame *crfp, can_sysinterval_t timeout) = 0;
   virtual void onTpFirstFrame() = 0;
-
   /**
    * Snapshot the flow-control frame counter. Must be called BEFORE the FIRST
    * frame of a multi-frame send goes out - see waitForFlowControl.
    */
-  virtual uint32_t getFcCounterSnapshot() = 0;
+  virtual uint32_t getFcCounterSnapshot() { return 0; }
 
   /**
    * Wait for the ISO-TP flow control frame that acknowledges our FIRST frame.
@@ -102,7 +103,14 @@ public:
    * next write chunk) have to stay queued for the next read, otherwise the shared
    * RX state machine corrupts mid-packet and the next command gets truncated.
    */
-  virtual can_msg_t waitForFlowControl(uint32_t initialFcCounter, uint8_t *blockSize, uint8_t *minSeparationTime, can_sysinterval_t timeout) = 0;
+  virtual can_msg_t waitForFlowControl(uint32_t, uint8_t*, uint8_t*, can_sysinterval_t) { return CAN_MSG_TIMEOUT; }
+
+  // Merged from master alongside CanRxMessageSource::prepareFlowControlWait/getFlowControl:
+  // declared non-pure so transports implementing either variant still compile.
+  // Arm before transmitting the first frame, so an immediate reply is retained.
+  virtual void prepareFlowControlWait() {}
+  // Receiving TX acknowledgements must not consume queued incoming commands.
+  virtual can_msg_t receiveFlowControl(CANRxFrame*, can_sysinterval_t) { return CAN_MSG_TIMEOUT; }
 };
 
 class IsoTpBase {
@@ -191,6 +199,11 @@ public:
 
 	bool isComplete{};
 
+#if EFI_UNIT_TEST
+	// Existing tests omit FC frames. Opt in to the unchanged firmware wait path.
+	bool enableFlowControlForTest = false;
+#endif
+
 	void reset();
 
 	int sendFrame(const IsoTpFrameHeader & header, const uint8_t *data, int num, can_sysinterval_t timeout);
@@ -227,11 +240,15 @@ public:
 	  // initialization too soon
 	  // todo: https://github.com/rusefi/rusefi/issues/8938
 		rxFifoBuf.clear();
+#if EFI_CAN_SUPPORT
 		registerCanListener(*this);
+#endif
 	}
 
 	~IsoTpRx() {
+#if EFI_CAN_SUPPORT
 		unregisterCanListener(*this);
+#endif
 	}
 
 	void reset() {
@@ -276,12 +293,15 @@ protected:
 	fifo_buffer_sync<CANRxFrame, ISOTP_RX_QUEUE_LEN> rxFifoBuf;
 };
 
-class IsoTpRxTx : public IsoTpRx {
+class IsoTpRxTx : public IsoTpRx, public ICanTransmitter {
 public:
 	IsoTpRxTx(size_t p_busIndex, uint32_t p_rxFrameId, uint32_t p_txFrameId)
 	:
 		IsoTpRx(p_busIndex, p_rxFrameId, p_txFrameId)
-		{}
+		{ txTransport = this; }
 
 	int writeTimeout(const uint8_t *txbuf, size_t size, sysinterval_t timeout);
+	can_msg_t transmit(CanTxMessage &ctfp, can_sysinterval_t timeout) override {
+		return ctfp.submitAndWait(timeout);
+	}
 };

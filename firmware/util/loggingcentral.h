@@ -10,14 +10,36 @@
 #include <cstdint>
 #include "generated_lookup_meta.h"
 
+#include "tunerstudio_io.h"
+
 class Logging;
 
+// Makes the internal line buffers available for logging, see loggingcentral.cpp
 void startLoggingProcessor();
 
+// Called from the binary TS thread: sends as many queued buffers as fit in one packet
+// and releases each of them back to its owner
+size_t loggingSendOutputData(TsChannelBase* tsChannel);
+
+// Legacy drain used by the branch-flavored console code: accumulates the queued
+// buffers into one null-terminated static buffer and returns it. Prefer
+// loggingSendOutputData() in new code.
 const char* swapOutputBuffers(size_t *actualOutputBufferSize);
+
+#if EFI_UNIT_TEST
+// Discards all queued buffers and makes every line buffer free again
+void resetLoggingForUnitTest();
+#endif
 
 namespace priv
 {
+	// Fixes up a possibly-truncated log line: guarantees the buffer stays
+	// null-terminated and re-adds the trailing LOG_DELIMITER framing lost to
+	// truncation. untruncatedLen is chvsnprintf's return value (the length the
+	// full message would have had); returns the actual in-buffer string length.
+	// See https://github.com/rusefi/rusefi/issues/10159
+	size_t terminateLogLine(char* buffer, size_t bufferSize, size_t untruncatedLen);
+
 	// internal implementation, use efiPrintf below
 	void efiPrintfInternal(const char *fmt, ...)
 		#if EFI_PROD_CODE
@@ -27,62 +49,46 @@ namespace priv
 }
 
 // "normal" logging messages need a header and footer, so put them in
-// the format string at compile time
+// the format string at compile time.
+// Limits: one efiPrintf call produces at most line buffer size - 1 characters
+// INCLUDING the PROTOCOL_MSG + LOG_DELIMITER framing; anything longer is
+// truncated, not split.
 #define efiPrintfProto(proto, fmt, ...) priv::efiPrintfInternal(proto LOG_DELIMITER fmt LOG_DELIMITER, ##__VA_ARGS__)
 #define efiPrintf(fmt, ...) efiPrintfProto(PROTOCOL_MSG, fmt, ##__VA_ARGS__)
 
-/**
- * This is the legacy function to copy the contents of a local Logging object in to the output buffer
- */
-void scheduleLogging(Logging *logging);
+// Base class of anything that can be handed over to logging central with loggingPostBuffer().
+// The buffer is owned by whoever posted it: logging central only reads 'len' bytes out of it
+// and then calls free(), which is where the owner recycles or reuses its storage
+struct LogBufferBase {
+	// number of bytes to transfer, to be set by the owner before posting
+	size_t len = 0;
 
-// Stores the result of one call to efiPrintfInternal in the queue to be copied out to the output buffer
-struct LogLineBuffer {
-	char buffer[256];
+	// called by logging central once this buffer has been transferred
+	virtual void free(void) = 0;
+	virtual char* getBuffer() = 0;
+
+	size_t used() {
+		return len;
+	}
 };
 
-template <size_t TBufferSize>
-class LogBuffer {
-public:
-	void writeLine(LogLineBuffer* line);
-	void writeLogger(Logging* logging);
+// LogBufferBase with inline storage of the given size
+template <size_t bufSize>
+struct LogBuffer : public LogBufferBase {
+	char buffer[bufSize];
 
-	size_t length() const;
-	void reset();
-	const char* get() const;
-
-	// Diagnostic accessors: expose the internals so swapOutputBuffers can
-	// report WHICH field was clobbered and to what value when the buffer
-	// accounting check trips (memory-corruption triage).
-	uintptr_t diagWritePtr() const { return reinterpret_cast<uintptr_t>(m_writePtr); }
-	uintptr_t diagBase() const { return reinterpret_cast<uintptr_t>(m_buffer); }
-
-	// Bounded content scan: writeInternal always null-terminates the buffer,
-	// so this is the true length of the intact text even when the m_writePtr
-	// accounting field has been clobbered. Never walks past the object.
-	size_t contentLength() const {
-		size_t n = 0;
-		while (n < TBufferSize && m_buffer[n] != '\0') {
-			n++;
-		}
-		return n;
+	char* getBuffer() override {
+		return buffer;
 	}
 
-	// Re-derive the accounting pointer from the intact, null-terminated
-	// content instead of resetting and dropping the accumulated log.
-	// Returns false when no null terminator exists within the buffer (the
-	// content itself is corrupted) - the caller should then reset().
-	bool recoverWritePointer() {
-		const size_t n = contentLength();
-		m_writePtr = m_buffer + n;
-		return n < TBufferSize;
+	// Bounded-scan note: master's LogBuffer holds exactly one line per instance
+	// (LogLineBuffer : LogBuffer<128>) with an explicit len counter - the
+	// branch's m_writePtr accumulation (and its clobber-recovery diagnostics)
+	// are not carried over: they no longer apply to this storage design.
+	constexpr size_t size() {
+		return bufSize;
 	}
-
-#if !EFI_UNIT_TEST
-private:
-#endif
-	void writeInternal(const char* buffer);
-
-	char m_buffer[TBufferSize];
-	char* m_writePtr = m_buffer;
 };
+
+// Queue a filled buffer for transfer to TS, safe to call from ISR context
+void loggingPostBuffer(LogBufferBase *buffer);

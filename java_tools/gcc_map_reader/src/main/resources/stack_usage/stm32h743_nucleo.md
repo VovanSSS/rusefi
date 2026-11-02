@@ -9,15 +9,15 @@
 | firmware | BenchController::ThreadTask | bench test | 204 | 2028 | idle production worker |
 | firmware | StepperMotor::ThreadTask | stepper | 280 | 652 | startup redundant pedal check |
 | firmware | TunerstudioThread::ThreadTask | TunerStudio | 744 | 1316 | Ethernet TS with ARP |
-| firmware | LoggingBufferFlusher::ThreadTask | log flush | 132 | 644 | mailbox wait/flush |
 | firmware | MicrosecondTimerWatchdogController::PeriodicTask | timer watchdog | 112 | 528 | normal watchdog sleep |
-| firmware | CanWrite::PeriodicTask | CAN TX | 1136 | 1024 | Honda-K saturated output |
+| firmware | CanWrite::ThreadTask | CAN TX | - | - | - |
 | firmware | DcThread::PeriodicTask | electronic throttle | 312 | 532 | normal ETB update |
 | firmware | storageManagerThread(void*) | storage manager | 292 | 644 | internal-flash tune burn |
 | firmware | MMCmonThread(void*) | SD/MMC | 1436 | 2036 | exFAT log creation |
 | firmware | MassStorageController::ThreadTask | USB mass storage | 300 | 732 | SD READ/WRITE(10) |
 | firmware | lwip_thread | lwIP driver | 192 | 812 | normal Ethernet delivery |
 | firmware | tcpip_thread | lwIP TCP/IP | 584 | 660 | TCP write with ARP |
+| firmware | pca9685_driver_thread(void*) | PCA9685 | - | - | - |
 | bootloader | main | main/process | - | - | - |
 | bootloader | exception/ISR | exception/ISR | - | - | - |
 | bootloader | __idle_thread | idle | - | - | - |

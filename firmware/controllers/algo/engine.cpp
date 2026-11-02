@@ -122,6 +122,8 @@ trigger_type_e getVvtTriggerType(vvt_mode_e vvtMode) {
 		return trigger_type_e::TT_TOYOTA_3_TOOTH_UZ;
 	case VVT_NISSAN_MR:
 		return trigger_type_e::TT_NISSAN_MR18_CAM_VVT;
+	case VVT_NISSAN_VK56DE:
+		return trigger_type_e::TT_NISSAN_VK56DE_CAM;
 	case VVT_BMW_VANOS_RELUCTOR:
 		return trigger_type_e::TT_BMW_VANOS_RELUCTOR;
 	case VVT_MITSUBISHI_4G63:
@@ -171,6 +173,7 @@ void Engine::periodicSlowCallback() {
 
 	efiWatchdog();
 	updateSlowSensors();
+	updateFixedBaroFromMap();
 	checkShutdown();
 
 	module<TpsAccelEnrichment>()->onNewValue(Sensor::getOrZero(SensorType::Tps1));
@@ -201,10 +204,6 @@ void Engine::periodicSlowCallback() {
 
 	slowCallBackWasInvoked = true;
 
-#if EFI_PROD_CODE
-	void baroLps25Update();
-	baroLps25Update();
-#endif // EFI_PROD_CODE
   call_board_override(custom_board_periodicSlowCallback);
 
 	// after modules and board code so checks see the freshest state
@@ -350,6 +349,8 @@ void Engine::reset() {
  * todo: https://github.com/rusefi/rusefi/issues/4308 Uniform reset pattern for all Lua adjustments
  */
 void Engine::resetLua() {
+	// [tag:lua_accel_enrichment] Clear the script's transient request on VM reload.
+	module<TpsAccelEnrichment>()->resetLua();
 	engineState.lua = {};
 	engineState.lua.fuelAdd = 0;
 	engineState.lua.fuelMult = 1;
@@ -361,10 +362,16 @@ void Engine::resetLua() {
 #if EFI_BOOST_CONTROL
 	module<BoostController>().unmock().resetLua();
 #endif // EFI_BOOST_CONTROL
+#if EFI_LAUNCH_CONTROL
+	// The next slow callback releases the hold with normal timing ramp-out,
+	// or keeps it armed if the hardware switch is still pressed.
+	module<RollingLaunchControl>().unmock().luaRollingLaunchState = false;
+#endif // EFI_LAUNCH_CONTROL
 	ignitionState.luaTimingAdd = 0;
 	ignitionState.luaTimingMult = 1;
 #if EFI_IDLE_CONTROL
 	module<IdleController>().unmock().luaAdd = 0;
+	module<IdleController>().unmock().setParkNeutral(false);
 #endif // EFI_IDLE_CONTROL
 }
 
@@ -454,6 +461,12 @@ void Engine::setConfig() {
 	injectEngineReferences();
 }
 
+#ifndef EFI_LINEAR_TIME_BURN_GRACE_SEC
+// Boards with slow storage/garbage collection can override this in board.mk.
+// The grace period starts at suspendLinearTimeWatcher(), before the whole settings save.
+#define EFI_LINEAR_TIME_BURN_GRACE_SEC 5
+#endif
+
 /**
  * This code asserts that we do not have unexpected gaps in time flow with the exception of internal flash burn.
  */
@@ -461,7 +474,7 @@ static void assertTimeIsLinear() {
 #if ! EFI_UNIT_TEST
 	static efitimems_t mostRecentMs = 0;
 	efitimems_t msNow = getTimeNowMs();
-	if (engineConfiguration->watchOutForLinearTime && engine->configBurnTimer.hasElapsedSec(5)) {
+	if (engineConfiguration->watchOutForLinearTime && engine->configBurnTimer.hasElapsedSec(EFI_LINEAR_TIME_BURN_GRACE_SEC)) {
 		if (mostRecentMs != 0) {
 			efitimems_t gapInMs = msNow - mostRecentMs;
 			// todo: lower gapInMs threshold?

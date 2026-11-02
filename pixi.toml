@@ -39,7 +39,7 @@
 # reproducible, CI-matching build; use global only for personal convenience.
 # =============================================================================
 
-[project]
+[workspace]
 name = "rusefi"
 # https://github.com/xtitoris/xtitoris-forge
 channels = ["conda-forge", "xtitoris"]
@@ -55,13 +55,27 @@ arm-gnu-toolchain = ">=14,<15"
 # setup-java action in .github/workflows/build-firmware-windows.yaml.
 # Must be >= the project bytecode target (Java 27, [tag:java27]).
 openjdk = "27.*"
+python = "3.12.*"
+# RAM-disk image generation uses mkfs.fat, fatlabel, and mcopy.
+dosfstools = ">=4.2,<5"
+mtools = ">=4.0.49,<5"
+# Provides xxd for converting RAM-disk images to C headers.
+vim = ">=9.2.397,<10"
+
+[activation.env]
+# Conda's Windows Python executable is python.exe, not python3.exe.
+PYTHON = "python"
 
 # The rusEFI Makefiles shell out to a Unix userland (bash, sed, awk, grep,
-# coreutils). On Linux/macOS these come from the OS. On native Windows the CI job
+# coreutils). On Linux/macOS the OS supplies tools not declared below.
+# On native Windows the CI job
 # (.github/workflows/build-firmware-windows.yaml) installs Cygwin for exactly
 # this reason; locally we pull the equivalent msys2 repackages from conda-forge
 # so `make` runs from a plain `pixi shell` without Git Bash or Cygwin on PATH.
 [target.win-64.dependencies]
+# Native host compilers for unit tests; firmware uses arm-gnu-toolchain above.
+gcc = ">=14.3.0,<14.4"
+gxx = ">=14.3.0,<14.4"
 m2-bash = "*"
 m2-sed = "*"
 m2-gawk = "*"
@@ -70,10 +84,34 @@ m2-coreutils = "*"
 m2-findutils = "*"
 m2-diffutils = "*"
 m2-util-linux = "*"  # provides flock, used by java_tools.mk to serialize gradle
+# INI archive generation invokes both zip and 7z.
+m2-zip = ">=3.0.4,<4"
+m2-p7zip = ">=17.5.2,<18"
+
+[target.linux-64.dependencies]
+# Native host compilers and binary tools for unit tests.
+gcc = ">=14.3.0,<14.4"
+gxx = ">=14.3.0,<14.4"
+binutils = ">=2.43,<3"
+coreutils = "*"  # provides nproc for firmware and unit-test build scripts
+util-linux = "*"  # provides flock, used by java_tools.mk to serialize gradle
+# INI archive generation invokes both zip and 7z.
+zip = ">=3.0,<4"
+p7zip = ">=16.2,<17"
+valgrind = ">=3.24.0,<4"  # used by unit_tests/run_with_valgrind.sh (SANITIZE=no)
+
+[target.osx-arm64.dependencies]
+# Native host compilers for unit tests.
+clang = ">=22,<23"
+clangxx = ">=22,<23"
+coreutils = "*"  # provides nproc for firmware and unit-test build scripts
+util-linux = "*"  # provides flock, used by java_tools.mk to serialize gradle
+# INI archive generation invokes both zip and 7z.
+zip = ">=3.0,<4"
+7zip = "*"
 
 # Convenience wrappers - run as `pixi run build-fw` / `pixi run test`, or from
 # inside `pixi shell`. See the HOWTO block at the top of this file.
 [tasks]
 build-fw = { cmd = "make -j12", cwd = "firmware" }
-test = { cmd = "./test.sh", cwd = "unit_tests" }
-
+test = { cmd = "bash ./test.sh", cwd = "unit_tests" }

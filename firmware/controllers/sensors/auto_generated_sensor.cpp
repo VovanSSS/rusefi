@@ -145,6 +145,8 @@ const char *getSensorType(SensorType value) {
 			return "OilPressure";
 		case SensorType::OilTemperature:
 			return "OilTemperature";
+		case SensorType::OutputShaftSpeed:
+			return "OutputShaftSpeed";
 		case SensorType::PlaceholderLast:
 			return "PlaceholderLast";
 		case SensorType::RangeInput1:
@@ -173,12 +175,16 @@ const char *getSensorType(SensorType value) {
 			return "Tps1Primary";
 		case SensorType::Tps1Secondary:
 			return "Tps1Secondary";
+		case SensorType::Tps1Unfiltered:
+			return "Tps1Unfiltered";
 		case SensorType::Tps2:
 			return "Tps2";
 		case SensorType::Tps2Primary:
 			return "Tps2Primary";
 		case SensorType::Tps2Secondary:
 			return "Tps2Secondary";
+		case SensorType::Tps2Unfiltered:
+			return "Tps2Unfiltered";
 		case SensorType::TurbochargerSpeed:
 			return "TurbochargerSpeed";
 		case SensorType::VehicleSpeed:

@@ -28,7 +28,7 @@ static const float hardCodedHpfpLobeProfileAnglesForThreeLobes[16] = {0.0, 7.5, 
 96.0 , 103.5, 112.5, 120.0
 };
 
-  float multiplier = 3.0 / lobes;
+  float multiplier = 3.0f / lobes;
 	for (size_t i = 0; i < HPFP_LOBE_PROFILE_SIZE; i++) {
     config->hpfpLobeProfileAngle[i] = multiplier * hardCodedHpfpLobeProfileAnglesForThreeLobes[i];
 	}
@@ -43,13 +43,13 @@ static void setDefaultHPFP() {
 
 // todo: would be nice for unit tests to be happy about these defaults
 #if EFI_PROD_CODE || EFI_SIMULATOR
-	engineConfiguration->hpfpPumpVolume = 0.290;
+	engineConfiguration->hpfpPumpVolume = 0.290f;
 #endif
 	engineConfiguration->hpfpMinAngle = 10;
 	engineConfiguration->hpfpActivationAngle = 30;
 	engineConfiguration->hpfpTargetDecay = 2000;
-	engineConfiguration->hpfpPidP = 0.01;
-	engineConfiguration->hpfpPidI = 0.0003;
+	engineConfiguration->hpfpPidP = 0.01f;
+	engineConfiguration->hpfpPidI = 0.0003f;
 	engineConfiguration->hpfpPeakPos = 10;
 }
 
@@ -62,7 +62,7 @@ static void setGdiDefaults() {
 
 	setLinearCurve(config->hpfpFuelMassCompensationFuelMass, 0.0, 500, 10);
 	setLinearCurve(config->hpfpFuelMassCompensationFuelPressure, 0, 300, 25);
-	setTable(config->hpfpFuelMassCompensation, 1.0);
+	setTable(config->hpfpFuelMassCompensation, 1.0f);
 
 	setLinearCurve(config->injectorFlowLinearizationFuelMassBins, 0.0, 500, 10);
 	setLinearCurve(config->injectorFlowLinearizationPressureBins, 0, 300, 25);
@@ -85,7 +85,7 @@ void setGDIFueling() {
 	// Reference rail pressure is 10 000 kPa = 100 bar
 	engineConfiguration->fuelReferencePressure = 10000;
 	//setting "flat" 0.2 ms injector's lag time
-	setTable(engineConfiguration->injector.battLagCorrTable, 0.2);
+	setTable(engineConfiguration->injector.battLagCorrTable, 0.2f);
 
 	setTable(config->injectionPhase, -200.0f);
 	engineConfiguration->injectionTimingMode = InjectionTimingMode::Center;
@@ -119,16 +119,24 @@ void setDynoDefaults() {
 
     config->dynoCarGearPrimaryReduction = 1;
     config->dynoCarGearRatio = 1.0;
-    config->dynoCarGearFinalDrive = 4.2;
+    config->dynoCarGearFinalDrive = 4.2f;
 
     config->dynoCarCarMassKg = 1000;
     config->dynoCarCargoMassKg = 95;
-    config->dynoCarCoeffOfDrag = 0.29;
-    config->dynoCarFrontalAreaM2 = 1.85;
+    config->dynoCarCoeffOfDrag = 0.29f;
+    config->dynoCarFrontalAreaM2 = 1.85f;
  }
 
 bool applyDefaultsOrFixAfterBurn(const engine_configuration_s* previousConfiguration) {
   bool changed = false;
+
+#if !KNOCK_SPECTROGRAM
+  // Tunes can carry this optional display setting from a spectrogram-capable build.
+  if (engineConfiguration->enableKnockSpectrogram) {
+    engineConfiguration->enableKnockSpectrogram = false;
+    changed = true;
+  }
+#endif
 
   if (config->dynoCarCarMassKg == 0) {
     setDynoDefaults();
@@ -136,12 +144,17 @@ bool applyDefaultsOrFixAfterBurn(const engine_configuration_s* previousConfigura
   }
 
   if (engineConfiguration->engineShutDownPeriod == 0) {
-    engineConfiguration->engineShutDownPeriod = 5;
+    engineConfiguration->engineShutDownPeriod = 3;
     changed = true;
   }
 
   if (engineConfiguration->mainRelayDisableTime == 0) {
     engineConfiguration->mainRelayDisableTime = 1;
+    changed = true;
+  }
+
+  if (engineConfiguration->transmissionSlipMinVss == 0) {
+    engineConfiguration->transmissionSlipMinVss = 5;
     changed = true;
   }
 
@@ -212,6 +225,18 @@ bool applyDefaultsOrFixAfterBurn(const engine_configuration_s* previousConfigura
 	  engineConfiguration->ppsExpAverageAlpha = 1;
 	  changed = true;
 	}
+	if (!std::isfinite(engineConfiguration->tpsExpAverageAlpha) || engineConfiguration->tpsExpAverageAlpha <= 0 || engineConfiguration->tpsExpAverageAlpha > 1) {
+	  engineConfiguration->tpsExpAverageAlpha = 1;
+	  changed = true;
+	}
+	if (!std::isfinite(engineConfiguration->tpsExpAverageResetThreshold) || engineConfiguration->tpsExpAverageResetThreshold < 0) {
+	  engineConfiguration->tpsExpAverageResetThreshold = 10;
+	  changed = true;
+	}
+	if (!std::isfinite(engineConfiguration->tpsExpAverageResetTimeMs) || engineConfiguration->tpsExpAverageResetTimeMs < 0) {
+	  engineConfiguration->tpsExpAverageResetTimeMs = 50;
+	  changed = true;
+	}
 	if (engineConfiguration->afrExpAverageAlpha <= 0 || engineConfiguration->afrExpAverageAlpha > 1) {
 	  engineConfiguration->afrExpAverageAlpha = 1;
 	  changed = true;
@@ -243,8 +268,41 @@ bool applyDefaultsOrFixAfterBurn(const engine_configuration_s* previousConfigura
 		changed = true;
 	}
 
-	if (engineConfiguration->vvtControlMinRpm < engineConfiguration->cranking.rpm) {
-		engineConfiguration->vvtControlMinRpm = engineConfiguration->cranking.rpm;
+	if (engineConfiguration->fan1PwmFrequency == 0) {
+        engineConfiguration->fan1PwmFrequency = 250;
+        changed = true;
+    }
+
+    if (engineConfiguration->fan2PwmFrequency == 0) {
+        engineConfiguration->fan2PwmFrequency = 250;
+        changed = true;
+    }
+
+	// Seed fields absent in older tunes without overwriting a deliberately one-sided limit.
+	if (engineConfiguration->vvtIntake_iTermMin == 0 && engineConfiguration->vvtIntake_iTermMax == 0) {
+		engineConfiguration->vvtIntake_iTermMin = -1000;
+		engineConfiguration->vvtIntake_iTermMax = 1000;
+		changed = true;
+	}
+	if (engineConfiguration->vvtExhaust_iTermMin == 0 && engineConfiguration->vvtExhaust_iTermMax == 0) {
+		engineConfiguration->vvtExhaust_iTermMin = -1000;
+		engineConfiguration->vvtExhaust_iTermMax = 1000;
+		changed = true;
+	}
+	if (engineConfiguration->vvtAdvDistanceBinsIntake[VVT_ADV_DISTANCE_SIZE - 1] == 0) {
+		setLinearCurve(engineConfiguration->vvtAdvDistanceBinsIntake, -40, 40, 1);
+		changed = true;
+	}
+	if (engineConfiguration->vvtAdvDistanceBinsExhaust[VVT_ADV_DISTANCE_SIZE - 1] == 0) {
+		setLinearCurve(engineConfiguration->vvtAdvDistanceBinsExhaust, -40, 40, 1);
+		changed = true;
+	}
+	if (engineConfiguration->vvtAdvOilPressureBinsIntake[VVT_ADV_OILP_SIZE - 1] == 0) {
+		setLinearCurve(engineConfiguration->vvtAdvOilPressureBinsIntake, 0, 1000, 1);
+		changed = true;
+	}
+	if (engineConfiguration->vvtAdvOilPressureBinsExhaust[VVT_ADV_OILP_SIZE - 1] == 0) {
+		setLinearCurve(engineConfiguration->vvtAdvOilPressureBinsExhaust, 0, 1000, 1);
 		changed = true;
 	}
 
@@ -298,7 +356,9 @@ void setDefaultBaseEngine() {
 
 	engineConfiguration->compressionRatio = 9;
 	engineConfiguration->vssFilterReciprocal = VSS_FILTER_MIN;
-	engineConfiguration->boardUseCanTerminator = true;
+	engineConfiguration->ossFilterReciprocal = 3;
+	engineConfiguration->outputShaftSpeedSensorTeeth = 1;
+	engineConfiguration->transmissionSlipMinVss = 5;
 	engineConfiguration->acLowRpmLimit = 500;
 
 	engineConfiguration->mafFilterParameter = 1;
@@ -337,7 +397,7 @@ void setDefaultBaseEngine() {
 
   engineConfiguration->watchOutForLinearTime = true;
 
-  setLinearCurve(engineConfiguration->tractionControlSlipBins, /*from*/0.9, /*to*/1.2, 0.05);
+  setLinearCurve(engineConfiguration->tractionControlSlipBins, /*from*/0.9f, /*to*/1.2f, 0.05f);
 	setLinearCurve(engineConfiguration->tractionControlSpeedBins, /*from*/10, /*to*/120, 5);
 
 	engineConfiguration->turbochargerFilter = 0.01f;
@@ -353,6 +413,7 @@ void setDefaultBaseEngine() {
 	engineConfiguration->debugMode = DBG_EXECUTOR;
 
   engineConfiguration->speedometerPulsePerKm = 2485; // GM GMT800 platform
+  engineConfiguration->speedometerBenchTestFrequency = 100; // Hz, used by the "Test Speedo" bench test button
 
 	engineConfiguration->primingDelay = 0.5;
 	// this should not be below default rpm! maybe even make them equal?
@@ -493,6 +554,7 @@ void setDefaultBaseEngine() {
 	engineConfiguration->iacByTpsTaper = 2;
 
     engineConfiguration->etbSplit = MAX_TPS_PPS_DISCREPANCY;
+	engineConfiguration->tpsExpAverageAlpha = 1;
 
 	// Advanced Trigger
 

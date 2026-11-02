@@ -24,10 +24,12 @@
 #if HAL_USE_ADC
 
 #include "adc_device.h"
+#include "adc_onchip.h"
 #include "adc_subscription.h"
 #include "mpu_util.h"
 #include "periodic_thread_controller.h"
 #include "protected_gpio.h"
+#include "adc_callback_utils.h"
 
 #ifndef ADC_MAX_CHANNELS_COUNT
 #define ADC_MAX_CHANNELS_COUNT 16
@@ -132,8 +134,9 @@ AdcDevice fastAdc(&ADC_FAST_DEVICE, &adcgrpcfgFast, fastAdcSampleBuf, ADC_BUF_DE
 static efitick_t lastTick = 0;
 
 static void fastAdcDoneCB(ADCDriver *adcp) {
-	// State may not be complete if we get a callback for "half done"
-	if (adcIsBufferComplete(adcp)) {
+	if (adcCallbackShouldProcess(adcgrpcfgFast.circular, [adcp] {
+		return adcIsBufferComplete(adcp);
+	})) {
 		efitick_t nowTick = getTimeNowNt();
 		efitick_t diff = nowTick - lastTick;
 		lastTick = nowTick;
@@ -207,6 +210,10 @@ int AdcDevice::size() const {
 
 void AdcDevice::init(void) {
 	hwConfig->num_channels = size();
+	// No configured fast inputs: do not run an empty ADC sequence/timer.
+	if (hwConfig->num_channels == 0) {
+		return;
+	}
 	/* driver does this internally */
 	//hwConfig->sqr1 += ADC_SQR1_NUM_CH(size());
 
@@ -222,17 +229,24 @@ void AdcDevice::init(void) {
 }
 
 int AdcDevice::enableChannel(adc_channel_e hwChannel) {
+	if (!isAdcChannelOnChip(hwChannel)) {
+		return -1;
+	}
+#if defined(STM32F4) || defined(STM32F7)
+	int channelAdcIndex = getAdcInternalChannel(adcp->adc, hwChannel);
+	if (channelAdcIndex < 0) {
+		criticalError("ADC input %d unavailable for fast sampling", hwChannel);
+		return -1;
+	}
+#else
+	size_t channelAdcIndex = hwChannel - EFI_ADC_0;
+#endif
 	if ((channelCount + 1) >= ADC_MAX_CHANNELS_COUNT) {
 		criticalError("Too many ADC channels configured");
 		return -1;
 	}
 
 	int logicChannel = channelCount++;
-
-	/* TODO: following is correct for STM32 ADC1/2.
-	 * ADC3 has another input to gpio mapping
-	 * and should be handled separately */
-	size_t channelAdcIndex = hwChannel - EFI_ADC_0;
 
 	internalAdcIndexByHardwareIndex[hwChannel] = logicChannel;
 	if (logicChannel < 6) {
@@ -256,6 +270,9 @@ int AdcDevice::enableChannel(adc_channel_e hwChannel) {
 
 void AdcDevice::startConversionI()
 {
+	if (hwConfig->num_channels == 0) {
+		return;
+	}
 	chSysLockFromISR();
 	if ((ADC_FAST_DEVICE.state == ADC_READY) ||
 		(ADC_FAST_DEVICE.state == ADC_ERROR)) {

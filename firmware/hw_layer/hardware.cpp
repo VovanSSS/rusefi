@@ -101,7 +101,8 @@ std::optional<setup_custom_board_engine_type_type> custom_board_applyUnknownType
 
 #if HAL_USE_ADC
 
-static AdcToken fastMapSampleIndex;
+// ADC interrupts can run before calcFastAdcIndexes() selects the MAP input.
+static AdcToken fastMapSampleIndex = invalidAdcToken;
 
 #if HAL_TRIGGER_USE_ADC
 static AdcToken triggerSampleIndex;
@@ -126,7 +127,7 @@ void onFastAdcComplete(adcsample_t*) {
 	auto mapRaw = adcRawValueToScaledVoltage(getFastAdc(fastMapSampleIndex), engineConfiguration->map.sensor.hwChannel);
 	engine->outputChannels.rawMapFast = mapRaw;
 #if EFI_MAP_AVERAGING && defined (MODULE_MAP_AVERAGING)
-	mapAveragingAdcCallback(mapRaw);
+	mapAveragingAdcCallback(mapRaw, fastMapSampleIndex != invalidAdcToken);
 #endif /* EFI_MAP_AVERAGING */
 }
 #endif /* HAL_USE_ADC */
@@ -157,6 +158,10 @@ void applyNewHardwareSettings() {
      */
 	ButtonDebounce::stopConfigurationList();
 
+#ifdef MODULE_FUEL_PUMP
+	stopFuelPump();
+#endif
+
 #if EFI_PROD_CODE
 	stopSensors();
 #endif // EFI_PROD_CODE
@@ -177,6 +182,10 @@ void applyNewHardwareSettings() {
 
 
 	stopHardware();
+
+#if EFI_I2C_SUPPORT
+	stopI2cModules();
+#endif
 
 #if HAL_USE_SPI
 	stopSpiModules();
@@ -322,6 +331,10 @@ void initHardwareNoConfig() {
 	initEarlyMmcCard();
 #endif // EFI_FILE_LOGGING
 
+#if EFI_I2C_SUPPORT
+	initEarlyI2c();
+#endif
+
 #if HAL_USE_PAL && EFI_PROD_CODE
 	// this should be initialized before detectBoardType()
 	efiExtiInit();
@@ -387,11 +400,15 @@ void startHardware() {
 PUBLIC_API_WEAK void setPinConfigurationOverrides() { }
 
 #if HAL_USE_I2C
+#if defined(STM32F7)
+/* TODO: do we have F7 with eeprom? */
+#else
 const I2CConfig i2cfg = {
-    OPMODE_I2C,
-    400000,
-    FAST_DUTY_CYCLE_2,
+    .op_mode = OPMODE_I2C,
+    .clock_speed = 400000,
+    .duty_cycle = FAST_DUTY_CYCLE_2,
 };
+#endif
 #endif
 
 void initHardware() {
@@ -424,6 +441,10 @@ void initHardware() {
 #ifdef TRIGGER_SCOPE
 	initTriggerScope();
 #endif // TRIGGER_SCOPE
+
+#if EFI_I2C_SUPPORT
+	initI2cModules();
+#endif
 
 #if HAL_USE_SPI
 	initSpiModules();

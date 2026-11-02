@@ -87,6 +87,12 @@ void MisfireController::finishSegment(uint8_t cylinderNumber, efitick_t nowNt) {
 	evaluateSegment(segUs);
 }
 
+void MisfireController::onSlowCallback() {
+	if (misfireLatched) {
+		warning(ObdCode::OBD_Random_Misfire);
+	}
+}
+
 void MisfireController::recordFiring(bool flagged) {
 	m_window[m_windowHead] = flagged;
 	m_windowHead = (m_windowHead + 1) % MISFIRE_WINDOW_MAX;
@@ -332,6 +338,7 @@ void MisfireController::scheduleNextCycleSegments() {}
 void MisfireController::captureSegmentStart(uint8_t, efitick_t) {}
 void MisfireController::finishSegment(uint8_t, efitick_t) {}
 void MisfireController::onEngineStop() {}
+void MisfireController::onSlowCallback() {}
 void MisfireController::evaluateSegment(float) {}
 void MisfireController::registerMisfire() {}
 void MisfireController::resetDetectionState() {}

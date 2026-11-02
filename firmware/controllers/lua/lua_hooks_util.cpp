@@ -7,8 +7,21 @@
 
 #include "pch.h"
 #include "lua_hooks_util.h"
+#include "lua_hooks_registry.h"
 #include "script_impl.h"
 
+/**
+ * Lua print(msg) -> one efiPrintf line.
+ *
+ * Limits, see LogLineBuffer in loggingcentral.h:
+ *  - a line holds 255 characters including the "msg`LUA: " prefix and trailing delimiter,
+ *    so at most 245 characters of msg make it to the log; longer strings are truncated,
+ *    NOT split across lines (https://github.com/rusefi/rusefi/issues/10159)
+ *  - only 24 lines can be queued; a print() loop that outruns the flusher thread and the
+ *    TS/console reader silently drops lines
+ *  - the whole output buffer is DL_OUTPUT_BUFFER (6500) bytes per console read
+ * Use print() for occasional diagnostics, not as a data channel.
+ */
 static int lua_efi_print(lua_State* l) {
 	auto msg = luaL_checkstring(l, 1);
 
@@ -36,11 +49,11 @@ static int lua_interpolate(lua_State* l) {
 }
 
 
-void configureRusefiLuaUtilHooks(lua_State* lState) {
-	lua_register(lState, "print", lua_efi_print);
-	lua_register(lState, "interpolate", lua_interpolate);
+void enumerateRusefiLuaUtilHooks(LuaHookRegistry& hooks) {
+	hooks.add( "print", lua_efi_print);
+	hooks.add( "interpolate", lua_interpolate);
 
-	lua_register(lState, "findCurveIndex", [](lua_State* l) {
+	hooks.add( "findCurveIndex", [](lua_State* l) {
 		auto name = luaL_checklstring(l, 1, nullptr);
 		auto result = getCurveIndexByName(name);
 		if (!result) {
@@ -52,7 +65,7 @@ void configureRusefiLuaUtilHooks(lua_State* lState) {
 		return 1;
 	});
 
-	lua_register(lState, "findTableIndex",
+	hooks.add( "findTableIndex",
 			[](lua_State* l) {
 			auto name = luaL_checklstring(l, 1, nullptr);
 			auto index = getTableIndexByName(name);
@@ -65,7 +78,7 @@ void configureRusefiLuaUtilHooks(lua_State* lState) {
 			return 1;
 	});
 
-	lua_register(lState, "findSetting",
+	hooks.add( "findSetting",
 			[](lua_State* l) {
 			auto name = luaL_checklstring(l, 1, nullptr);
 			auto defaultValue = luaL_checknumber(l, 2);
@@ -87,7 +100,7 @@ void configureRusefiLuaUtilHooks(lua_State* lState) {
 // works on STM32F4 and STM32F7 but only on specific boards
 // (it's all about PA0 being not used by ADC etc)
 #if defined(LUA_STM32_STANDBY)
-	lua_register(lState, "mcu_standby", [](lua_State*) {
+	hooks.add( "mcu_standby", [](lua_State*) {
 	  if (getTimeNowS() < STARTUP_STANDBY_PROHIBITED_PERIOD_SEC) {
 	    criticalError("mcu_standby invoked right on start");
 	    return 0;
@@ -106,6 +119,12 @@ void configureRusefiLuaUtilHooks(lua_State* lState) {
 		return 1;
 	});
 */
+}
+
+
+void configureRusefiLuaUtilHooks(lua_State* lState) {
+	LuaHookRegistry eagerRegistry(lState);
+	enumerateRusefiLuaUtilHooks(eagerRegistry);
 }
 
 void * hackEngineConfigurationPointer(void *ptr) {

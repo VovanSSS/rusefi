@@ -26,7 +26,11 @@ static CanTsListener g_listener;
 // for RX, this one delegates to above FIFO via global field
 static CanTransport transport(&g_listener);
 
-static CanStreamerState state(&transport, &transport, /*bus*/0, CAN_ECU_SERIAL_RX_ID, CAN_ECU_SERIAL_TX_ID);
+static_assert(EFI_SERIAL_CAN_BUS >= 1 && EFI_SERIAL_CAN_BUS <= EFI_CAN_BUS_COUNT,
+	"EFI_SERIAL_CAN_BUS is 1-based and must not exceed EFI_CAN_BUS_COUNT");
+
+// ISO-TP layer takes a 0-based bus index
+static CanStreamerState state(&transport, &transport, /*busIndex*/EFI_SERIAL_CAN_BUS - 1, CAN_ECU_SERIAL_RX_ID, CAN_ECU_SERIAL_TX_ID);
 #endif // HAL_USE_CAN
 
 #if HAL_USE_CAN || EFI_UNIT_TEST
@@ -53,6 +57,14 @@ void CanTsListener::decodeFrame(const CANRxFrame& frame, efitick_t /*nowNt*/) {
 	}
 	// todo: what if the FIFO is full?
 	CanRxMessage msg(frame);
+	if ((frame.data8[0] >> 4) == ISO_TP_FRAME_FLOW_CONTROL) {
+		// TX acknowledgements have a separate queue. Waiting for one must not
+		// consume a command or change its partially assembled receive state.
+		if (frame.DLC >= 3 && !flowControlFifo.put(msg)) {
+			warning(ObdCode::CUSTOM_ERR_CAN_COMMUNICATION, "CAN flow control queue full");
+		}
+		return;
+	}
 	if (engineConfiguration->verboseIsoTp) {
 		PRINT("*** INFO: CanTsListener decodeFrame %d" PRINT_EOL, isoTpPacketCounter++);
 	}
@@ -118,6 +130,21 @@ can_msg_t CanTransport::waitForFlowControl(uint32_t initialFcCounter, uint8_t *b
 		fcWaitTimeout++;
 		return CAN_MSG_TIMEOUT;
 	}
+
+// merged from master: kept alongside the counter poll above so the transport
+// fully implements both interface variants merged into ICanReceiver.
+void CanTransport::prepareFlowControlWait() {
+	source->prepareFlowControlWait();
+}
+
+can_msg_t CanTransport::receiveFlowControl(CANRxFrame *crfp, can_sysinterval_t timeout) {
+	CanRxMessage msg;
+	if (source->getFlowControl(msg, timeout)) {
+		*crfp = msg.frame;
+		return CAN_MSG_OK;
+	}
+	return CAN_MSG_TIMEOUT;
+}
 
 void tsOverCanInit() {
 	transport.init();

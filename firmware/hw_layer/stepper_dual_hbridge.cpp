@@ -8,8 +8,6 @@
 
 #include "pch.h"
 
-#if !EFI_UNIT_TEST
-
 #include "stepper.h"
 #include "dc_motor.h"
 
@@ -48,7 +46,8 @@ void DualHBridgeStepper::initialize(DcMotor* motorPhaseA, DcMotor* motorPhaseB, 
     m_motorPhaseA = motorPhaseA;
     m_motorPhaseB = motorPhaseB;
 
-    efiAssertVoid(ObdCode::CUSTOM_ERR_ASSERT, engineConfiguration->stepperNumMicroSteps <= maxNumSteps, "stepperNumMicroSteps");
+    // [tag:user_facing_ini_labels] Match the idle stepper label in tunerstudio.template.ini.
+    efiAssertVoid(ObdCode::CUSTOM_ERR_ASSERT, engineConfiguration->stepperNumMicroSteps <= maxNumSteps, "Invalid Stepping Mode");
 }
 
 bool DualHBridgeStepper::step(bool positive) {
@@ -113,5 +112,3 @@ void DualHBridgeStepper::sleep() {
 	update(sleepingCoef);
 	pause();
 }
-
-#endif

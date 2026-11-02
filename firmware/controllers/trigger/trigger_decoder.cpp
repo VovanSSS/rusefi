@@ -284,7 +284,7 @@ angle_t PrimaryTriggerDecoder::syncEnginePhase(int divider, int remainder, angle
 	m_hasSynchronizedPhase = true;
 
 	if (totalShift > 0) {
-		m_phaseAdjustment = totalShift;
+		m_phaseAdjustment = static_cast<uint16_t>(totalShift);
 		// Resync angle changed - count how many times this happens
 		phaseResyncCounter++;
 		onTransitionEvent(TransitionEvent::EngineResync);
@@ -318,6 +318,13 @@ void PrimaryTriggerDecoder::onTriggerError() {
 }
 
 void PrimaryTriggerDecoder::onNotEnoughTeeth(int /*actual*/, int /*expected*/) {
+#if EFI_ENGINE_CONTROL
+	// Suppress only the report: decoding, sync loss and error counters still run.
+	if (getLimpManager()->shutdownController.isEngineStop(getTimeNowNt())) {
+		return;
+	}
+#endif // EFI_ENGINE_CONTROL
+
 	warning(ObdCode::CUSTOM_PRIMARY_NOT_ENOUGH_TEETH, "primary trigger error: not enough teeth between sync points: expected %d/%d got %d/%d",
 			getTriggerCentral()->triggerShape.getExpectedEventCount(TriggerWheel::T_PRIMARY),
 			getTriggerCentral()->triggerShape.getExpectedEventCount(TriggerWheel::T_SECONDARY),
@@ -331,6 +338,13 @@ int tooManyTeethCounter = 0;
 #endif // EFI_UNIT_TEST
 
 void PrimaryTriggerDecoder::onTooManyTeeth(int /*actual*/, int /*expected*/) {
+#if EFI_ENGINE_CONTROL
+	// Suppress only the report: decoding, sync loss and error counters still run.
+	if (getLimpManager()->shutdownController.isEngineStop(getTimeNowNt())) {
+		return;
+	}
+#endif // EFI_ENGINE_CONTROL
+
 	warning(ObdCode::CUSTOM_PRIMARY_TOO_MANY_TEETH, "primary trigger error: too many teeth between sync points: expected %d/%d got %d/%d",
 			getTriggerCentral()->triggerShape.getExpectedEventCount(TriggerWheel::T_PRIMARY),
 			getTriggerCentral()->triggerShape.getExpectedEventCount(TriggerWheel::T_SECONDARY),
@@ -362,10 +376,24 @@ case TriggerValue::RISE:
 }
 
 void VvtTriggerDecoder::onNotEnoughTeeth(int actual, int expected) {
+#if EFI_ENGINE_CONTROL
+	// Suppress only the report: decoding, sync loss and error counters still run.
+	if (getLimpManager()->shutdownController.isEngineStop(getTimeNowNt())) {
+		return;
+	}
+#endif // EFI_ENGINE_CONTROL
+
 	warning(ObdCode::CUSTOM_CAM_NOT_ENOUGH_TEETH, "cam %s trigger error: not enough teeth between sync points: actual %d expected %d", name, actual, expected);
 }
 
 void VvtTriggerDecoder::onTooManyTeeth(int actual, int expected) {
+#if EFI_ENGINE_CONTROL
+	// Suppress only the report: decoding, sync loss and error counters still run.
+	if (getLimpManager()->shutdownController.isEngineStop(getTimeNowNt())) {
+		return;
+	}
+#endif // EFI_ENGINE_CONTROL
+
 	warning(ObdCode::CUSTOM_CAM_TOO_MANY_TEETH, "cam %s trigger error: too many teeth between sync points: %d > %d", name, actual, expected);
 }
 
@@ -455,7 +483,7 @@ void TriggerDecoderBase::printGaps(const char * prefix,
 						continue;
 					}
 
-					float gap = 1.0 * toothDurations[i] / toothDurations[i + 1];
+					float gap = 1.0f * toothDurations[i] / toothDurations[i + 1];
 					if (std::isnan(gap)) {
 						efiPrintf("%s index=%d NaN gap, you have noise issues?", prefix, i);
 					} else {
@@ -501,7 +529,7 @@ TRIGGER_RAM_CODE expected<TriggerDecodeResult> TriggerDecoderBase::decodeTrigger
 	lastSyncWasClean = false;
 
 #if EFI_PROD_CODE
-  getTriggerCentral()->triggerElapsedUs = previousEventTimer.getElapsedUs();
+  getTriggerCentral()->triggerElapsedUs = static_cast<uint32_t>(previousEventTimer.getElapsedUs());
 #endif
 
 	if (previousEventTimer.getElapsedSecondsAndReset(nowNt) > 1) {
@@ -713,7 +741,7 @@ TRIGGER_RAM_CODE expected<TriggerDecodeResult> TriggerDecoderBase::decodeTrigger
 #else
 			if (printTriggerTrace) {
 				for (int i = 0;i<triggerShape.gapTrackingLength;i++) {
-					float gap = 1.0 * toothDurations[i] / toothDurations[i + 1];
+					float gap = 1.0f * toothDurations[i] / toothDurations[i + 1];
 					printf("%sindex=%d: gap=%.2f expected from %.2f to %.2f error=%s\r\n",
 							triggerConfiguration.PrintPrefix,
 							i,

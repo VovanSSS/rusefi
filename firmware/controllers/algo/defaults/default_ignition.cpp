@@ -23,12 +23,12 @@ static void setDefaultIatTimingCorrection() {
 	// top rows are the same
 	for (size_t i = 0; i < efi::size(config->ignitionIatCorrTable) - 1; i++) {
 		//																						40  50  60 deg C
-		copyArrayInterpolated(config->ignitionIatCorrTable[i], {0.0, 0.0, 0.0, 0.0, 0.0, -1.0, -2.0, -3.0});
+		copyArrayInterpolated(config->ignitionIatCorrTable[i], {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, -2.0f, -3.0f});
 	}
 
 	// last row tapers out
 	//																											40  50  60 deg C
-	copyArrayInterpolated(config->ignitionIatCorrTable[efi::size(config->ignitionIatCorrTable) - 1], {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, -2.0});
+	copyArrayInterpolated(config->ignitionIatCorrTable[efi::size(config->ignitionIatCorrTable) - 1], {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, -2.0f});
 }
 
 static void setDefaultCltTimingCorrection() {
@@ -38,7 +38,7 @@ static void setDefaultCltTimingCorrection() {
 #if CLT_TIMING_TEMP_AXIS_SIZE == 5
 	for (size_t i = 0; i < CLT_TIMING_TEMP_AXIS_SIZE; i++) {
 	  // huh? use setArrayValues? and we probably get all zeros by default anyway?
-		copyArray(config->ignitionCltCorrTable[i], {0.0, 0.0, 0.0, 0.0, 0.0});
+		copyArray(config->ignitionCltCorrTable[i], {0.0f, 0.0f, 0.0f, 0.0f, 0.0f});
 	}
 #endif
 }
@@ -67,15 +67,15 @@ static float getAdvanceForRpm(float rpm, float advanceMax) {
 	return interpolateMsg("advance", 600, 10, 3000, advanceMax, rpm);
 }
 
-#define round10(x) efiRound(x, 0.1)
+#define round10(x) efiRound(x, 0.1f)
 
 float getInitialAdvance(float rpm, float map, float advanceMax) {
 	map = std::min(map, 100.0f);
 	float advance = getAdvanceForRpm(rpm, advanceMax);
 
 	if (rpm >= 3000)
-		return round10(advance + 0.1 * (100 - map));
-	return round10(advance + 0.1 * (100 - map) * rpm / 3000);
+		return round10(advance + 0.1f * (100 - map));
+	return round10(advance + 0.1f * (100 - map) * rpm / 3000);
 }
 
 /**
@@ -111,7 +111,7 @@ void setDefaultIgnition() {
 	// Dwell table - a bit conservative but reasonable
 	setConstantDwell(4);
 
-	setLinearCurve(config->dwellVoltageCorrVoltBins, 8, 15, 0.1);
+	setLinearCurve(config->dwellVoltageCorrVoltBins, 8, 15, 0.1f);
 	setLinearCurve(config->dwellVoltageCorrValues, 1, 1, 1);
 
 	// Dwell Duty Mode - disabled by default; 50% is the standard TFI module target.

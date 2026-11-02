@@ -160,7 +160,6 @@ PROJECT = openblt_$(PROJECT_BOARD)
 # Configure precompiled header
 PCH_DIR = $(PROJECT_DIR)/pch
 PCHSRC = $(PCH_DIR)/pch.h
-PCHSUB = bootloader
 
 # Imported source files and paths
 CHIBIOS = $(PROJECT_DIR)/ChibiOS
@@ -206,7 +205,7 @@ include $(PROJECT_DIR)/init/init.mk
 include $(PROJECT_DIR)/util/util.mk
 
 include $(PROJECT_DIR)/controllers/controllers.mk
-include $(PROJECT_DIR)/hw_layer/$(CPU_HWLAYER)/hw_ports.mk
+include $(CPU_HWLAYER_DIR)/hw_ports.mk
 include $(PROJECT_DIR)/hw_layer/drivers/drivers.mk
 
 # C sources that can be compiled in ARM or THUMB mode depending on the global
@@ -300,7 +299,7 @@ INCDIR += $(BOARDINC) \
 	$(PROJECT_DIR)/hw_layer/mass_storage \
 	$(PROJECT_DIR)/hw_layer/ports \
 	$(PROJECT_DIR)/console/binary/generated \
-	$(PROJECT_DIR)/hw_layer/$(CPU_HWLAYER) \
+	$(CPU_HWLAYER_DIR) \
 	$(HW_INC) \
 	$(HW_LAYER_DRIVERS_INC) \
 	$(PROJECT_DIR)/development \

@@ -8,6 +8,7 @@ include $(PROJECT_DIR)/controllers/system/system.mk
 CONTROLLERS_DIR=$(PROJECT_DIR)/controllers
 
 CONTROLLERS_SRC_CPP = \
+	$(CONTROLLERS_DIR)/gauges/past_codes.cpp \
 	$(CONTROLLERS_DIR)/actuators/electronic_throttle.cpp \
 	$(CONTROLLERS_DIR)/actuators/ac_control.cpp \
 	$(CONTROLLERS_DIR)/actuators/alternator_controller.cpp \
@@ -24,7 +25,6 @@ CONTROLLERS_SRC_CPP = \
 	$(CONTROLLERS_DIR)/actuators/gppwm/gppwm_channel.cpp \
 	$(CONTROLLERS_DIR)/actuators/gppwm/gppwm.cpp \
 	$(CONTROLLERS_DIR)/gauges/speedometer.cpp \
-	$(CONTROLLERS_DIR)/gauges/malfunction_indicator.cpp \
 	$(CONTROLLERS_DIR)/system/timer/single_timer_executor.cpp \
 	$(CONTROLLERS_DIR)/system/timer/isr_duration_histogram.cpp \
 	$(CONTROLLERS_DIR)/system/timer/pwm_generator_logic.cpp \
@@ -48,6 +48,7 @@ CONTROLLERS_SRC_CPP = \
 	$(CONTROLLERS_DIR)/storage_sd.cpp \
 	$(CONTROLLERS_DIR)/bench_test.cpp \
 	$(CONTROLLERS_DIR)/can/obd2.cpp \
+	$(CONTROLLERS_DIR)/can/uds.cpp \
 	$(CONTROLLERS_DIR)/can/can_verbose.cpp \
 	$(CONTROLLERS_DIR)/can/can_rx.cpp \
 	$(CONTROLLERS_DIR)/can/can_bench_test.cpp \
@@ -106,4 +107,3 @@ CONTROLLERS_INC=\
 	$(CONTROLLERS_DIR)/actuators/gppwm \
 	$(CONTROLLERS_DIR)/serial \
 	$(CONTROLLERS_DIR)/lua \
-

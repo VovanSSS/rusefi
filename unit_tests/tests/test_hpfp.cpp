@@ -6,6 +6,24 @@
 using ::testing::_;
 using ::testing::StrictMock;
 
+TEST(HPFP, ZeroLobesDisableConfiguredPump) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE, [](engine_configuration_s* cfg) {
+		cfg->hpfpValvePin = Gpio::A2;
+	});
+	engineConfiguration->hpfpCamLobes = 0;
+	engineConfiguration->hpfpPumpVolume = 0.29f;
+	ASSERT_TRUE(validateConfigOnStartUpOrBurn());
+	engine->engineState.injectionMass[0] = 0.01f * fuelDensity;
+	HpfpQuantity quantity;
+	EXPECT_FLOAT_EQ(0, quantity.calcFuelPercent(2000));
+	HpfpController controller;
+	EXPECT_FLOAT_EQ(0, quantity.pumpAngleFuel(2000, &controller));
+	EXPECT_FLOAT_EQ(0, controller.fuel_requested_percent);
+	engine->rpmCalculator.setRpmValue(2000);
+	controller.onFastCallback();
+	EXPECT_FALSE(controller.isHpfpActive);
+}
+
 TEST(HPFP, Lobe) {
 	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
 
@@ -57,8 +75,8 @@ TEST(HPFP, InjectionReplacementFuel) {
 
 	engineConfiguration->cylindersCount = 4;
 	engineConfiguration->hpfpCamLobes = 4;
-	engine->engineState.injectionMass[0] = 0.05 /* cc/cyl */ * fuelDensity;
-	engineConfiguration->hpfpPumpVolume = 0.2; // cc/lobe
+	engine->engineState.injectionMass[0] = 0.05f /* cc/cyl */ * fuelDensity;
+	engineConfiguration->hpfpPumpVolume = 0.2f; // cc/lobe
 
 	HpfpQuantity math;
 
@@ -69,7 +87,7 @@ TEST(HPFP, InjectionReplacementFuel) {
 	EXPECT_FLOAT_EQ(math.calcFuelPercent(1000), 25 * 1.333333333f);
 
 	// More fuel!
-	engine->engineState.injectionMass[0] = 0.1 /* cc/cyl */ * fuelDensity;
+	engine->engineState.injectionMass[0] = 0.1f /* cc/cyl */ * fuelDensity;
 	EXPECT_FLOAT_EQ(math.calcFuelPercent(1000), 50 * 1.333333333f);
 
 	// More cylinders!
@@ -85,7 +103,7 @@ TEST(HPFP, InjectionReplacementFuel) {
 	}
 	for (int i = 0; i < HPFP_COMPENSATION_SIZE; i++) {
 		// one bin every 0.05 cc/lobe
-		config->hpfpCompensationLoadBins[i] = std::min(i * 0.05, 60.);
+		config->hpfpCompensationLoadBins[i] = std::min(i * 0.05f, 60.f);
 	}
 
 	config->hpfpCompensation[2][1] = -10;
@@ -115,8 +133,8 @@ TEST(HPFP, PI) {
 
 	engineConfiguration->cylindersCount = 4;
 	engineConfiguration->hpfpCamLobes = 4;
-	engine->engineState.injectionMass[0] = 0.05 /* cc/cyl */ * fuelDensity;
-	engineConfiguration->hpfpPumpVolume = 0.2; // cc/lobe
+	engine->engineState.injectionMass[0] = 0.05f /* cc/cyl */ * fuelDensity;
+	engineConfiguration->hpfpPumpVolume = 0.2f; // cc/lobe
 
 	HpfpQuantity math;
 	HpfpController model;
@@ -157,15 +175,15 @@ TEST(HPFP, PI) {
 	model.resetQuantity(); // Reset for ease of testing
 	EXPECT_FLOAT_EQ(math.calcPI(1000, 0, &model), 0); // Validate reset
 	EXPECT_FLOAT_EQ(model.m_pressureTarget_kPa, 2010);
-	engineConfiguration->hpfpPidP = 0.01;
-	EXPECT_FLOAT_EQ(math.calcPI(1000, 0, &model), 10.10);
-	engineConfiguration->hpfpPidP = 0.02;
-	EXPECT_FLOAT_EQ(math.calcPI(1000, 0, &model), 20.20);
+	engineConfiguration->hpfpPidP = 0.01f;
+	EXPECT_FLOAT_EQ(math.calcPI(1000, 0, &model), 10.10f);
+	engineConfiguration->hpfpPidP = 0.02f;
+	EXPECT_FLOAT_EQ(math.calcPI(1000, 0, &model), 20.20f);
 
 	// Integral gain
-	engineConfiguration->hpfpPidI = 0.001;
-	EXPECT_FLOAT_EQ(math.calcPI(1000, 0, &model), 20.368334);
-	EXPECT_FLOAT_EQ(model.hpfp_i_control_percent, 0.168333333);
+	engineConfiguration->hpfpPidI = 0.001f;
+	EXPECT_FLOAT_EQ(math.calcPI(1000, 0, &model), 20.368334f);
+	EXPECT_FLOAT_EQ(model.hpfp_i_control_percent, 0.168333333f);
 }
 
 TEST(HPFP, Angle) {
@@ -178,8 +196,8 @@ TEST(HPFP, Angle) {
 
 	engineConfiguration->cylindersCount = 4;
 	engineConfiguration->hpfpCamLobes = 4;
-	engine->engineState.injectionMass[0] = 0.05 /* cc/cyl */ * fuelDensity;
-	engineConfiguration->hpfpPumpVolume = 0.2; // cc/lobe
+	engine->engineState.injectionMass[0] = 0.05f /* cc/cyl */ * fuelDensity;
+	engineConfiguration->hpfpPumpVolume = 0.2f; // cc/lobe
 
 	HpfpQuantity math;
 
@@ -197,8 +215,8 @@ TEST(HPFP, Angle) {
 		}
 	}
 	for (int i = 0; i < HPFP_LOBE_PROFILE_SIZE; i++) {
-		config->hpfpLobeProfileQuantityBins[i] = 100. * i / (HPFP_LOBE_PROFILE_SIZE - 1);
-		config->hpfpLobeProfileAngle[i] = 150. * i / (HPFP_LOBE_PROFILE_SIZE - 1);
+		config->hpfpLobeProfileQuantityBins[i] = static_cast<float>(100. * i / (HPFP_LOBE_PROFILE_SIZE - 1));
+		config->hpfpLobeProfileAngle[i] = static_cast<float>(150. * i / (HPFP_LOBE_PROFILE_SIZE - 1));
 	}
 
 	HpfpController model;
@@ -207,15 +225,15 @@ TEST(HPFP, Angle) {
 	EXPECT_FLOAT_EQ(math.calcPI(1000, 10, &model), 0); // Validate no PI
 	EXPECT_NEAR(math.pumpAngleFuel(1000, &model), 37.5, 0.4); // Given the profile, should be 50% higher
 
-	engine->engineState.injectionMass[0] = 0.08 /* cc/cyl */ * fuelDensity;
+	engine->engineState.injectionMass[0] = 0.08f /* cc/cyl */ * fuelDensity;
 	EXPECT_FLOAT_EQ(math.calcFuelPercent(1000), 40); // Double check baseline
 	EXPECT_FLOAT_EQ(math.calcPI(1000, 10, &model), 0); // Validate no PI
 	EXPECT_NEAR(math.pumpAngleFuel(1000, &model), 60, 0.4); // Given the profile, should be 50% higher
 
-	engineConfiguration->hpfpPidP = 0.01;
+	engineConfiguration->hpfpPidP = 0.01f;
 	Sensor::setMockValue(SensorType::Map, 40);
 	Sensor::setMockValue(SensorType::FuelPressureHigh, 1000);
-	EXPECT_FLOAT_EQ(math.calcPI(1000, 10, &model), 10.1);
+	EXPECT_FLOAT_EQ(math.calcPI(1000, 10, &model), 10.1f);
 	EXPECT_NEAR(math.pumpAngleFuel(1000, &model), 50.1 * 1.5, 0.4); // Given the profile, should be 50% higher
 }
 
@@ -224,7 +242,7 @@ TEST(HPFP, Schedule) {
 
 	engineConfiguration->cylindersCount = 4;
 	engineConfiguration->hpfpCamLobes = 4;
-	engineConfiguration->hpfpPumpVolume = 0.2; // cc/lobe
+	engineConfiguration->hpfpPumpVolume = 0.2f; // cc/lobe
 
 	for (int i = 0; i < HPFP_TARGET_SIZE; i++) {
 		// one bin every 1000 RPM
@@ -240,8 +258,8 @@ TEST(HPFP, Schedule) {
 		}
 	}
 	for (int i = 0; i < HPFP_LOBE_PROFILE_SIZE; i++) {
-		config->hpfpLobeProfileQuantityBins[i] = 100. * i / (HPFP_LOBE_PROFILE_SIZE - 1);
-		config->hpfpLobeProfileAngle[i] = 150. * i / (HPFP_LOBE_PROFILE_SIZE - 1);
+		config->hpfpLobeProfileQuantityBins[i] = static_cast<float>(100. * i / (HPFP_LOBE_PROFILE_SIZE - 1));
+		config->hpfpLobeProfileAngle[i] = static_cast<float>(150. * i / (HPFP_LOBE_PROFILE_SIZE - 1));
 	}
 
 	auto & hpfp = *engine->module<HpfpController>();
@@ -251,14 +269,14 @@ TEST(HPFP, Schedule) {
 	engineConfiguration->hpfpActivationAngle = 30;
 
 	constexpr angle_t angle0 = 90;
-	constexpr angle_t angle1 = 270 - 37.6923065;
+	constexpr angle_t angle1 = static_cast<angle_t>(270 - 37.6923065);
 	constexpr angle_t angle2 = angle1 + 30;
 
-	constexpr float tick_per_deg = USF2NT(1000000.)*60/360/1000;
+	constexpr float tick_per_deg = static_cast<float>(USF2NT(1000000.)*60/360/1000);
 
-	constexpr efitick_t nt0 = tick_per_deg * angle0;
-	constexpr efitick_t nt1 = tick_per_deg * angle1;
-	constexpr efitick_t nt2 = tick_per_deg * angle2;
+	constexpr efitick_t nt0 = static_cast<efitick_t>(tick_per_deg * angle0);
+	constexpr efitick_t nt1 = static_cast<efitick_t>(tick_per_deg * angle1);
+	constexpr efitick_t nt2 = static_cast<efitick_t>(tick_per_deg * angle2);
 
 	{
 		testing::InSequence is;
@@ -280,7 +298,7 @@ TEST(HPFP, Schedule) {
 	engineConfiguration->hpfpPeakPos = 90;
 	// This will call the fast callback routine
 	engine->rpmCalculator.setRpmValue(1000);
-	engine->engineState.injectionMass[0] = 0.05 /* cc/cyl */ * fuelDensity;
+	engine->engineState.injectionMass[0] = 0.05f /* cc/cyl */ * fuelDensity;
 	engineConfiguration->hpfpValvePin = Gpio::A2; // arbitrary
 
 	hpfp.onFastCallback();
@@ -291,7 +309,7 @@ TEST(HPFP, Schedule) {
 
 	// Make the previous event happen, schedule the next.
 	engine->module<TriggerScheduler>()->scheduleEventsUntilNextTriggerTooth(
-		1000, tick_per_deg * 0, 180, 360, 540);
+		1000, static_cast<efitick_t>(tick_per_deg * 0), 180, 360, 540);
 	// Mock executor doesn't run events, so we run it manually
 	HpfpController::pinTurnOff(&hpfp);
 
@@ -301,7 +319,7 @@ TEST(HPFP, Schedule) {
 
 	// Make it happen
 	engine->module<TriggerScheduler>()->scheduleEventsUntilNextTriggerTooth(
-		1000, tick_per_deg * 180, 360, 540, 720);
+		1000, static_cast<efitick_t>(tick_per_deg * 180), 360, 540, 720);
 
 	// Since we have a mock scheduler, lets insert the correct timestamp in the scheduling
 	// struct.

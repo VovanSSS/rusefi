@@ -42,6 +42,15 @@
  *   - Bad tune / setup the user must fix in TunerStudio     -> configError()
  *   - We must not keep firing injectors/coils as configured -> firmwareError()/criticalError()
  *
+ * [tag:user_facing_ini_labels] When a user-visible diagnostic names a tune setting,
+ * use its human-readable .ini field label so the user can find the control to fix.
+ * Internal C++ members and .ini keys are implementation identifiers, not UI labels.
+ * Match the label in the relevant INI template/board input; qualify short labels
+ * such as "Mode" with their setting/dialog context. Keep diagnostics and labels
+ * aligned when either changes. For example, accelEnrichmentMode is labeled
+ * "Accel Enrichment Mode" in tunerstudio.template.ini; the fuel_math.cpp diagnostic
+ * and its regression test use that label (https://github.com/rusefi/rusefi/issues/10363).
+ *
  * See also docs/AI/ files referenced from CLAUDE.md.
  */
 
@@ -51,12 +60,12 @@
  *
  * see also configError() for bad-tune problems and firmwareError() for fatal ones.
  */
-bool warning(ObdCode code, const char *fmt, ...);
+bool warning(ObdCode code, const char *fmt = nullptr, ...);
 
 /**
  * Same as warning(), but also report to the user via a pop-up window in TunerStudio.
  */
-bool warningTsReport(ObdCode code, const char *fmt, ...);
+bool warningTsReport(ObdCode code, const char *fmt = nullptr, ...);
 
 using critical_msg_t = char[CRITICAL_BUFFER_SIZE];
 
@@ -167,9 +176,33 @@ enum class ErrorCookie : uint32_t {
     FirmwareError = 0xcafebabe,
     HardFault = 0xdeadbeef,
     ChibiOsPanic = 0xdeadfa11,
+    // Deliberate reboot (NOT a crash). Without this a soft reset that leaves no
+    // fault evidence is indistinguishable from a silent crash - see issue #9931.
+    Reboot = 0xb007b007,
 };
 
 const char *errorCookieToName(ErrorCookie cookie);
+
+// Identifies which deliberate-reboot path triggered a Reboot cookie, so a
+// command/CAN/DFU reboot can be told apart from a fault at the next boot.
+enum class RebootReason : uint32_t {
+    Unknown = 0,     // NMI handler or any rebootNow() reached without a specific reason
+    Command,         // deliberate reboot request: TS/console/CAN reboot, engine-type or unlock change
+    DfuJump,         // reboot into the DFU bootloader
+    OpenBltJump,     // reboot into the OpenBLT bootloader
+};
+
+const char *rebootReasonToName(RebootReason reason);
+
+// Stamp a deliberate-reboot cookie into backup SRAM just before resetting.
+// First-writer-wins: a crash cookie already stored (HardFault/panic/firmwareError)
+// is preserved, so a fault during a pending reboot is never masked.
+#if defined(EFI_BOOTLOADER)
+// the bootloader does not link error_handling.cpp - stamping is a no-op there
+static inline void logDeliberateReboot(RebootReason /*reason*/) { }
+#else
+void logDeliberateReboot(RebootReason reason);
+#endif
 
 // Error handling/recovery/reporting information
 
@@ -177,6 +210,8 @@ const char *errorCookieToName(ErrorCookie cookie);
 
 typedef struct {
     ErrorCookie Cookie;
+    // valid only when Cookie == ErrorCookie::Reboot, see enum RebootReason
+    uint32_t RebootReason;
 
     critical_msg_t msg;
     critical_msg_t file;
@@ -193,6 +228,10 @@ typedef struct {
 void errorHandlerInit();
 // true if we just started from some crash
 bool errorHandlerIsStartFromError();
+// raises the critical error for a watchdog reset found by errorHandlerInit(); call after initHardware(), before initMmcCard()
+void errorHandlerRaiseWatchdogResetError();
+// true if the latched critical error is the watchdog-reset one raised at boot (hardware was fully initialized before it)
+bool errorHandlerIsWatchdogResetError();
 // If there was an error on the last boot, print out information about it now and reset state.
 void errorHandlerShowBootReasonAndErrors();
 

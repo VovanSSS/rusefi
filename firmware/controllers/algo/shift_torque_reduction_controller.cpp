@@ -29,10 +29,10 @@ void ShiftTorqueReductionController::update() {
 float ShiftTorqueReductionController::getSparkSkipRatio() {
     float result = 0.0f;
     auto torqueReductionXAxis = readGppwmChannel(config->torqueReductionCutXaxis);
-    trqRedCutXaxisValue = torqueReductionXAxis.Value;
-    int8_t currentGear = Sensor::getOrZero(SensorType::DetectedGear);
+    trqRedCutXaxisValue = static_cast<int16_t>(torqueReductionXAxis.value_or(0));
+    int8_t currentGear = static_cast<int8_t>(Sensor::getOrZero(SensorType::DetectedGear));
 
-    if (engineConfiguration->torqueReductionEnabled && isFlatShiftConditionSatisfied) {
+    if (engineConfiguration->torqueReductionEnabled && isFlatShiftConditionSatisfied && torqueReductionXAxis) {
         result =  interpolate3d(
                 config->torqueReductionIgnitionCutTable,
                 config->torqueReductionCutGearBins, currentGear,
@@ -126,8 +126,12 @@ void ShiftTorqueReductionController::updateTriggerPinState(
 
 void ShiftTorqueReductionController::updateTimeConditionSatisfied() {
     auto torqueReductionTimeXaxis = readGppwmChannel(config->torqueReductionTimeXaxis);
-	trqRedTimeXaxisValue = torqueReductionTimeXaxis.Value;
-    int8_t currentGear = Sensor::getOrZero(SensorType::DetectedGear);
+    trqRedTimeXaxisValue = static_cast<int16_t>(torqueReductionTimeXaxis.value_or(0));
+    if (!torqueReductionTimeXaxis) {
+        isTimeConditionSatisfied = torqueReductionTriggerPinState && !engineConfiguration->limitTorqueReductionTime;
+        return;
+    }
+    int8_t currentGear = static_cast<int8_t>(Sensor::getOrZero(SensorType::DetectedGear));
 
     auto torqueReductionTime = interpolate3d(
         config->torqueReductionTimeTable,
@@ -160,8 +164,11 @@ void ShiftTorqueReductionController::updateAppConditionSatisfied() {
 
 float ShiftTorqueReductionController::getTorqueReductionIgnitionRetard() {
     auto torqueReductionXAxis = readGppwmChannel(config->torqueReductionIgnitionRetardXaxis);
-    trqRedIgnRetXaxisValue = torqueReductionXAxis.Value;
-    int8_t currentGear = Sensor::getOrZero(SensorType::DetectedGear);
+    trqRedIgnRetXaxisValue = static_cast<int16_t>(torqueReductionXAxis.value_or(0));
+    if (!torqueReductionXAxis) {
+        return 0;
+    }
+    int8_t currentGear = static_cast<int8_t>(Sensor::getOrZero(SensorType::DetectedGear));
 
     return interpolate3d(
         config->torqueReductionIgnitionRetardTable,

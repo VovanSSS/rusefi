@@ -12,6 +12,7 @@ Everything below is gated by `EFI_FILE_LOGGING`.
 |------|------|
 | `firmware/hw_layer/mmc_card.cpp` | SD thread: card init, mount, mode state machine, log file lifecycle |
 | `firmware/hw_layer/mmc_card_util.cpp` | Persistent log file index (`rusefi.ind`), `incLogFileName()` |
+| `firmware/hw_layer/past_codes_storage.cpp` | Load and persist the eight-entry diagnostic history (`past-codes.csv`) |
 | `firmware/console/binary_mlg_log/binary_mlg_logging.cpp` | MLG binary format writer (header + data records) |
 | `firmware/console/binary/tooth_logger.cpp` | Trigger tooth ("composite") logger: RAM buffers + .teeth/CSV file output |
 | `firmware/controllers/system/file_writer.h` | `FileBufferedWriter`: 512-byte buffered writer on top of FatFS `f_write` |
@@ -61,6 +62,35 @@ yanks the medium from the host and usually drops the USB console connection.
 
 ## ECU (logging) mode
 
+### Persistent diagnostic history
+
+`past-codes.csv` holds up to eight unique numeric `ObdCode` values, oldest
+first. Each headerless line is `code,unix_timestamp`; the timestamp field is
+empty when the RTC is unavailable or fails the SD filename date-validity policy.
+Order follows first occurrence, including when timestamps are unavailable or
+the RTC changes. Repeated retained codes keep their original timestamp and
+position. A ninth distinct code evicts the oldest; an evicted code can be
+recorded again if it recurs.
+
+`WarningCodeState::pastCodes` captures codes independently of active warning
+capacity, expiry and clearing. During the initial SD mount, disk entries are
+merged ahead of warnings already raised this boot, preserving disk timestamps
+for duplicates. Missing files are treated as empty history. Malformed or
+unreadable files are left untouched and retried.
+
+`sdServicePastCodes()` in `past_codes_storage.cpp` runs at the initial mount and in ECU mode before logging
+suppression/trigger checks, under the board SD lease. It uses its own static
+`NO_CACHE` FatFS descriptor and buffer. Clean histories cause no writes; adding
+or replacing an entry makes a snapshot dirty. A complete write and successful
+close acknowledge only that snapshot, so codes arriving during I/O remain
+pending. Failed writes retain dirty state and retry at most once per second;
+failed closes return their FatFS error to `mmc_card.cpp`, which stops SD work
+to avoid reusing/unmounting a live descriptor.
+PC/MSD mode defers persistence until the ECU owns the card again. As with other
+SD files, power loss during a rewrite can leave incomplete contents.
+
+### Log iteration
+
 Each executer iteration first checks the `SdLogTrigger` module (`shouldLog()`):
 conditional logging closes the current file when trigger conditions stop being met,
 so each logging session lands in its own file. When logging is allowed, one of two
@@ -76,6 +106,22 @@ loggers runs, chosen by `engineConfiguration->sdTriggerLog`:
   1-byte additive checksum.
 - The field list is the generated `log_fields_generated.h`; count is reported by
   `sdinfo` as "SD card fields".
+- Enum fields in mapped live-data fragments are logged as numeric values using
+  their underlying integer width and signedness. The MLG file does not include
+  enum value names.
+- `[tag:live_data_sd_mapping]` `LiveData.yaml` uses `engineModule` to expose a
+  module's generated state to SD and Lua. SD descriptors remain constant:
+  firmware stores direct addresses, while simulator/tests resolve the current
+  engine and active mock on each read. Bit offsets are relative to the generated
+  state subobject. Explicit `constexpr` expressions cover other sources and are
+  also evaluated lazily on hosts. Feature guards still control field availability;
+  a mock interface must expose the state to support logging its replacement.
+- `[tag:live_data_output_scale]` Every exported numeric field automatically
+  uses its constant INI scale/offset in the descriptor: `(raw + offset) * scale`.
+  STFT bank 1/2 and dwell deviation therefore display `0.95`, `1.00`, `1.05`
+  as approximately `-5`, `0`, `5` percent. Payloads retain raw storage values,
+  and packed channels keep their existing packing scale. This does not add
+  missing fields or change the metadata stored in older log files.
 - Write rate: `sdCardLogFrequency` Hz, clamped to 1..250, paced with
   `chThdSleepUntilWindowed()` in `mlgLogger()`.
 - `f_sync` runs only every `F_SYNC_FREQUENCY` (10) lines, not per line.
@@ -83,6 +129,28 @@ loggers runs, chosen by `engineConfiguration->sdTriggerLog`:
   file is closed and a new one started.
 - `MLG::resetFileLogging()` must be called per new file so the header is written
   again and the rolling counter restarts.
+
+### Validating .mlg data
+
+Use the file's descriptors, not fixed field counts, offsets, or TunerStudio channel
+names. MLG labels are display names (for example `Time`), and vary with generated
+fields and board configuration. `mlg_types.h` and `mlg_field.h` define the 24-byte
+header, 89-byte field descriptors, big-endian numeric encoding, and the value
+conversion `(raw + transform) * scale`.
+
+Check that field widths sum to `recordLength`, and that each data record has
+`recordLength + 5` bytes. Its checksum is the sum modulo 256 of payload bytes only;
+the four-byte prefix is excluded. Check the rolling counter separately (modulo
+256). A valid checksum alone does not establish a complete, correctly timed log.
+
+The 16-bit prefix timestamp wraps every 655.36 ms. Summing modulo deltas loses
+whole wraps when a write stalls longer than that, even with a continuous rolling
+counter. This writer also logs `packedTime` as `Time` in seconds with millisecond
+precision; use that field to assess long gaps. The firmware file header currently
+writes a zero Unix timestamp regardless of RTC availability, so do not derive a
+wall-clock start from it. `MslToCsv` in `:mcp_ecu` validates descriptor lengths and
+checksums and preserves logged fields; it skips the prefix counter/timestamp and
+does not validate their continuity.
 
 ### Trigger tooth .teeth log (`sdLoggerTooth`)
 
@@ -124,8 +192,10 @@ The important power-loss defense is in `sdLoggerCreateFile()` /
   but without the corruption protection.
 - On close, `f_truncate()` shrinks the file back to the actually-written size,
   returning the unused tail of the pre-allocation to free space. A file that was
-  never closed cleanly shows up as a full 32MB file with trailing garbage - MLG
-  readers stop at the last valid record.
+  never closed cleanly can remain 32MB with an unwritten tail. Do not assume a
+  reader or checksum detects its boundary: an all-zero record passes the additive
+  checksum. Use counter/time continuity and the recorded fields as additional
+  evidence; an all-zero payload by itself is not proof of end-of-log.
 - Both loggers pre-allocate (they share `sdLoggerCreateFile()`), but only the
   .mlg logger enforces the 32MB size cap/rollover; a .teeth file that outgrows
   the pre-allocation silently degrades to normal allocation.
@@ -135,6 +205,13 @@ The important power-loss defense is in `sdLoggerCreateFile()` /
 Output channels: `sd_present`, `sd_error` (last FRESULT), `sd_formating`,
 `sdLoggingState` (SdLogTrigger state), `sd_logging_internal` (logger active),
 `sd_active_wr`/`sd_active_rd` (block device busy).
+
+`sdCardMode` is the one-byte `SD_MODE` value: 0 IDLE, 1 ECU, 2 PC,
+3 UNMOUNT, 4 FORMAT. It reports ownership independently of logging activity;
+ECU mode remains valid while logging is suppressed or waiting for a trigger.
+Check `sd_present` too. The ECU MCP tools `mount_to_ecu` and `mount_to_pc`
+send the TS SD mount command and wait for a fresh mode/presence report;
+see `java_console/mcp_ecu/README.md` for timeout and USB-disconnect behavior.
 
 Console: `sdinfo` (status, pinout, SPI clocks, current file), `sdmode
 <pc|ecu|off|unmount|auto|format>`, `sdsuppresslogging`, `sd_test_write1mb`

@@ -80,9 +80,24 @@ void LimpManager::updateRevLimit(float rpm) {
 	m_fuelCorrection = 1.0f + fuelAdded / 100;
 }
 
+bool LimpManager::shouldReportCutWarning(efitick_t nowNt) {
+	// Use 64-bit ticks: Timer's elapsed helpers saturate at UINT32_MAX ticks.
+	if (nowNt - m_lastCutWarning.get() < MS2NT(30000)) {
+		return false;
+	}
+
+	m_lastCutWarning.reset(nowNt);
+	return true;
+}
+
 void LimpManager::updateState(float rpm, efitick_t nowNt) {
 	Clearable allowFuel = engineConfiguration->isInjectionEnabled;
 	Clearable allowSpark = engineConfiguration->isIgnitionEnabled;
+
+	// A jam is latched even if the ETB controller no longer reports it.
+	if (m_allowEtb.clearReason == ClearReason::EtbProblem && shouldReportCutWarning(nowNt)) {
+		warning(ObdCode::OBD_Throttle_Actuator_Control_Range_Performance_Bank_1, "ETB jam protection active");
+	}
 
 #if EFI_SHAFT_POSITION_INPUT && !EFI_UNIT_TEST
 	if (!m_ignitionOn
@@ -132,6 +147,9 @@ void LimpManager::updateState(float rpm, efitick_t nowNt) {
 #if EFI_SHAFT_POSITION_INPUT
 	if (engine->lambdaMonitor.isCut()) {
 		allowFuel.clear(ClearReason::LambdaProtection);
+		if (shouldReportCutWarning(nowNt)) {
+			warning(ObdCode::OBD_System_Too_Lean_Bank_1, "Lambda protection fuel cut");
+		}
 	}
 
   if (!engine->triggerCentral.triggerState.hasSynchronizedPhase()) {
@@ -158,21 +176,32 @@ void LimpManager::updateState(float rpm, efitick_t nowNt) {
 	// Limit fuel only on boost pressure (limiting spark bends valves)
 	float mapCut = engineConfiguration->boostCutPressure;
 	if (mapCut != 0) {
-		// require drop of 'boostCutPressureHyst' kPa to resume fuel
-		if (m_boostCutHysteresis.checkIfLimitIsExceeded(Sensor::getOrZero(SensorType::Map), mapCut, engineConfiguration->boostCutPressureHyst)) {
-			allowFuel.clear(ClearReason::BoostCut);
+		// Keep an active cut until a valid MAP reading falls below the resume pressure.
+		auto map = Sensor::get(SensorType::Map);
+		if (map.Valid) {
+			m_boostCutHysteresis.checkIfLimitIsExceeded(map.Value, mapCut, engineConfiguration->boostCutPressureHyst);
 		}
+		if (m_boostCutHysteresis.isLimitExceeded()) {
+			allowFuel.clear(ClearReason::BoostCut);
+			if (shouldReportCutWarning(nowNt)) {
+				warning(ObdCode::OBD_Engine_Overboost, "Boost pressure fuel cut");
+			}
+		}
+	} else {
+		m_boostCutHysteresis = {};
 	}
 
 	if (engine->rpmCalculator.isRunning()) {
 		bool hasOilpSensor = Sensor::hasSensor(SensorType::OilPressure);
 		auto oilp = Sensor::get(SensorType::OilPressure);
 		uint16_t minOilPressure = engineConfiguration->minOilPressureAfterStart;
+		bool isInAfterStartWindow = false;
 
 		// Only check if the setting is enabled and you have an oil pressure sensor
 		if (minOilPressure > 0 && hasOilpSensor) {
 			// Has it been long enough we should have pressure?
 			bool isTimedOut = engine->rpmCalculator.getSecondsSinceEngineStart(nowNt) > 5.0f;
+			isInAfterStartWindow = !isTimedOut;
 
 			// Only check before timed out
 			if (!isTimedOut) {
@@ -194,30 +223,38 @@ void LimpManager::updateState(float rpm, efitick_t nowNt) {
 			float minPressure = interpolate2d(rpm, config->minimumOilPressureBins, config->minimumOilPressureValues);
 			bool isPressureSufficient = oilp.Value > minPressure;
 
-			if (isPressureSufficient) {
+			// #9879: cold oil needs time to reach running pressure, so the
+			// running check waits until the after-start window is over
+			if (isPressureSufficient || isInAfterStartWindow) {
 				m_lowOilPressureTimer.reset(nowNt);
 			}
 
-			if (m_lowOilPressureTimer.hasElapsedSec(engineConfiguration->minimumOilPressureTimeout)) {
+			if (!isPressureSufficient && !isInAfterStartWindow
+				&& m_lowOilPressureTimer.hasElapsedSec(engineConfiguration->minimumOilPressureTimeout)) {
 				allowFuel.clear(ClearReason::OilPressure);
 			}
 		}
 
 		// check the maximum oil pressure
 		float maxOilPressure = interpolate2d(rpm, config->maximumOilPressureBins, config->maximumOilPressureValues);
-		if (maxOilPressure > 0 && hasOilpSensor) {
-			if (oilp.Value < maxOilPressure) {
+		if (maxOilPressure > 0 && oilp) {
+			bool isPressureTooHigh = oilp.Value >= maxOilPressure;
+			if (m_highOilPressureTimer.get() == Timer::InitialState || !isPressureTooHigh) {
 				m_highOilPressureTimer.reset(nowNt);
 			}
-			if (m_highOilPressureTimer.hasElapsedSec(engineConfiguration->maxOilPressureTimeout)) {
+			if (isPressureTooHigh
+				&& m_highOilPressureTimer.hasElapsedSec(engineConfiguration->maxOilPressureTimeout)) {
 				allowFuel.clear(ClearReason::OilPressure);
 			}
+		} else {
+			m_highOilPressureTimer.reset(nowNt);
 		}
 
 	} else {
 		// reset state in case of stalled engine
 		m_hadOilPressureAfterStart = false;
 		m_lowOilPressureTimer.reset(nowNt);
+		m_highOilPressureTimer.reset(nowNt);
 	}
 
 	// If we're in the engine-stop window (a stop was requested recently via start button, Lua,
@@ -257,13 +294,16 @@ void LimpManager::updateState(float rpm, efitick_t nowNt) {
 		}
 
 		// True if isOverSustainedDutyCycle has been true for longer than the timeout
-		bool sustainedLimitTimedOut = m_injectorDutySustainedTimer.hasElapsedSec(engineConfiguration->maxInjectorDutySustainedTimeout);
+		bool sustainedLimitTimedOut = isOverSustainedDutyCycle
+			&& m_injectorDutySustainedTimer.hasElapsedSec(engineConfiguration->maxInjectorDutySustainedTimeout);
 
 		bool someLimitTripped = isOverInstantDutyCycle || sustainedLimitTimedOut;
 
 		if (m_injectorDutyCutHysteresis.test(someLimitTripped, isUnderLowDuty)) {
 			allowFuel.clear(ClearReason::InjectorDutyCycle);
-			warning(ObdCode::CUSTOM_TOO_LONG_FUEL_INJECTION, "Injector duty cycle cut %.1f", injDutyCycle);
+			if (shouldReportCutWarning(nowNt)) {
+				warning(ObdCode::CUSTOM_TOO_LONG_FUEL_INJECTION, "Injector duty cycle cut %.1f", injDutyCycle);
+			}
 		}
 	}
 
@@ -296,6 +336,12 @@ void LimpManager::updateState(float rpm, efitick_t nowNt) {
 		allowSpark.clear(ClearReason::LaunchCut);
 	}
 #endif // EFI_LAUNCH_CONTROL
+
+	if (engineConfiguration->kickStartCranking && rpm < KICK_START_MODE_MAX_RPM) {
+		// Suppress normal spark scheduling without hiding another ignition cut
+		// from the kick-start path in handleShaftSignal().
+		allowSpark.clear(ClearReason::KickStart);
+	}
 
 	m_transientAllowInjection = allowFuel;
 	m_transientAllowIgnition = allowSpark;

@@ -51,9 +51,8 @@ bool LaunchControlBase::isInsideSpeedCondition() const {
 		return true; // allow launch, speed does not matter
 	}
 
-	int speed = Sensor::getOrZero(SensorType::VehicleSpeed);
-
-	return engineConfiguration->launchSpeedThreshold > speed;
+	auto speed = Sensor::get(SensorType::VehicleSpeed);
+	return speed.Valid && engineConfiguration->launchSpeedThreshold > speed.Value;
 }
 
 /**
@@ -141,11 +140,16 @@ LaunchControlBase::LaunchControlBase() {
 }
 
 float LaunchControlBase::getFuelCoefficient() const {
-    return 1 + (isLaunchCondition && engineConfiguration->launchControlEnabled ? engineConfiguration->launchFuelAdderPercent / 100.0 : 0);
+    return 1 + (isLaunchCondition && engineConfiguration->launchControlEnabled ? engineConfiguration->launchFuelAdderPercent / 100.0f : 0);
 }
 
 void LaunchControlBase::update() {
 	if (!engineConfiguration->launchControlEnabled) {
+		isLaunchCondition = false;
+		isPreLaunchCondition = false;
+		isLaunchLatched = false;
+		activateSwitchCondition = false;
+		sparkSkipRatio = 0;
 		return;
 	}
 
@@ -162,6 +166,10 @@ void LaunchControlBase::update() {
 
 bool LaunchControlBase::isLaunchRpmRetardCondition() const {
 	return isLaunchCondition && engineConfiguration->launchControlEnabled && (retardThresholdRpm < Sensor::getOrZero(SensorType::Rpm));
+}
+
+bool LaunchControlBase::isLaunchOrPreLaunchCondition() const {
+	return engineConfiguration->launchControlEnabled && (isLaunchCondition || isPreLaunchCondition);
 }
 
 bool LaunchControlBase::isLaunchSparkRpmRetardCondition() const {
@@ -206,10 +214,10 @@ void SoftSparkLimiter::updateTargetSkipRatio(
 	targetSkipRatio = luaSparkSkip;
 	if (engineConfiguration->useHardSkipInTraction) {
 		if (allowHardCut) {
-			targetSkipRatio += tractionControlSparkSkip;
+			targetSkipRatio += tractionControlSparkSkip / 100.0f;
 		}
 	} else if (!allowHardCut) {
-		targetSkipRatio += tractionControlSparkSkip;
+		targetSkipRatio += tractionControlSparkSkip / 100.0f;
 	}
 
 	if (allowHardCut) {

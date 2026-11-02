@@ -32,6 +32,7 @@
 #include "idle_thread.h"
 #include "injector_model.h"
 #include "launch_control.h"
+#include "rolling_launch.h"
 #include "shift_torque_reduction_controller.h"
 #include "nitrous_controller.h"
 #include "antilag_system.h"
@@ -59,6 +60,7 @@
 #include "vvt.h"
 #include "closed_loop_fuel.h"
 #include "long_term_fuel_trim.h"
+#include "injector_deadtime_autotune.h"
 #include "second_tables.h"
 #include "electronic_throttle_generated.h"
 #include "engine_cylinder.hpp"
@@ -71,6 +73,9 @@
 
 #ifndef EFI_BOOTLOADER
 #include "engine_modules_generated.h"
+#include "burst_knock.h"
+#include "engine_state_machine.h"
+#include "wot_enrichment.h"
 #endif
 
 #if EFI_MISFIRE_DETECTION
@@ -197,19 +202,26 @@ public:
 #endif // EFI_BOOST_CONTROL
         TpsAccelEnrichment,
 #if EFI_LAUNCH_CONTROL
+#if EFI_ENGINE_CONTROL
         NitrousController,
+#endif // EFI_ENGINE_CONTROL
+        RollingLaunchControl,
 #endif // EFI_LAUNCH_CONTROL
 #if EFI_LTFT_CONTROL
         LongTermFuelTrim,
 #endif
 #if EFI_ENGINE_CONTROL
         ShortTermFuelTrim,
+        InjectorDeadtimeAutotune,
 #endif // EFI_ENGINE_CONTROL
 #if EFI_MISFIRE_DETECTION
         Mockable<MisfireController>,
 #endif // EFI_MISFIRE_DETECTION
 
 #include "modules_list_generated.h"
+		BurstKnock,
+        EngineStateMachine,
+        WotEnrichment,
 
         EngineModule // dummy placeholder so the previous entries can all have commas
     > engineModules{};

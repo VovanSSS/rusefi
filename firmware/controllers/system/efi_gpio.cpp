@@ -149,6 +149,7 @@ EnginePins::EnginePins() :
 		fanRelay2("Fan Relay 2", CONFIG_PIN_OFFSETS(fan2)),
 		acRelay("A/C Relay", CONFIG_PIN_OFFSETS(acRelay)),
 		fuelPumpRelay("Fuel pump Relay", CONFIG_PIN_OFFSETS(fuelPump)),
+		fuelPumpRelay2("Fuel pump Relay 2", CONFIG_PIN_OFFSETS(fuelPump2)),
 		nitrousRelay("Nitrous Relay", CONFIG_PIN_OFFSETS(nitrousRelay)),
 		vvlRelay("VVL Relay", CONFIG_PIN_OFFSETS(vvlRelay)),
 #if EFI_HD_ACR
@@ -205,10 +206,17 @@ EnginePins::EnginePins() :
 	}                                                                              \
 }
 
-#define unregisterOutputIfPinOrModeChanged(output, pin, mode) {                    \
-	if (isPinOrModeChanged(pin, mode)) {                                           \
-		(output).deInit();                        \
-	}                                                                              \
+static bool wasCylinderOutputEnabled(size_t index) {
+	#if EFI_ACTIVE_CONFIGURATION_IN_FLASH
+	if (isActiveConfigurationVoid) {
+		return false;
+	}
+	#endif
+	return index < activeConfiguration.cylindersCount;
+}
+
+static bool isCylinderOutputEnabled(size_t index) {
+	return index < engineConfiguration->cylindersCount;
 }
 
 bool EnginePins::stopPins() {
@@ -282,15 +290,27 @@ void EnginePins::reset() {
 
 void EnginePins::stopIgnitionPins() {
 	for (int i = 0; i < MAX_CYLINDER_COUNT; i++) {
-		unregisterOutputIfPinOrModeChanged(enginePins.coils[i], ignitionPins[i], ignitionPinMode);
-		unregisterOutputIfPinOrModeChanged(enginePins.trailingCoils[i], trailingCoilPins[i], ignitionPinMode);
+		if (isPinOrModeChanged(ignitionPins[i], ignitionPinMode) ||
+				(wasCylinderOutputEnabled(i) && !isCylinderOutputEnabled(i))) {
+			enginePins.coils[i].deInit();
+		}
+		if (isPinOrModeChanged(trailingCoilPins[i], ignitionPinMode) ||
+				(wasCylinderOutputEnabled(i) && !isCylinderOutputEnabled(i))) {
+			enginePins.trailingCoils[i].deInit();
+		}
 	}
 }
 
 void EnginePins::stopInjectionPins() {
 	for (int i = 0; i < MAX_CYLINDER_COUNT; i++) {
-		unregisterOutputIfPinOrModeChanged(enginePins.injectors[i], injectionPins[i], injectionPinMode);
-		unregisterOutputIfPinOrModeChanged(enginePins.injectorsStage2[i], injectionPinsStage2[i], injectionPinMode);
+		if (isPinOrModeChanged(injectionPins[i], injectionPinMode) ||
+				(wasCylinderOutputEnabled(i) && !isCylinderOutputEnabled(i))) {
+			enginePins.injectors[i].deInit();
+		}
+		if (isPinOrModeChanged(injectionPinsStage2[i], injectionPinMode) ||
+				(wasCylinderOutputEnabled(i) && !isCylinderOutputEnabled(i))) {
+			enginePins.injectorsStage2[i].deInit();
+		}
 	}
 }
 
@@ -318,34 +338,48 @@ void EnginePins::startAuxValves() {
 }
 #endif // EFI_AUX_VALVES
 
-void EnginePins::startIgnitionPins() {
-#if EFI_PROD_CODE
+void EnginePins::startIgnitionPins(bool forUnitTest) {
+#if EFI_UNIT_TEST
+	if (!forUnitTest) {
+		return;
+	}
+#else
+	UNUSED(forUnitTest);
+#endif
+#if EFI_PROD_CODE || EFI_UNIT_TEST
 	for (size_t i = 0; i < engineConfiguration->cylindersCount; i++) {
 		NamedOutputPin *trailingOutput = &enginePins.trailingCoils[i];
-		if (isPinOrModeChanged(trailingCoilPins[i], ignitionPinMode)) {
+		if (isPinOrModeChanged(trailingCoilPins[i], ignitionPinMode) || !wasCylinderOutputEnabled(i)) {
 			trailingOutput->initPin(trailingOutput->getName(), engineConfiguration->trailingCoilPins[i], engineConfiguration->ignitionPinMode);
 		}
 
 		NamedOutputPin *output = &enginePins.coils[i];
-		if (isPinOrModeChanged(ignitionPins[i], ignitionPinMode)) {
+		if (isPinOrModeChanged(ignitionPins[i], ignitionPinMode) || !wasCylinderOutputEnabled(i)) {
 			output->initPin(output->getName(), engineConfiguration->ignitionPins[i], engineConfiguration->ignitionPinMode);
 		}
 	}
 #endif /* EFI_PROD_CODE */
 }
 
-void EnginePins::startInjectionPins() {
-#if EFI_PROD_CODE
+void EnginePins::startInjectionPins(bool forUnitTest) {
+#if EFI_UNIT_TEST
+	if (!forUnitTest) {
+		return;
+	}
+#else
+	UNUSED(forUnitTest);
+#endif
+#if EFI_PROD_CODE || EFI_UNIT_TEST
 	// todo: should we move this code closer to the injection logic?
 	for (size_t i = 0; i < engineConfiguration->cylindersCount; i++) {
 		NamedOutputPin *output = &enginePins.injectors[i];
-		if (isPinOrModeChanged(injectionPins[i], injectionPinMode)) {
+		if (isPinOrModeChanged(injectionPins[i], injectionPinMode) || !wasCylinderOutputEnabled(i)) {
 			output->initPin(output->getName(), engineConfiguration->injectionPins[i],
 					engineConfiguration->injectionPinMode);
 		}
 
 		output = &enginePins.injectorsStage2[i];
-		if (isPinOrModeChanged(injectionPinsStage2[i], injectionPinMode)) {
+		if (isPinOrModeChanged(injectionPinsStage2[i], injectionPinMode) || !wasCylinderOutputEnabled(i)) {
 			output->initPin(output->getName(), engineConfiguration->injectionPinsStage2[i],
 					engineConfiguration->injectionPinMode);
 		}
@@ -353,9 +387,18 @@ void EnginePins::startInjectionPins() {
 #endif /* EFI_PROD_CODE */
 }
 
+#if EFI_UNIT_TEST
+void EnginePins::updateCylinderOutputPinsForUnitTest() {
+	stopInjectionPins();
+	stopIgnitionPins();
+	startInjectionPins(true);
+	startIgnitionPins(true);
+}
+#endif
+
 OutputPin *EnginePins::getOutputPinForBenchMode(bench_mode_e index) {
 	switch(index) {
-#if EFI_VVT_PID
+#if EFI_VVT_PID || EFI_UNIT_TEST
 	case BENCH_VVT0_VALVE:
 		return getVvtOutputPin(0);
 	case BENCH_VVT1_VALVE:
@@ -364,7 +407,7 @@ OutputPin *EnginePins::getOutputPinForBenchMode(bench_mode_e index) {
 		return getVvtOutputPin(2);
 	case BENCH_VVT3_VALVE:
 		return getVvtOutputPin(3);
-#endif // EFI_VVT_PID
+#endif // EFI_VVT_PID || EFI_UNIT_TEST
 	case BENCH_MAIN_RELAY:
 		return &mainRelay;
 	case BENCH_HPFP_VALVE:
@@ -388,7 +431,7 @@ OutputPin *EnginePins::getOutputPinForBenchMode(bench_mode_e index) {
 	case BENCH_IDLE_VALVE:
 		return &idleSolenoidPin;
 	case BENCH_FAN_RELAY_2:
-		return &fanRelay;
+		return &fanRelay2;
 	default:
 		criticalError("Unexpected bench pin %d", index);
 	}
@@ -623,7 +666,7 @@ TRIGGER_RAM_CODE void OutputPin::setValue(const char *msg, int logicValue, bool 
     if (currentLogicValue != logicValue) {
 	    if (pinToggleCounter > 0) {
 	        durationsInStateMs[0] = durationsInStateMs[1];
-            durationsInStateMs[1] = pinToggleTimer.getElapsedUs() / 1000;
+            durationsInStateMs[1] = static_cast<uint32_t>(pinToggleTimer.getElapsedUs() / 1000);
 	    }
 	    pinToggleCounter++;
 	    pinToggleTimer.reset();
@@ -763,7 +806,17 @@ void OutputPin::initPin(const char *msg, brain_pin_e p_brainPin, pin_output_mode
 	}
 	#if (BOARD_EXT_GPIOCHIPS > 0)
 		else {
+			if (!gpiochips_getChipName(p_brainPin)) {
+				configError("%s: no GPIO chip registered for pin %d", msg, static_cast<int>(p_brainPin));
+				return;
+			}
+
 			this->ext = true;
+		}
+	#else
+		else {
+			configError("%s: external GPIO pin %d is not supported", msg, static_cast<int>(p_brainPin));
+			return;
 		}
 	#endif
 #endif // briefly leave the include guard because we need to set default state in tests
@@ -798,6 +851,11 @@ void OutputPin::initPin(const char *msg, brain_pin_e p_brainPin, pin_output_mode
 #endif
 		}
 	}
+#elif EFI_UNIT_TEST
+	if (isPinOwnershipEnabledForUnitTest()) {
+		// HAL mode is irrelevant on host; use the production ownership registry.
+		efiSetPadMode(msg, brainPin, static_cast<iomode_t>(0));
+	}
 #endif /* EFI_GPIO_HARDWARE */
 }
 
@@ -818,6 +876,10 @@ void OutputPin::deInit() {
 
 #if EFI_GPIO_HARDWARE && EFI_PROD_CODE
 	efiSetPadUnused(brainPin);
+#elif EFI_UNIT_TEST
+	if (isPinOwnershipEnabledForUnitTest()) {
+		efiSetPadUnused(brainPin);
+	}
 #endif /* EFI_GPIO_HARDWARE */
 
 	// Clear the pin so that it won't get set any more
@@ -861,10 +923,10 @@ void turnAllPinsOff() {
 	}
 	enginePins.mainRelay.setValue(false);
 	enginePins.fuelPumpRelay.setValue(false);
+	enginePins.fuelPumpRelay2.setValue(false);
 	enginePins.checkEnginePin.setValue(true); // yes this one can go ON
 #if EFI_PROD_CODE && HW_HELLEN
   hellenDisableEnSilently();
 #endif
 }
 #endif /* EFI_GPIO_HARDWARE */
-

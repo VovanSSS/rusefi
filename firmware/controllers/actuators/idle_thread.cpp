@@ -36,7 +36,7 @@ using enum idle_mode_e;
  */
 IIdleController::TargetInfo IdleController::getTargetRpm(float clt) {
 	// Base target from the CLT->RPM curve (cold engines idle higher)
-	targetRpmByClt = interpolate2d(clt, config->cltIdleRpmBins, config->cltIdleRpm);
+	targetRpmByClt = static_cast<int>(interpolate2d(clt, config->cltIdleRpmBins, config->cltIdleRpm));
 
   // FIXME: this is running as "RPM target" not "RPM bump" [ie adding to the CLT rpm target]
 	// idle air Bump for AC
@@ -50,7 +50,7 @@ IIdleController::TargetInfo IdleController::getTargetRpm(float clt) {
  	float entryRpm = target + rpmUpperLimit;
 
   // Higher exit than entry to add some hysteresis to avoid bouncing around upper threshold
- 	float exitRpm = target + 1.5 * rpmUpperLimit;
+ 	float exitRpm = target + 1.5f * rpmUpperLimit;
 
  	// Ramp the target down from the transition RPM to normal over a few seconds
   if (engineConfiguration->idleReturnTargetRamp) {
@@ -63,9 +63,9 @@ IIdleController::TargetInfo IdleController::getTargetRpm(float clt) {
  		);
  	}
 
- 	idleTarget = target;
-	idleEntryRpm = entryRpm;
-	idleExitRpm = exitRpm;
+ 	idleTarget = static_cast<uint16_t>(target);
+	idleEntryRpm = static_cast<uint16_t>(entryRpm);
+	idleExitRpm = static_cast<uint16_t>(exitRpm);
  	return { target, entryRpm, exitRpm };
 }
 
@@ -73,9 +73,9 @@ IIdleController::TargetInfo IdleController::getTargetRpm(float clt) {
  * Classifies the current engine operating phase used by the idle controller:
  *   Cranking         - engine not yet running
  *   CrankToIdleTaper - just started, still tapering off cranking IAC position
- *   Idling           - closed-loop idle territory
- *   Coasting         - off-throttle, RPM above idle (engine braking)
- *   Running          - driver is on the throttle or vehicle is moving
+ *   Idling           - closed throttle, within idle RPM range or clutch disengaged
+ *   Coasting         - off-throttle, clutch engaged, RPM above idle (engine braking)
+ *   Running          - driver is on the throttle or vehicle is moving with clutch engaged
  *
  * Hysteresis is applied via IdleEntryRpm / IdleExitRpm so we don't oscillate
  * between Idling and Coasting near the threshold.
@@ -98,6 +98,11 @@ IIdleController::Phase IdleController::determinePhase(float rpm, IIdleController
 		return Phase::Running;
 	}
 
+	// [tag:idle_clutch_disengaged] The engine can return to idle independently of
+	// road speed with the clutch disengaged. This accessor selects the physical
+	// clutch-down input or Lua flag. Keep RPM hysteresis updated for clutch release.
+	const bool clutchDisengaged = getClutchDownState();
+
 	// If rpm too high (but throttle not pressed), we're coasting
 	// ALSO, if still in the cranking taper, disable coasting
   if (rpm > targetRpm.IdleExitRpm) {
@@ -107,13 +112,13 @@ IIdleController::Phase IdleController::determinePhase(float rpm, IIdleController
  	}
 
  	looksLikeCrankToIdle = crankingTaperFraction < 1;
-	if (looksLikeCoasting && !looksLikeCrankToIdle) {
+	if (looksLikeCoasting && !looksLikeCrankToIdle && !clutchDisengaged) {
 		return Phase::Coasting;
 	}
 
-	// If the vehicle is moving too quickly, disable CL idle
+	// With the clutch engaged, disable CL idle if the vehicle is moving too quickly.
 	auto maxVss = engineConfiguration->maxIdleVss;
-	looksLikeRunning = maxVss != 0 && vss > maxVss;
+	looksLikeRunning = !clutchDisengaged && maxVss != 0 && vss > maxVss;
 	if (looksLikeRunning) {
 		return Phase::Running;
 	}
@@ -157,6 +162,7 @@ float IdleController::getCrankingOpenLoop(float clt) const {
  *   - A/C compressor request
  *   - Cooling fans on
  *   - Lua scripting adder
+ *   - Park/Neutral position offset
  *   - Antilag system
  *   - TPS 'dashpot' decay when releasing throttle (helps avoid stalls)
  *   - Extra airflow as RPM climbs (airByRpmTaper)
@@ -174,10 +180,15 @@ percent_t IdleController::getRunningOpenLoop(IIdleController::Phase phase, float
     	running += engineConfiguration->acIdleExtraOffset;
     }
 
-	running += enginePins.fanRelay.getLogicValue() ? engineConfiguration->fan1ExtraIdle : 0;
-	running += enginePins.fanRelay2.getLogicValue() ? engineConfiguration->fan2ExtraIdle : 0;
+	if (isBrainPinValid(engineConfiguration->fanPin) && enginePins.fanRelay.getLogicValue()) {
+		running += engineConfiguration->fan1ExtraIdle;
+	}
+	if (isBrainPinValid(engineConfiguration->fan2Pin) && enginePins.fanRelay2.getLogicValue()) {
+		running += engineConfiguration->fan2ExtraIdle;
+	}
 
 	running += luaAdd;
+	running += m_isParkNeutral ? engineConfiguration->idleParkNeutralOffset : 0;
 
 #if EFI_ANTILAG_SYSTEM
 if (engine->antilagController.isAntilagCondition) {
@@ -437,7 +448,7 @@ float IdleController::getIdlePosition(float rpm) {
 
 		// Compute the target we're shooting for
 		auto targetRpm = getTargetRpm(clt);
-		m_lastTargetRpm = targetRpm.ClosedLoopTarget;
+		m_lastTargetRpm = static_cast<int>(targetRpm.ClosedLoopTarget);
 
 		// Determine cranking taper (modeled flow does no taper of open loop)
 		float crankingTaper = useModeledFlow ? 1 : getCrankingTaperFraction(clt);
@@ -487,11 +498,11 @@ float IdleController::getIdlePosition(float rpm) {
 
 
 		extern StepperMotor iacMotor;
-		engine->outputChannels.idleStepperTargetPosition = iacMotor.getTargetPosition();
+		engine->outputChannels.idleStepperTargetPosition = static_cast<uint8_t>(iacMotor.getTargetPosition());
 #endif /* EFI_TUNER_STUDIO */
 		if (useModeledFlow && phase != Phase::Cranking) {
-			float totalAirmass = 0.01 * iacPosition * engineConfiguration->idleMaximumAirmass;
-			idleTargetAirmass = totalAirmass;
+			float totalAirmass = 0.01f * iacPosition * engineConfiguration->idleMaximumAirmass;
+			idleTargetAirmass = static_cast<uint16_t>(totalAirmass);
 
 			bool shouldAdjustTiming = engineConfiguration->useIdleTimingPidControl && phase == Phase::Idling;
 
@@ -503,7 +514,7 @@ float IdleController::getIdlePosition(float rpm) {
 
 			// Handle the residual low frequency content with airflow
 			float idleAirmass = totalAirmass - timingAirmass;
-			float airflowKgPerH = 3.6 * 0.001 * idleAirmass * rpm / 60 * engineConfiguration->cylindersCount / 2;
+			float airflowKgPerH = 3.6f * 0.001f * idleAirmass * rpm / 60 * engineConfiguration->cylindersCount / 2;
 			idleTargetFlow = airflowKgPerH;
 
 			// Convert from desired flow -> idle valve position

@@ -51,7 +51,6 @@ PROJECT_DIR = .
 # Configure precompiled header
 PCH_DIR = $(PROJECT_DIR)/pch
 PCHSRC = $(PCH_DIR)/pch.h
-PCHSUB = firmware
 
 # Imported source files and paths
 CHIBIOS_CONTRIB = ChibiOS-Contrib
@@ -235,7 +234,9 @@ include $(CPU_PLATFORM)
 include $(CHIBIOS)/os/hal/osal/rt-nil/osal.mk
 # RTOS files (optional).
 include $(CHIBIOS)/os/rt/rt.mk
-include $(CHIBIOS)/os/common/ports/ARMv7-M/compilers/GCC/mk/port.mk
+# RT port of the CPU core; a custom platform may select another core's port
+RT_PORT_MK ?= $(CHIBIOS)/os/common/ports/ARMv7-M/compilers/GCC/mk/port.mk
+include $(RT_PORT_MK)
 # EX files (optional).
 ifeq ($(EFI_ONBOARD_MEMS_LIS2DW12),yes)
   DDEFS += -DEFI_ONBOARD_MEMS_LIS2DW12=TRUE
@@ -281,7 +282,10 @@ ifeq ($(EFI_ETHERNET),yes)
 endif
 
 ifeq ($(LWIP),yes)
+  # lwip.mk already includes evtimer.c in ALLCSRC.
   include $(CHIBIOS)/os/various/lwip_bindings/lwip.mk
+else
+  ALLCSRC += $(CHIBIOS)/os/various/evtimer.c
 endif
 
 include $(PROJECT_DIR)/hw_layer/mass_storage/mass_storage.mk
@@ -309,7 +313,6 @@ CSRC =  gcc_version_check.c \
   $(ALLCSRC) \
   $(BOARDSRC) \
   $(CHIBIOS_CONTRIB)/os/various/ramdisk.c \
-  $(CHIBIOS)/os/various/evtimer.c \
   $(DEV_SRC) \
   $(BOOTLOADERSRC) \
   ${HW_MASS_STORAGE_SRC_C} \
@@ -317,8 +320,11 @@ CSRC =  gcc_version_check.c \
   $(HW_LAYER_PORT) \
   $(HW_LAYER_DRIVERS_CORE) \
   $(HW_LAYER_DRIVERS) \
-  $(RUSEFI_LIB_C) \
-  $(PROJECT_DIR)/hw_layer/main_hardfault.c
+  $(RUSEFI_LIB_C)
+
+ifeq ($(CPU_ARCH),ARMCMx)
+  CSRC += $(PROJECT_DIR)/hw_layer/main_hardfault.c
+endif
 
 # C++ sources that can be compiled in ARM or THUMB mode depending on the global
 # setting.
@@ -356,8 +362,11 @@ TCPPSRC =
 
 # List ASM source files here
 ASMXSRC = $(ALLXASMSRC) \
-  $(RUSEFIASM) \
-  $(PROJECT_DIR)/hw_layer/main_hardfault_asm.S
+  $(RUSEFIASM)
+
+ifeq ($(CPU_ARCH),ARMCMx)
+  ASMXSRC += $(PROJECT_DIR)/hw_layer/main_hardfault_asm.S
+endif
 
 #
 # WARNING! order of variables is important here - for instance cypress own folders should go before default folders
@@ -406,13 +415,25 @@ OD   = $(TRGT)objdump
 SZ   = $(TRGT)size
 HEX  = $(CP) -O ihex
 BIN  = $(CP) -O binary
+ifneq ($(BOARD_IMAGE_SCRIPT),)
+PYTHON ?= python3
+# Addressed images only: a raw binary cannot preserve holes between CRC domains.
+HEX = $(PYTHON) $(BOARD_IMAGE_SCRIPT) --format hex
+BIN = $(PYTHON) $(BOARD_IMAGE_SCRIPT) --format bin
+override OUTFILES = $(BUILDDIR)/$(PROJECT).elf $(BUILDDIR)/$(PROJECT).hex \
+  $(BUILDDIR)/$(PROJECT).srec $(BUILDDIR)/$(PROJECT).dmp $(BUILDDIR)/$(PROJECT).list
+endif
 # for srec files see bundle.mk
 
 # ARM-specific options here
 AOPT =
 
 # THUMB-specific options here
-TOPT = -mthumb -DTHUMB
+ifeq ($(CPU_ARCH),ARMCMx)
+  TOPT = -mthumb -DTHUMB
+else
+  TOPT =
+endif
 
 # Define C warning options here
 CWARN = -Wall -Wextra -Wstrict-prototypes
@@ -441,7 +462,8 @@ UINCDIR =
 ULIBDIR =
 
 # List all user libraries here
-ULIBS = -lm --specs=nano.specs -Wl,--sort-section=alignment
+# a custom platform whose libc has no nano.specs sets its own ULIBS
+ULIBS ?= -lm --specs=nano.specs -Wl,--sort-section=alignment
 
 #
 # End of user defines
@@ -450,6 +472,9 @@ ULIBS = -lm --specs=nano.specs -Wl,--sort-section=alignment
 include $(RULESFILE)
 
 $(BUILDDIR)/$(PROJECT).elf: $(LDSCRIPT_DEPS)
+ifneq ($(BOARD_IMAGE_SCRIPT),)
+$(BUILDDIR)/$(PROJECT).hex $(BUILDDIR)/$(PROJECT).srec: $(BOARD_IMAGE_SCRIPT)
+endif
 
 include target_sentinel.mk
 
@@ -473,6 +498,8 @@ CLEAN_BUNDLE_HOOK:
 
 POST_MAKE_ALL_RULE_HOOK: $(BUILDDIR)/$(PROJECT).elf $(GCC_MAP_READER_JAR)
 	@java -jar $(GCC_MAP_READER_JAR) $(BUILDDIR)/$(PROJECT).map | grep Total
+ifeq ($(CPU_ARCH),ARMCMx)
 	@$(TRGT)objdump -h $(BUILDDIR)/$(PROJECT).elf | grep -w ram4
+endif
 
 VPATH     = $(patsubst ./%,%,$(SRCPATHS))

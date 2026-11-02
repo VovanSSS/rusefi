@@ -4,6 +4,8 @@ LUA_EXT=$(PROJECT_DIR)/ext/lua
 ALLCPPSRC += $(LUA_DIR)/lua.cpp \
 			 $(LUA_DIR)/lua_heap.cpp \
 			 $(LUA_DIR)/lua_hooks.cpp \
+			 $(LUA_DIR)/lua_hooks_registry.cpp \
+			 $(LUA_DIR)/lua_class_adapters.cpp \
 			 $(LUA_DIR)/lua_hooks_ext.cpp \
 			 $(LUA_DIR)/can_filter.cpp \
 			 $(LUA_DIR)/lua_hooks_util.cpp \
@@ -15,7 +17,8 @@ ifeq ($(EFI_LUA_LOOKUP), FALSE)
 
 else
   ALLCPPSRC += $(PROJECT_DIR)/$(META_OUTPUT_ROOT_FOLDER)controllers/lua/generated/output_lookup_generated.cpp \
-			   $(PROJECT_DIR)/$(META_OUTPUT_ROOT_FOLDER)controllers/lua/generated/value_lookup_generated.cpp \
+			   $(PROJECT_DIR)/$(META_OUTPUT_ROOT_FOLDER)controllers/lua/generated/value_lookup_table_generated.cpp \
+			   $(LUA_DIR)/value_lookup.cpp \
 
 endif
 

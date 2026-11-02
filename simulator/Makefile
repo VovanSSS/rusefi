@@ -52,7 +52,6 @@ DDEFS += $(TS_PAGE_GUARD_DEFS)
 # Configure precompiled header
 PCH_DIR = $(PROJECT_DIR)/pch
 PCHSRC = $(PCH_DIR)/pch.h
-PCHSUB = simulator
 
 # used by USE_SMART_BUILD
 CONFDIR = .
@@ -234,6 +233,7 @@ CPPSRC = $(ALLCPPSRC) \
   $(TEST_SRC_CPP) \
   $(MODULES_CPPSRC) \
   $(RUSEFI_LIB_CPP) \
+  flash_storage.cpp \
   main.cpp
 
 # Remove mass_storage_device.cpp from ALLCPPSRC since it requires USB MSD HAL
@@ -375,6 +375,12 @@ endif
 ifneq (yes,$(SUBMAKE))
 include $(PROJECT_DIR)/rusefi_config.mk
 include $(PROJECT_DIR)/docs_enums.mk
+
+# rusefi_config.mk hooks the ramdisk image generation onto TCPPOBJS, which only the ARM
+# ChibiOS rules define; the simulator port rules use OBJS/CPPOBJS instead. Without this
+# hook mass_storage_init.cpp compiles against the checked-in placeholder ramdisk_image.h
+# and the TS FS_IMAGE pages serve a zero-size image.
+$(OBJS): $(RAMDISK)
 endif
 
 # Enable precompiled header

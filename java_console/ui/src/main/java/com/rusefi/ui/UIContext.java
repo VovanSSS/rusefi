@@ -6,11 +6,18 @@ import com.rusefi.binaryprotocol.BinaryProtocol;
 import com.rusefi.ini.IniFileState;
 import com.rusefi.io.CommandQueue;
 import com.rusefi.io.LinkManager;
+import com.rusefi.core.preferences.storage.Node;
 import com.rusefi.sensor_logs.SensorLogger;
+import com.rusefi.ui.widgets.tune.IndicatorStripSettings;
+import com.rusefi.ui.wizard.WizardStepDescriptor;
 import org.jetbrains.annotations.NotNull;
 
+import javax.swing.JComponent;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -18,6 +25,25 @@ import java.util.function.Consumer;
  */
 public class UIContext {
     private final LinkManager linkManager;
+    private BinaryProtocol standaloneWizardProtocol;
+    private final Set<WizardStepDescriptor> shownStandaloneWizards = new HashSet<>();
+
+    /**
+     * On the EDT: skip a prompt already offered on this connection, otherwise record it as offered.
+     * Shares prompt state across the splash-to-console handoff. A new protocol connection may
+     * offer the prompts again; this never persists a dismissal.
+     */
+    public boolean shouldSkipStandaloneWizard(WizardStepDescriptor step) {
+        BinaryProtocol protocol = getBinaryProtocol();
+        if (protocol == null) {
+            return true;
+        }
+        if (standaloneWizardProtocol != protocol) {
+            standaloneWizardProtocol = protocol;
+            shownStandaloneWizards.clear();
+        }
+        return !shownStandaloneWizards.add(step);
+    }
 
     /** Tests and offline tools: the LinkManager records the board identity into its own private instance. */
     public UIContext() {
@@ -32,13 +58,19 @@ public class UIContext {
         this.linkManager = new LinkManager(connectedEcuTarget);
     }
 
-    public SensorLogger sensorLogger = new SensorLogger(this);
+    public SensorLogger sensorLogger = new SensorLogger(this::getBinaryProtocol);
+    /** Makes a Start Data Logging / Stop Logging button for a tab's status strip; set by MainFrame. */
+    public Supplier<JComponent> recordButtonFactory = () -> null;
 
     public IniFileState iniFileState = new IniFileState(this);
+    /** Order and hidden chips of the indicator strip, shared by the Gauges and Tuning tabs; ConsoleUI binds it to the saved preferences. */
+    public final IndicatorStripSettings indicatorStripSettings = new IndicatorStripSettings(new Node());
     public GaugesPanel.DetachedRepository DetachedRepositoryINSTANCE = new GaugesPanel.DetachedRepository(this);
 
     /** [tag:offline_tune] True when the console was opened in offline mode (no ECU connection, tune loaded from file). */
     private boolean offlineMode;
+    private String tuneFilePath;
+    private final List<Runnable> tuneFileListeners = new ArrayList<>();
 
     @NotNull
     public LinkManager getLinkManager() {
@@ -65,6 +97,25 @@ public class UIContext {
         for (Consumer<Boolean> l : offlineModeListeners) l.accept(offlineMode);
     }
 
+    /** The .msq being worked on: last loaded or saved, null once the ECU's own tune was adopted instead. */
+    public String getTuneFilePath() {
+        return tuneFilePath;
+    }
+
+    /**
+     * [tag:offline_tune] Also the file an offline session saves to on exit. Shown in the title bar;
+     * File > Save Tune writes to it without asking.
+     */
+    public void setTuneFilePath(String tuneFilePath) {
+        this.tuneFilePath = tuneFilePath;
+        for (Runnable l : tuneFileListeners) l.run();
+    }
+
+    /** Notified (on the calling thread) whenever the current tune file changes. */
+    public void addTuneFileListener(Runnable listener) {
+        tuneFileListeners.add(listener);
+    }
+
     /** [tag:offline_tune] Notified (on the calling thread) whenever offline mode is toggled. */
     public void addOfflineModeListener(Consumer<Boolean> listener) {
         offlineModeListeners.add(listener);
@@ -80,13 +131,31 @@ public class UIContext {
     // ---- Config-image change notifications ----
 
     private final List<Consumer<ConfigurationImage>> configImageListeners = new ArrayList<>();
+    private ConfigurationImage currentConfigurationImage;
+    private IniFileModel configurationImageIni;
 
     public void addConfigImageListener(Consumer<ConfigurationImage> listener) {
         configImageListeners.add(listener);
     }
 
+    /** Call on the Swing EDT when the listener's owning view is closed. */
+    public void removeConfigImageListener(Consumer<ConfigurationImage> listener) {
+        configImageListeners.remove(listener);
+    }
+
     /** Call on the Swing EDT whenever the working configuration image changes. */
     public void fireConfigImageChanged(ConfigurationImage ci) {
+        currentConfigurationImage = ci;
+        configurationImageIni = iniFileState.getIniFileModel();
         for (Consumer<ConfigurationImage> l : configImageListeners) l.accept(ci);
+    }
+
+    /** On the EDT: use the working tune, including offline edits, before the ECU image. */
+    public ConfigurationImage getCurrentConfigurationImage() {
+        if (currentConfigurationImage != null && configurationImageIni == iniFileState.getIniFileModel()) {
+            return currentConfigurationImage;
+        }
+        BinaryProtocol protocol = getBinaryProtocol();
+        return protocol == null ? null : protocol.getControllerConfiguration();
     }
 }

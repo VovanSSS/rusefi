@@ -169,16 +169,6 @@ void printOverallStatus() {
 	}
 }
 
-#if !defined(LOGIC_ANALYZER_BUFFER_SIZE)
-// TODO: how small can this be?
-#define LOGIC_ANALYZER_BUFFER_SIZE 1000
-#endif /* LOGIC_ANALYZER_BUFFER_SIZE */
-
-#if EFI_LOGIC_ANALYZER
-static char logicAnalyzerBuffer[LOGIC_ANALYZER_BUFFER_SIZE];
-static Logging logicAnalyzerLogger("logic analyzer", logicAnalyzerBuffer, sizeof(logicAnalyzerBuffer));
-#endif // EFI_LOGIC_ANALYZER
-
 /**
  * @brief Sends all pending data to rusEfi console
  *
@@ -216,11 +206,6 @@ static systime_t timeOfPreviousReport = (systime_t) -1;
 #else
 	chThdSleepMilliseconds(200);
 #endif
-
-#if EFI_LOGIC_ANALYZER
-	printWave(&logicAnalyzerLogger);
-	scheduleLogging(&logicAnalyzerLogger);
-#endif /* EFI_LOGIC_ANALYZER */
 }
 
 #if EFI_PROD_CODE
@@ -310,7 +295,7 @@ class CommunicationBlinkingTask : public PeriodicTimerController {
 				is_usb_serial_ready() ? 3 * BLINKING_PERIOD_MS :
 #endif // EFI_USB_SERIAL
 				BLINKING_PERIOD_MS;
-				offTimeMs = 0.6 * onTimeMs;
+				offTimeMs = static_cast<int>(0.6f * onTimeMs);
 			}
 
 			enginePins.communicationLedPin.setValue(1, /*force*/true);
@@ -345,6 +330,39 @@ static int packEngineMode() {
 	return (Enum2Underlying(engineConfiguration->fuelAlgorithm) << 4) +
 			(engineConfiguration->injectionMode << 2) +
 			engineConfiguration->ignitionMode;
+}
+
+// Standard TunerStudio/MLV state bits, distinct from rusEFI's configuration engineMode.
+static uint8_t packTSEngineState() {
+	uint8_t state = 0;
+#if EFI_SHAFT_POSITION_INPUT
+	state |= engine->rpmCalculator.isRunning() << 0;
+	state |= engine->rpmCalculator.isCranking() << 1;
+#endif
+#if EFI_ENGINE_CONTROL
+	state |= (engine->fuelComputer.running.postCrankingFuelCorrection != 1) << 2;
+	state |= (engine->fuelComputer.running.coolantTemperatureCoefficient != 1) << 3;
+
+	bool accelerating;
+	bool decelerating = false;
+	if (engineConfiguration->accelEnrichmentMode == AE_MODE_PREDICTIVE_MAP) {
+		// Prediction is TPS-triggered and can outlast the TPS threshold flag.
+		// Adder diagnostics may be stale in this mode, so ignore them.
+		accelerating = engine->outputChannels.isMapPredictionActive;
+	} else if (engineConfiguration->accelEnrichmentMode == AE_MODE_LUA) {
+		// [tag:lua_accel_enrichment] Use applied mass, not the native TPS detector.
+		accelerating = engine->module<TpsAccelEnrichment>()->luaAccelFuel > 0;
+	} else {
+		const auto& ae = engine->module<TpsAccelEnrichment>();
+		// The applied adder also covers fractional-pump decay after the TPS step.
+		accelerating = ae->isAboveAccelThreshold || engine->engineState.tpsAccelEnrich > 0;
+		decelerating = ae->isBelowDecelThreshold || engine->engineState.tpsAccelEnrich < 0;
+	}
+	state |= accelerating << 4;
+	state |= (decelerating || engine->module<DfcoController>()->cutFuel()) << 5;
+	// Bits 6/7 describe MAP-rate AE/DE, which rusEFI does not implement.
+#endif
+	return state;
 }
 
 static void updateTempSensors() {
@@ -409,19 +427,19 @@ static void updateThrottles() {
 
 static void updateLambda() {
 #if EFI_ENGINE_CONTROL
-	float lambdaValue = Sensor::getOrDefault(SensorType::Lambda1, 0.5 / STOICH_RATIO, 0.0 / STOICH_RATIO, 30.5 / STOICH_RATIO);
+	float lambdaValue = Sensor::getOrDefault(SensorType::Lambda1, 0.5f / STOICH_RATIO, 0.0f / STOICH_RATIO, 30.5f / STOICH_RATIO);
 	engine->outputChannels.lambdaValue = lambdaValue;
 	engine->outputChannels.AFRValue = lambdaValue * engine->fuelComputer.stoichiometricRatio;
 	// TODO: this can be calculated on PC side!
 	engine->outputChannels.afrGasolineScale = lambdaValue * STOICH_RATIO;
-	engine->outputChannels.SmoothedAFRValue = Sensor::getOrZero(SensorType::SmoothedLambda1);
+	engine->outputChannels.SmoothedAFRValue = Sensor::getOrZero(SensorType::SmoothedLambda1) * engine->fuelComputer.stoichiometricRatio;
 
-	float lambda2Value = Sensor::getOrDefault(SensorType::Lambda2, 0.5 / STOICH_RATIO, 0.0 / STOICH_RATIO, 30.5 / STOICH_RATIO);
+	float lambda2Value = Sensor::getOrDefault(SensorType::Lambda2, 0.5f / STOICH_RATIO, 0.0f / STOICH_RATIO, 30.5f / STOICH_RATIO);
 	engine->outputChannels.lambdaValue2 = lambda2Value;
 	engine->outputChannels.AFRValue2 = lambda2Value * engine->fuelComputer.stoichiometricRatio;
 	// TODO: this can be calculated on PC side!
 	engine->outputChannels.afr2GasolineScale = lambda2Value * STOICH_RATIO;
-	engine->outputChannels.SmoothedAFRValue2 = Sensor::getOrZero(SensorType::SmoothedLambda2);
+	engine->outputChannels.SmoothedAFRValue2 = Sensor::getOrZero(SensorType::SmoothedLambda2) * engine->fuelComputer.stoichiometricRatio;
 #endif // EFI_ENGINE_CONTROL
 }
 
@@ -466,7 +484,9 @@ static void updateVehicleSpeed() {
 	engine->outputChannels.wheelSlipRatio = Sensor::getOrZero(SensorType::WheelSlipRatio);
 #ifdef MODULE_GEAR_DETECTOR
 	engine->outputChannels.speedToRpmRatio = engine->module<GearDetector>()->getGearboxRatio();
-	engine->outputChannels.detectedGear = Sensor::getOrZero(SensorType::DetectedGear);
+	engine->outputChannels.detectedGear = static_cast<int8_t>(Sensor::getOr(SensorType::DetectedGear, gear_e::INVALID));
+	engine->outputChannels.transmissionSlipPercent = engine->module<GearDetector>()->getSlipPercent();
+	engine->outputChannels.transmissionSlipValid = engine->module<GearDetector>()->isSlipValid();
 #endif
 #endif /* EFI_VEHICLE_SPEED */
 }
@@ -560,12 +580,13 @@ static void updateMiscSensors() {
 
 	engine->outputChannels.wastegatePositionSensor = Sensor::getOrZero(SensorType::WastegatePosition);
 
-	engine->outputChannels.ISSValue = Sensor::getOrZero(SensorType::InputShaftSpeed);
-	engine->outputChannels.auxSpeed1 = Sensor::getOrZero(SensorType::AuxSpeed1);
-	engine->outputChannels.auxSpeed2 = Sensor::getOrZero(SensorType::AuxSpeed2);
+	engine->outputChannels.ISSValue = static_cast<uint16_t>(Sensor::getOrZero(SensorType::InputShaftSpeed));
+	engine->outputChannels.outputShaftSpeed = Sensor::getOrZero(SensorType::OutputShaftSpeed);
+	engine->outputChannels.auxSpeed1 = static_cast<uint16_t>(Sensor::getOrZero(SensorType::AuxSpeed1));
+	engine->outputChannels.auxSpeed2 = static_cast<uint16_t>(Sensor::getOrZero(SensorType::AuxSpeed2));
 
 #if	HAL_USE_ADC
-	engine->outputChannels.internalMcuTemperature = getMCUInternalTemperature();
+	engine->outputChannels.internalMcuTemperature = static_cast<int8_t>(getMCUInternalTemperature());
 	engine->outputChannels.internalVref = getMCUVref();
 	engine->outputChannels.internalVbat = getMcuVbatVoltage();
 #endif /* HAL_USE_ADC */
@@ -603,13 +624,6 @@ static void updateFuelResults() {
 static void updateFuelInfo() {
 	updateFuelCorrections();
 	updateFuelResults();
-#if EFI_ENGINE_CONTROL
-	const auto& wallFuel = engine->injectionEvents.elements[0].getWallFuel();
-	engine->outputChannels.wallFuelAmount = wallFuel.getWallFuel() * 1000;			// Convert grams to mg
-	engine->outputChannels.wallFuelCorrectionValue = wallFuel.wallFuelCorrection * 1000;	// Convert grams to mg
-
-	engine->outputChannels.veValue = engine->engineState.currentVe;
-#endif // EFI_ENGINE_CONTROL
 }
 
 static void updateIgnition(float rpm) {
@@ -622,10 +636,6 @@ static void updateFlags() {
 	engine->outputChannels.isO2HeaterOn = enginePins.o2heater.getLogicValue();
 	// todo: eliminate state copy logic by giving DfcoController it's owm xxx.txt and leveraging LiveData
 	engine->outputChannels.dfcoActive = engine->module<DfcoController>()->cutFuel();
-
-#if EFI_LAUNCH_CONTROL
-	engine->outputChannels.launchTriggered = engine->launchController.isLaunchCondition;
-#endif
 
 #if EFI_PROD_CODE
 	engine->outputChannels.isTriggerError = isTriggerErrorNow();
@@ -654,7 +664,7 @@ void updateTunerStudioState() {
 
 
   static Timer blinkIndicatorsTimer;
-  constexpr float blinkHalfPeriod = 0.3;
+  constexpr float blinkHalfPeriod = 0.3f;
   bool isBlinkPhase = blinkIndicatorsTimer.hasElapsedSec(blinkHalfPeriod);
 #if EFI_ELECTRONIC_THROTTLE_BODY
   blinkEtbErrorCodes(isBlinkPhase);
@@ -680,12 +690,12 @@ void updateTunerStudioState() {
 	engine->dc_motors.dcOutput0 = dc->dcMotor.get();
 	engine->dc_motors.isEnabled0_int = dc->msg() == nullptr;
 
-	tsOutputChannels->RPMValue = rpm;
+	tsOutputChannels->RPMValue = static_cast<uint16_t>(rpm);
 #if EFI_SHAFT_POSITION_INPUT
-	tsOutputChannels->instantRpm = engine->triggerCentral.instantRpm.getInstantRpm();
-	tsOutputChannels->instantRpmRange = engine->triggerCentral.instantRpm.getInstantRpmRange();
+	tsOutputChannels->instantRpm = static_cast<uint16_t>(engine->triggerCentral.instantRpm.getInstantRpm());
+	tsOutputChannels->instantRpmRange = static_cast<uint16_t>(engine->triggerCentral.instantRpm.getInstantRpmRange());
 	tsOutputChannels->totalTriggerErrorCounter = engine->triggerCentral.triggerState.totalTriggerErrorCounter;
-	tsOutputChannels->rpmAcceleration = engine->rpmCalculator.getRpmAcceleration();
+	tsOutputChannels->rpmAcceleration = static_cast<int16_t>(engine->rpmCalculator.getRpmAcceleration());
 
 	tsOutputChannels->orderingErrorCounter = engine->triggerCentral.triggerState.orderingErrorCounter;
 #endif // EFI_SHAFT_POSITION_INPUT
@@ -710,6 +720,7 @@ void updateTunerStudioState() {
 	tsOutputChannels->seconds = getTimeNowS();
 
 	tsOutputChannels->engineMode = packEngineMode();
+	tsOutputChannels->engine = packTSEngineState();
 	tsOutputChannels->firmwareVersion = getRusEfiVersion();
 
 	tsOutputChannels->accelerationLat = engine->sensors.accelerometer.lat;
@@ -725,7 +736,7 @@ void updateTunerStudioState() {
   tsOutputChannels->torque = -1;
 #endif
 
-	tsOutputChannels->turboSpeed = Sensor::getOrZero(SensorType::TurbochargerSpeed);
+	tsOutputChannels->turboSpeed = static_cast<uint16_t>(Sensor::getOrZero(SensorType::TurbochargerSpeed));
 	extern FrequencySensor inputShaftSpeedSensor;
 	tsOutputChannels->issEdgeCounter = inputShaftSpeedSensor.eventCounter;
 	extern FrequencySensor vehicleSpeedSensor;

@@ -14,6 +14,10 @@
 
 #define EFI_GPIO_HARDWARE TRUE
 
+#ifndef KNOCK_SPECTROGRAM
+#define KNOCK_SPECTROGRAM FALSE
+#endif
+
 #ifndef SENT_CHANNELS_NUM
 #define SENT_CHANNELS_NUM 1
 #endif
@@ -94,8 +98,9 @@
 #define EFI_BOR_LEVEL TRUE
 #endif
 
+// 'pow' usage costs couple of K of flash
 #ifndef EFI_DYNO_VIEW
-#define EFI_DYNO_VIEW TRUE
+#define EFI_DYNO_VIEW FALSE
 #endif
 
 #ifndef EFI_CDM_INTEGRATION
@@ -104,6 +109,15 @@
 
 #ifndef EFI_TOOTH_LOGGER
 #define EFI_TOOTH_LOGGER TRUE
+#endif
+
+// We need static buffers only for DTC manager
+#ifndef EFI_TOOTH_LOGGER_STATICBUFFER_COUNT
+	#if MODULE_DTC_MANAGER
+	#define EFI_TOOTH_LOGGER_STATICBUFFER_COUNT 4
+	#else
+	#define EFI_TOOTH_LOGGER_STATICBUFFER_COUNT 0
+	#endif
 #endif
 
 #ifndef EFI_TEXT_LOGGING
@@ -314,6 +328,14 @@
 #define BOARD_TLE9201_COUNT 0
 #endif
 
+#ifndef BOARD_ADS7128_COUNT
+#define BOARD_ADS7128_COUNT 0
+#endif
+
+#ifndef BOARD_PCA9685_COUNT
+#define BOARD_PCA9685_COUNT 1
+#endif
+
 #define EFI_ANALOG_SENSORS TRUE
 
 #ifndef EFI_MAX_31855
@@ -330,10 +352,20 @@
 #define EFI_INTERNAL_ADC TRUE
 #endif
 
+#ifndef EFI_USE_FAST_ADC
 #define EFI_USE_FAST_ADC TRUE
+#endif
 
 #ifndef EFI_CAN_SUPPORT
 #define EFI_CAN_SUPPORT TRUE
+#endif
+
+#ifndef EFI_I2C_SUPPORT
+#define EFI_I2C_SUPPORT TRUE
+#endif
+
+#ifndef EFI_UDS
+#define EFI_UDS FALSE
 #endif
 
 #if !defined(EFI_CAN_SERIAL) && EFI_CAN_SUPPORT
@@ -388,8 +420,10 @@
 #define EFI_FILE_LOGGING TRUE
 #endif
 
+// Save flash on F4: use the matching INI from the firmware bundle.
+// F7/H7 inherit this default; boards with room can explicitly enable the image.
 #ifndef EFI_EMBED_INI_MSD
-#define EFI_EMBED_INI_MSD TRUE
+#define EFI_EMBED_INI_MSD FALSE
 #endif
 
 #ifndef EFI_USB_SERIAL
@@ -408,7 +442,7 @@
 	//  - use compressed USB MSD image (requires 32k of memory)
 	//  - use perf trace (requires ~16k of memory)
 	//  - use spectorgram (requires ~12k of memory), need disable perf trace or compressed USB MSD image
-	#ifndef KNOCK_SPECTROGRAM
+	#if !KNOCK_SPECTROGRAM
 	  #ifndef EFI_USE_COMPRESSED_INI_MSD
 		#define EFI_USE_COMPRESSED_INI_MSD TRUE
 		#endif
@@ -427,6 +461,10 @@
 
 #ifndef EFI_LUA
 #define EFI_LUA TRUE
+#endif
+
+#ifndef LUA_I2C_DAC
+#define LUA_I2C_DAC FALSE
 #endif
 
 #ifndef FULL_SD_LOGS
@@ -462,13 +500,6 @@
 
 #ifndef EFI_ELECTRONIC_THROTTLE_BODY
 #define EFI_ELECTRONIC_THROTTLE_BODY TRUE
-#endif
-
-/**
- * Do we need Malfunction Indicator blinking logic?
- */
-#ifndef EFI_MALFUNCTION_INDICATOR
-#define EFI_MALFUNCTION_INDICATOR FALSE
 #endif
 
 #ifndef CONSOLE_MAX_ACTIONS

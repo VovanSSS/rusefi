@@ -12,7 +12,7 @@
 #include "scheduler.h"
 #include "efi_gpio.h"
 
-#define PERCENT_TO_DUTY(x) (x) * 0.01
+#define PERCENT_TO_DUTY(x) ((x) * 0.01f)
 
 #define NAN_FREQUENCY_SLEEP_PERIOD_MS 100
 
@@ -39,8 +39,10 @@ typedef void (pwm_cycle_callback)(PwmConfig *state);
 typedef void (pwm_gen_callback)(int stateIndex, PwmConfig* pwm);
 
 typedef enum {
+	// duty cycle below 1% (ZERO_PWM_THRESHOLD): output held constantly inactive, no pulses generated
 	PM_ZERO,
 	PM_NORMAL,
+	// duty cycle above 99% (FULL_PWM_THRESHOLD): output held constantly active
 	PM_FULL
 } pwm_mode_e;
 
@@ -82,7 +84,10 @@ public:
 	bool isStopRequested = false;
 
 	/**
-	 * @param use NAN frequency to pause PWM
+	 * @param frequency positive frequency in Hz, or NAN to pause PWM: while paused, the timer loop
+	 * drives the pin inactive and re-checks every NAN_FREQUENCY_SLEEP_PERIOD_MS until a real
+	 * frequency is set again. Zero is NOT a valid way to stop output - it produces an infinite
+	 * period and trips an assert in handleCycleStart(); convert anything below 1 Hz to NAN instead.
 	 */
 	void setFrequency(float frequency);
 
@@ -125,7 +130,7 @@ private:
 	bool forceCycleStart = true;
 };
 
-struct hardware_pwm;
+#include "hardware_pwm.h"
 
 struct IPwm {
 	virtual void setSimplePwmDutyCycle(float dutyCycle) = 0;
@@ -136,6 +141,12 @@ public:
 	SimplePwm();
 	SimplePwm(const char *name);
 	void setSimplePwmDutyCycle(float dutyCycle) override;
+	/**
+	 * Hides PwmConfig::setFrequency(): a SimplePwm backed by hardware PWM (see startSimplePwmHard() and the
+	 * gpio-chip path in startSimplePwm()) reprograms the timer instead of the software period.
+	 * @return false only when hardware PWM is attached and cannot do that frequency; the old frequency stays.
+	 */
+	bool setFrequency(float frequency);
 	MultiChannelStateSequenceWithData<2> seq;
 	hardware_pwm* hardPwm = nullptr;
 };
@@ -150,6 +161,16 @@ void applyPinState(int stateIndex, PwmConfig* state) /* pwm_gen_callback */;
 
 /**
  * Start a one-channel software PWM driver.
+ *
+ * @param dutyCycle value in the [0, 1] range, inclusive. Starting with zero duty cycle is legal and
+ * common (e.g. fan and GPPWM outputs start "off"): any value below ZERO_PWM_THRESHOLD (1%) puts the
+ * driver into PM_ZERO mode where the pin is held inactive with no pulses, mirrored by PM_FULL above
+ * 99%. The timer loop still ticks once per period in these modes, so a later setSimplePwmDutyCycle()
+ * call resumes normal pulse generation.
+ *
+ * @param frequency must be at least 1 Hz - zero included, anything lower is rejected with a warning
+ * and the driver is NOT started, leaving the pin untouched and later duty cycle updates inert.
+ * A running PWM can be paused with setFrequency(NAN), never with zero.
  *
  * This method should be called after scheduling layer is started by initSignalExecutor()
  */

@@ -4,10 +4,12 @@ import com.devexperts.logging.Logging;
 import com.opensr5.ini.*;
 import com.rusefi.ini.reader.IniFileReader;
 import com.rusefi.core.SignatureHelper;
+import com.rusefi.core.Pair;
 import com.rusefi.ui.StatusConsumer;
 import com.rusefi.ini.reader.IniFileReaderUtil;
 import com.rusefi.ini.reader.IniParsingException;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -30,6 +32,20 @@ public class RealIniFileProvider implements IniFileProvider {
     }
 
     public static ManualIniPicker manualPicker = null;
+
+    interface IniDownloader {
+        String findOrDownload(Pair<String, String> location, boolean allowDownload);
+    }
+
+    private final IniDownloader iniDownloader;
+
+    public RealIniFileProvider() {
+        this(SignatureHelper::downloadIfNotAvailable);
+    }
+
+    RealIniFileProvider(IniDownloader iniDownloader) {
+        this.iniDownloader = iniDownloader;
+    }
 
     /**
      * Signatures for which a picker has already been opened. The port scanner calls {@link #provide}
@@ -64,6 +80,27 @@ public class RealIniFileProvider implements IniFileProvider {
      */
     private static final int MAX_LOCAL_INI_DEPTH = 3;
 
+    /**
+     * @return .ini copied from TunerStudio's cache into ours (so the next connect is a plain cache
+     * hit), the TunerStudio file itself if the copy failed, or null if TunerStudio does not have it
+     */
+    @Nullable
+    private static String importFromTunerStudioCache(String signature) {
+        String tsIniFile = PrimeTunerStudioCache.findInTunerStudioCache(signature);
+        if (tsIniFile == null) {
+            return null;
+        }
+        try {
+            String imported = SignatureHelper.importIntoCache(signature, new File(tsIniFile));
+            if (imported != null) {
+                return imported;
+            }
+        } catch (IOException e) {
+            log.warn("Failed to import " + tsIniFile + " into local cache: " + e);
+        }
+        return tsIniFile;
+    }
+
     @Override
     @NotNull
     public IniFileModel provide(String signature) throws IniNotFoundException {
@@ -73,6 +110,7 @@ public class RealIniFileProvider implements IniFileProvider {
             // 2. Current folder
             localIniFile = IniLocator.findIniFile(".", signature);
         }
+        if (localIniFile == null) {
         if (localIniFile == null) {
             // 2.5 Current folder and its subfolders, so an ini unpacked into a nested dir is
             //     found automatically instead of prompting the user on every start.
@@ -90,7 +128,16 @@ public class RealIniFileProvider implements IniFileProvider {
         } else {
             // 3. Cache or download from server; a cached .ini whose embedded signature diverges
             //    from the requested one (firmware rebuilt on a later day) is dropped as stale.
-            localIniFile = SignatureHelper.downloadIfNotAvailable(SignatureHelper.getUrl(signature), signature);
+            //    Once the manual picker has been requested, keep checking its cache but do not make
+            //    every later scanner probe repeat the same unavailable remote lookup (#10158).
+            localIniFile = SignatureHelper.downloadIfNotAvailable(
+                SignatureHelper.getUrl(signature), signature, !promptedSignatures.contains(signature));
+        }
+        if (localIniFile == null) {
+            // 4. TunerStudio's own ecuDef cache: the server may not have this build (custom board,
+            // local compile) while TunerStudio has already loaded its .ini
+            localIniFile = importFromTunerStudioCache(signature);
+        }
         }
         ManualIniPicker picker = manualPicker;
         if (localIniFile == null) {

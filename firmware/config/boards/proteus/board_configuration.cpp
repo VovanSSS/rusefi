@@ -7,6 +7,7 @@
  */
 
 #include "pch.h"
+#include "basic_configuration.h"
 #include "proteus_meta.h"
 #include "board_overrides.h"
 
@@ -75,30 +76,17 @@ static void setupVbatt() {
 }
 
 static void setupEtb() {
-	// TLE9201 driver
-	// This chip has three control pins:
-	// DIR - sets direction of the motor
-	// PWM - pwm control (enable high, coast low)
-	// DIS - disables motor (enable low)
+	setupTLE9201IncludingStepper(Gpio::D12, Gpio::D10, Gpio::D11);
+	setupTLE9201IncludingStepper(Gpio::D13, Gpio::D9, Gpio::D8, 1);
+}
 
-	// Throttle #1
-	// PWM pin
-	engineConfiguration->etbIo[0].controlPin = Gpio::D12;
-	// DIR pin
-	engineConfiguration->etbIo[0].directionPin1 = Gpio::D10;
-	// Disable pin
-	engineConfiguration->etbIo[0].disablePin = Gpio::D11;
-
-	// Throttle #2
-	// PWM pin
-	engineConfiguration->etbIo[1].controlPin = Gpio::D13;
-	// DIR pin
-	engineConfiguration->etbIo[1].directionPin1 = Gpio::D9;
-	// Disable pin
-	engineConfiguration->etbIo[1].disablePin = Gpio::D8;
-
-	// we only have pwm/dir, no dira/dirb
-	engineConfiguration->etb_use_two_wires = false;
+static bool applyProteusBasicConfiguration(BasicConfigurationAction action) {
+	return applyBasicConfiguration(action,
+		setupEtb,
+		PROTEUS_IN_TPS,
+		PROTEUS_IN_TPS1_2,
+		PROTEUS_IN_PPS,
+		PROTEUS_IN_PPS2);
 }
 
 static void setupDefaultSensorInputs() {
@@ -264,7 +252,7 @@ static Gpio PROTEUS_HARLEY_OUTPUTS[] = {
 	Gpio::PROTEUS_IGN_9, // ACR2
 };
 
-int getBoardMetaLowSideOutputsCount() {
+static int boardGetMetaLowSideOutputsCount() {
     if (engineConfiguration->engineType == engine_type_e::SUBARU_2011) {
         return getBoardMetaOutputsCount();
     }
@@ -318,7 +306,7 @@ Gpio::PROTEUS_LS_16,
 	Gpio::PROTEUS_HS_4
 };
 
-int getBoardMetaOutputsCount() {
+static int boardGetMetaOutputsCount() {
     if (engineConfiguration->engineType == engine_type_e::SUBARU_2011) {
         return efi::size(PROTEUS_SUBARU_OUTPUTS);
     }
@@ -340,7 +328,7 @@ int getBoardMetaOutputsCount() {
     return efi::size(PROTEUS_OUTPUTS);
 }
 
-int getBoardMetaDcOutputsCount() {
+static int boardGetMetaDcOutputsCount() {
     if (engineConfiguration->engineType == engine_type_e::PROTEUS_BMW_M73) {
         return 2;
     }
@@ -355,7 +343,7 @@ int getBoardMetaDcOutputsCount() {
 /*    return 2; proteus has two h-b ridges but stim board is short on channels to test :( */
 }
 
-Gpio* getBoardMetaOutputs() {
+static Gpio* boardGetMetaOutputs() {
     if (engineConfiguration->engineType == engine_type_e::SUBARU_2011) {
         return PROTEUS_SUBARU_OUTPUTS;
     }
@@ -379,6 +367,13 @@ Gpio* getBoardMetaOutputs() {
 #endif // HW_PROTEUS
 
 void setup_custom_board_overrides() {
+#if HW_PROTEUS
+	custom_board_getMetaOutputsCount = boardGetMetaOutputsCount;
+	custom_board_getMetaLowSideOutputsCount = boardGetMetaLowSideOutputsCount;
+	custom_board_getMetaOutputs = boardGetMetaOutputs;
+	custom_board_getMetaDcOutputsCount = boardGetMetaDcOutputsCount;
+#endif // HW_PROTEUS
 	custom_board_DefaultConfiguration = proteus_boardDefaultConfiguration;
 	custom_board_ConfigOverrides = proteus_boardConfigOverrides;
+	custom_board_applyBasicConfiguration = applyProteusBasicConfiguration;
 }

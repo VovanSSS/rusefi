@@ -6,10 +6,15 @@ SIG_FILE = $(PROJECT_DIR)/$(META_OUTPUT_ROOT_FOLDER)tunerstudio/generated/signat
 
 CONFIG_INPUTS = \
   $(SIG_FILE) \
-  $(PROJECT_DIR)/controllers/algo/rusefi_hw_stm32_enums.h \
-  $(PROJECT_DIR)/controllers/algo/rusefi_hw_adc_enums.h \
+  $(HW_PIN_ENUMS) \
+  $(HW_ADC_ENUMS) \
   $(PROJECT_DIR)/integration/rusefi_config.txt \
+  $(PROJECT_DIR)/integration/rusefi_config_shared.txt \
+  $(PROJECT_DIR)/controllers/algo/accel_enrichment.engineConfiguration.txt \
   $(PROJECT_DIR)/tunerstudio/tunerstudio.template.ini \
+  $(PROJECT_DIR)/tunerstudio/transient_fueling.ini \
+  $(PROJECT_DIR)/tunerstudio/transient_gauges.ini \
+  $(PROJECT_DIR)/tunerstudio/top_level_menu.ini \
   $(PROJECT_DIR)/${META_OUTPUT_ROOT_FOLDER}console/binary/generated/live_data_fragments.ini \
   $(PROJECT_DIR)/${META_OUTPUT_ROOT_FOLDER}console/binary/generated/data_logs.ini \
   $(PROJECT_DIR)/${META_OUTPUT_ROOT_FOLDER}console/binary/generated/fancy_content.ini \
@@ -53,6 +58,7 @@ CONFIG_FILES = \
   $(PROJECT_DIR)/$(META_OUTPUT_ROOT_FOLDER)controllers/generated/page_3_generated.h \
   $(PROJECT_DIR)/$(META_OUTPUT_ROOT_FOLDER)controllers/generated/page_4_generated.h \
   $(PROJECT_DIR)/$(META_OUTPUT_ROOT_FOLDER)controllers/lua/generated/value_lookup_generated.cpp \
+  $(PROJECT_DIR)/$(META_OUTPUT_ROOT_FOLDER)controllers/lua/generated/value_lookup_table_generated.cpp \
   $(PROJECT_DIR)/$(META_OUTPUT_ROOT_FOLDER)controllers/lua/generated/value_lookup_generated.md \
   $(PROJECT_DIR)/../java_console/models/src/main/java/com/rusefi/config/generated/VariableRegistryValues.java \
   $(FIELDS) \
@@ -64,13 +70,20 @@ CONFIG_FILES = \
 #  the deps for that .o file in the same GCC call, so if the .deps aren't already
 #  in the correct state, things can fail to build because Make doesn't know it needs
 #  to build the prerequisites (in this case CONFIG_FILES and RAMDISK) for those files ahead of time.
-$(TCOBJS): $(CONFIG_FILES)
-$(TCPPOBJS): $(RAMDISK)
+# Support both legacy split ARM/THUMB lists and current ChibiOS object lists.
+$(TCOBJS) $(ACOBJS) $(COBJS): $(CONFIG_FILES)
+$(TCPPOBJS) $(ACPPOBJS) $(CPPOBJS) $(CCOBJS): $(RAMDISK)
+
+# Codegen recipes below write shared files under the firmware tree (generated headers,
+# .ini fragments, java sources), so concurrent makes (firmware + simulator + unit_tests)
+# must not run them at the same time. Serialize them on the same inter-process lock that
+# java_tools.mk uses for gradle ($(FLOCK)); the generators use LazyFile, so a second,
+# same-content run under the lock is a no-op and does not churn mtimes.
 
 # Always try to rebuild the signature file.
 # The script won't actually update the file if the signature hasn't changed, so it won't trigger a config file generation.
 $(SIG_FILE): .FORCE
-	bash $(PROJECT_DIR)/gen_signature.sh $(SHORT_BOARD_NAME)
+	$(FLOCK) bash $(PROJECT_DIR)/gen_signature.sh $(SHORT_BOARD_NAME)
 
 # Most sentinels are used for multiple targets that are created with a single recipe.
 # In newer versions of GNU Make this is done using the &: operator,
@@ -79,7 +92,7 @@ $(SIG_FILE): .FORCE
 $(RAMDISK): .ramdisk-sentinel ;
 
 .ramdisk-sentinel: $(INI_FILE) $(TGT_SENTINEL)
-	bash $(PROJECT_DIR)/bin/gen_image_board.sh $(BOARD_DIR) $(SHORT_BOARD_NAME)
+	$(FLOCK) bash $(PROJECT_DIR)/bin/gen_image_board.sh $(BOARD_DIR) $(SHORT_BOARD_NAME)
 	@touch $@
 
 $(CONFIG_FILES): .config-sentinel;
@@ -88,9 +101,9 @@ $(CONFIG_FILES): .config-sentinel;
 # so it won't trigger a config file generation unless it needs to.
 .config-sentinel: $(CONFIG_INPUTS) $(CONFIG_DEFINITION_JAR) $(TGT_SENTINEL)
 ifneq (,$(CUSTOM_GEN_CONFIG))
-	bash $(BOARD_DIR)/$(CUSTOM_GEN_CONFIG)
+	$(FLOCK) bash $(BOARD_DIR)/$(CUSTOM_GEN_CONFIG)
 else
-	bash $(PROJECT_DIR)/gen_config_board.sh $(BOARD_DIR) $(SHORT_BOARD_NAME)
+	$(FLOCK) bash $(PROJECT_DIR)/gen_config_board.sh $(BOARD_DIR) $(SHORT_BOARD_NAME)
 endif
 	@touch $@
 

@@ -30,7 +30,7 @@ struct mapSampler {
 #if EFI_MAP_AVERAGING
 
 #if HAL_USE_ADC
-void mapAveragingAdcCallback(float instantVoltage);
+void mapAveragingAdcCallback(float instantVoltage, bool channelReady);
 #endif
 
 // allow smoothing up to number of cylinders
@@ -57,6 +57,7 @@ public:
 	}
 
 	SensorResult submit(float sensorVolts);
+	void onAdcSample(float instantVoltage, bool channelReady);
 
 	/**
 	 * Variant B: read-only conversion of the raw fast-ADC latch - no stored

@@ -13,6 +13,7 @@
 #include "closed_loop_idle_generated.h"
 #include "vvt_generated.h"
 #include "mc33810_state_generated.h"
+#include "ads7128_state_generated.h"
 #include <livedata_board_extra.h>
 
 template<>
@@ -139,11 +140,11 @@ const tps_accel_state_s* getLiveData(size_t) {
 
 template<>
 const nitrous_control_state_s* getLiveData(size_t) {
-#if EFI_LAUNCH_CONTROL
+#if EFI_LAUNCH_CONTROL && EFI_ENGINE_CONTROL
     return &engine->module<NitrousController>().unmock();
 #else
     return nullptr;
-#endif // EFI_LAUNCH_CONTROL
+#endif // EFI_LAUNCH_CONTROL && EFI_ENGINE_CONTROL
 }
 
 template<>
@@ -275,6 +276,16 @@ const mc33810_state_s* getLiveData(size_t idx) {
 #endif
 }
 
+template<>
+const ads7128_state_s* getLiveData(size_t idx) {
+#if (BOARD_ADS7128_COUNT > 0)
+	return ads7128getLiveData(idx);
+#else
+	UNUSED(idx);
+	return nullptr;
+#endif
+}
+
 static const FragmentEntry fragments[] = {
 // This header is generated - do not edit by hand!
 #include "live_data_fragments.h"
@@ -313,6 +324,15 @@ const live_data_example_s* getLiveData(size_t) {
 }
 
 template<>
+const injector_deadtime_autotune_state_s* getLiveData(size_t) {
+#if EFI_ENGINE_CONTROL
+	return &engine->module<InjectorDeadtimeAutotune>().unmock();
+#else
+	return nullptr;
+#endif
+}
+
+template<>
 const vvl_controller_state_s* getLiveData(size_t) {
 #if MODULE_VVL_CONTROLLER
 	return &engine->module<VvlController>().unmock();
@@ -337,4 +357,28 @@ const misfire_detection_state_s* getLiveData(size_t) {
 #else
 	return nullptr;
 #endif
+}
+
+template<>
+const rolling_launch_state_s* getLiveData(size_t) {
+#if EFI_LAUNCH_CONTROL
+	return &engine->module<RollingLaunchControl>().unmock();
+#else
+	return nullptr;
+#endif
+}
+
+template<>
+const burst_knock_state_s* getLiveData(size_t) {
+	return &engine->module<BurstKnock>().unmock();
+}
+
+template<>
+const engine_state_machine_state_s* getLiveData(size_t) {
+	return &engine->module<EngineStateMachine>().unmock();
+}
+
+template<>
+const wot_enrichment_state_s* getLiveData(size_t) {
+	return &engine->module<WotEnrichment>().unmock();
 }

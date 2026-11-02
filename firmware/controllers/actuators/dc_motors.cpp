@@ -124,13 +124,32 @@ DcMotor* initDcMotor(brain_pin_e coil_p, brain_pin_e coil_m, size_t index) {
 	return &hw.dcMotor;
 }
 
-void setDcMotorFrequency(size_t index, int hz) {
-	dcHardware[index].setFrequency(hz);
+bool setDcMotorFrequency(size_t index, int hz) {
+	return dcHardware[index].setFrequency(hz);
 }
 
 void setDcMotorDuty(size_t index, float duty) {
 	dcHardware[index].dcMotor.set(duty);
 }
+
+#if EFI_UNIT_TEST
+#include <new>
+
+DcMotor* getDcMotorForUnitTest(size_t index) {
+	return &dcHardware[index].dcMotor;
+}
+
+void setDcHardwarePwmForUnitTest(size_t index, hardware_pwm* pwm) {
+	dcHardware[index].setHardwarePwmForUnitTest(pwm);
+}
+
+void resetDcHardwareForUnitTest() {
+	// DcHardware is not assignable (self-referencing members), reconstruct in place
+	for (auto& hw : dcHardware) {
+		new (&hw) DcHardware();
+	}
+}
+#endif // EFI_UNIT_TEST
 
 void showDcMotorInfo(int i) {
 	DcHardware *dc = &dcHardware[i];

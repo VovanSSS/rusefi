@@ -16,6 +16,8 @@
 #include "gpio_ext.h"
 #endif // EFI_PROD_CODE
 
+// Duty cycles below/above these thresholds switch the state machine into PM_ZERO/PM_FULL mode:
+// instead of generating sub-1% pulses, the output is held at a constant level (see setSimplePwmDutyCycle).
 // 1% duty cycle
 #define ZERO_PWM_THRESHOLD 0.01
 // 99% duty cycle
@@ -46,6 +48,15 @@ PwmConfig::PwmConfig() {
  * @param dutyCycle value between 0 and 1
  * See also setFrequency
  */
+bool SimplePwm::setFrequency(float frequency) {
+	if (hardPwm) {
+		return hardPwm->setFrequency(frequency);
+	}
+
+	PwmConfig::setFrequency(frequency);
+	return true;
+}
+
 void SimplePwm::setSimplePwmDutyCycle(float dutyCycle) {
 	if (isStopRequested) {
 		// we are here in order to not change pin once PWM stop was requested
@@ -62,14 +73,15 @@ void SimplePwm::setSimplePwmDutyCycle(float dutyCycle) {
 		dutyCycle = 1;
 	}
 
-#if EFI_PROD_CODE
 	if (hardPwm) {
 		hardPwm->setDuty(dutyCycle);
 		return;
 	}
-#endif
 
-	// Handle near-zero and near-full duty cycle.  This will cause the PWM output to behave like a plain digital output.
+	// Handle near-zero and near-full duty cycle.  This will cause the PWM output to behave like a plain digital output:
+	// in PM_ZERO/PM_FULL mode togglePwmState() ignores the switch-time table and re-asserts the constant pin state
+	// once per period, so we also fire the matching edge manually here for an immediate reaction instead of waiting
+	// up to one full period for the next timer callback.
 	if (dutyCycle < ZERO_PWM_THRESHOLD) {
 		mode = PM_ZERO;
 
@@ -123,6 +135,12 @@ void PwmConfig::setFrequency(float frequency) {
 		return;
 	}
 	/**
+	 * Zero frequency is NOT legal here: it would produce an infinite periodNt, which slips past the
+	 * NaN pause check in togglePwmState() and trips the "iterationLimit invalid" assert in
+	 * handleCycleStart(). NaN is the sanctioned "output off" value - callers with a computed
+	 * frequency follow the "below 1 Hz -> NAN" convention (see tachometer, speedometer,
+	 * setTriggerEmulatorRPM), while Lua and DcHardware clamp to a positive minimum instead.
+	 *
 	 * see #handleCycleStart()
 	 * 'periodNt' is below 10 seconds here so we use 32 bit type for performance reasons
 	 */
@@ -145,7 +163,7 @@ void PwmConfig::handleCycleStart() {
 	}
 
 	// Compute the maximum number of iterations without overflowing a uint32_t worth of timestamp
-	uint32_t iterationLimitInt32 = (0xFFFFFFFF / periodNt) - 2;
+	uint32_t iterationLimitInt32 = static_cast<uint32_t>(static_cast<float>(0xFFFFFFFF) / periodNt) - 2;
 
 	// Maximum number of iterations that don't lose precision due to 32b float (~7 decimal significant figures)
 	// We want at least 0.01% timing precision (aka 1/10000 cycle, 0.072 degree for trigger stimulator), which
@@ -332,10 +350,14 @@ void startSimplePwm(SimplePwm *state, const char *msg,
 	efiAssertVoid(ObdCode::CUSTOM_ERR_PWM_STATE_ASSERT, state != NULL, "state");
 	efiAssertVoid(ObdCode::CUSTOM_ERR_PWM_DUTY_ASSERT, dutyCycle >= 0 && dutyCycle <= PWM_MAX_DUTY, "dutyCycle");
 	if (frequency < 1) {
+		// This rejects zero frequency too. Note the consequence: the driver is never started
+		// (weComplexInit() below never runs), so later setSimplePwmDutyCycle() calls on this
+		// SimplePwm change 'mode' but nothing ever applies it to the pin. To run an output that
+		// may be off, start with a valid frequency and dutyCycle 0, or pause a running PWM with
+		// setFrequency(NAN).
 		warning(ObdCode::CUSTOM_OBD_LOW_FREQUENCY, "low frequency %.2f %s", frequency, msg);
 		return;
 	}
-
 #if EFI_PROD_CODE
 #if (BOARD_EXT_GPIOCHIPS > 0)
 	if (!callback) {
@@ -344,7 +366,7 @@ void startSimplePwm(SimplePwm *state, const char *msg,
 			/* this pin is driven by external gpio chip, let's see if it can PWM */
 			state->hardPwm = gpiochip_tryInitPwm(msg, output->brainPin, frequency, dutyCycle);
 		}
-		/* TODO: sohuld we try to init MCU PWM on on-chip brainPin?
+		/* TODO: should we try to init MCU PWM on on-chip brainPin?
 		 * Or this should be done only on startSimplePwmHard() call? */
 	}
 
@@ -368,6 +390,11 @@ void startSimplePwm(SimplePwm *state, const char *msg,
 	state->outputPins[0] = output;
 
 	state->setFrequency(frequency);
+	// Set the mode before weComplexInit(): starting with dutyCycle 0 produces switch times {0, 1} and
+	// dutyCycle 1 produces {1, 1}, both of which would fail checkSwitchTimes() - copyPwmParameters()
+	// only runs that validation in PM_NORMAL mode. Note that the "manual edge" inside
+	// setSimplePwmDutyCycle() does not fire here since m_stateChangeCallback is not set yet; the
+	// initial pin state is applied by the first timerCallback() invoked synchronously below.
 	state->setSimplePwmDutyCycle(dutyCycle);
 	state->weComplexInit(executor, &state->seq, nullptr, callback);
 }

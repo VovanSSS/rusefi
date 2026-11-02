@@ -1,5 +1,7 @@
 package com.rusefi;
 
+import com.rusefi.maintenance.DfuFlasher;
+
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -24,24 +26,23 @@ public class DevicePaneTest {
     }
 
     @Test
-    public void dfuGuidanceMentionsDfuAndReflectsPlatformSupport() {
+    public void dfuGuidanceOffersExplicitRecoveryAndReflectsPlatformSupport() {
         String guidance = DevicePane.bootloaderGuidance(SessionState.DEVICE_IN_DFU);
-        assertTrue(guidance.contains("DFU"), guidance);
-        if (FileLog.isLinux()) {
-            assertTrue(guidance.contains("dfu-util"), guidance);
-            assertTrue(guidance.contains("Update Firmware"), guidance);
-        } else if (FileLog.isWindows()) {
-            assertTrue(guidance.contains("Update Firmware"), guidance);
+        assertTrue(guidance.contains("recovery mode"), guidance);
+        if (DfuFlasher.isDfuProgrammingSupported()) {
+            assertTrue(guidance.contains("Recover ECU"), guidance);
+            assertTrue(guidance.contains("board"), guidance);
+            assertTrue(guidance.contains("firmware"), guidance);
         } else {
             assertTrue(guidance.contains("not supported"), guidance);
         }
     }
 
     @Test
-    public void openBltGuidanceSendsUserToUpdateButton() {
+    public void detectedBootloaderGuidanceUsesNormalProtocolNeutralUpdate() {
         String guidance = DevicePane.bootloaderGuidance(SessionState.DEVICE_IN_BLT);
-        assertTrue(guidance.contains("OpenBLT"), guidance);
-        assertTrue(guidance.contains("Update Firmware"), guidance);
+        assertFalse(guidance.contains("OpenBLT"), guidance);
+        assertTrue(guidance.contains("Update ECU firmware"), guidance);
     }
 
     @Test

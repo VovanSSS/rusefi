@@ -340,6 +340,7 @@ static void setDefaultCanSettings() {
 	engineConfiguration->canReadEnabled = true;
 	engineConfiguration->canWriteEnabled = true;
 	engineConfiguration->canVssScaling = 1.0f;
+	engineConfiguration->canSnifferIncludeBus = true;
 
 	for (size_t i = 0; i < efi::size(engineConfiguration->canSniffer); i++) {
 		engineConfiguration->canSniffer[i].listenOurs = true;
@@ -412,7 +413,7 @@ static void setDefaultEngineConfiguration() {
 
 	// VVT closed loop, totally random values!
 	engineConfiguration->auxPid[0].pFactor = 2;
-	engineConfiguration->auxPid[0].iFactor = 0.005;
+	engineConfiguration->auxPid[0].iFactor = 0.005f;
 	engineConfiguration->auxPid[0].dFactor = 0;
 	engineConfiguration->auxPid[0].offset = 33;
 	engineConfiguration->auxPid[0].minValue = 10;
@@ -496,7 +497,7 @@ static void setDefaultEngineConfiguration() {
 	setDefaultEngineNoiseTable();
 
     // is this same old setCommonNTCSensor?
-	engineConfiguration->clt.config = {0, 23.8889, 48.8889, 9500, 2100, 1000, 1500};
+	engineConfiguration->clt.config = {0, 23.8889f, 48.8889f, 9500, 2100, 1000, 1500};
 
     setCommonNTCSensorParameters(&engineConfiguration->iat);
 
@@ -517,8 +518,8 @@ static void setDefaultEngineConfiguration() {
 	setDefaultIdleSpeedTarget();
 	//	setTargetRpmCurve(1200);
 
-	engineConfiguration->idleRpmPid.pFactor = 0.05;
-	engineConfiguration->idleRpmPid.iFactor = 0.002;
+	engineConfiguration->idleRpmPid.pFactor = 0.05f;
+	engineConfiguration->idleRpmPid.iFactor = 0.002f;
 
 	engineConfiguration->idleRpmPid.minValue = -20;
 	engineConfiguration->idleRpmPid.maxValue = 20;
@@ -621,7 +622,7 @@ static void setDefaultEngineConfiguration() {
 
 	engineConfiguration->driveWheelRevPerKm = 1000;
 	engineConfiguration->finalGearRatio = 1;
-	engineConfiguration->vssGearRatio = 3.73;
+	engineConfiguration->vssGearRatio = 3.73f;
 	engineConfiguration->vssToothCount = 21;
 
 	engineConfiguration->mapErrorDetectionTooLow = 5;
@@ -749,6 +750,22 @@ void setBoardConfigOverrides() {
   // time to force migration to custom_board_ConfigOverrides
 }
 
+i2c_config_s *getI2cCfg(i2c_bus_e device) {
+	if ((device == I2C_NONE) || (device > I2C_BUS_TOTAL_COUNT)) {
+		return nullptr;
+	}
+
+	return &engineConfiguration->i2c[device - 1];
+}
+
+pca9685_config_s *getPca9685Cfg(size_t n) {
+	if (n >= PCA9685_COUNT) {
+		return nullptr;
+	}
+
+	return &engineConfiguration->pca9685[n];
+}
+
 #include "board_overrides.h"
 
 std::optional<setup_custom_hack_hellen_board_id_type> custom_board_hackHellenBoardId;
@@ -767,8 +784,36 @@ void onBoardStandBy() {
 	}
 }
 
-PUBLIC_API_WEAK_SOMETHING_WEIRD int getBoardMetaOutputsCount() { return 0; }
-// default implementation: treat all outputs as low side
-PUBLIC_API_WEAK int getBoardMetaLowSideOutputsCount() { return getBoardMetaOutputsCount(); }
-PUBLIC_API_WEAK Gpio* getBoardMetaOutputs() { return nullptr; }
-PUBLIC_API_WEAK int getBoardMetaDcOutputsCount() { return 0; }
+std::optional<setup_custom_board_output_type> custom_board_getMetaOutputsCount;
+std::optional<setup_custom_board_output_type> custom_board_getMetaLowSideOutputsCount;
+std::optional<setup_custom_board_outputs_type> custom_board_getMetaOutputs;
+std::optional<setup_custom_board_output_type> custom_board_getMetaDcOutputsCount;
+
+int getBoardMetaOutputsCount() {
+	if (custom_board_getMetaOutputsCount.has_value()) {
+		return custom_board_getMetaOutputsCount.value()();
+	}
+	return 0;
+}
+
+int getBoardMetaLowSideOutputsCount() {
+	if (custom_board_getMetaLowSideOutputsCount.has_value()) {
+		return custom_board_getMetaLowSideOutputsCount.value()();
+	}
+	// default implementation: treat all outputs as low side
+	return getBoardMetaOutputsCount();
+}
+
+Gpio* getBoardMetaOutputs() {
+	if (custom_board_getMetaOutputs.has_value()) {
+		return custom_board_getMetaOutputs.value()();
+	}
+	return nullptr;
+}
+
+int getBoardMetaDcOutputsCount() {
+	if (custom_board_getMetaDcOutputsCount.has_value()) {
+		return custom_board_getMetaDcOutputsCount.value()();
+	}
+	return 0;
+}

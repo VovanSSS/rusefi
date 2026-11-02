@@ -159,7 +159,7 @@ static TsCalMode functionToCalModeSecMax(dc_function_e func) {
 }
 #endif // EFI_TUNER_STUDIO
 
-#define ETB_DUTY_LIMIT 0.9
+#define ETB_DUTY_LIMIT 0.9f
 // this macro clamps both positive and negative percentages from about -100% to 100%
 #define ETB_PERCENT_TO_DUTY(x) (clampF(-ETB_DUTY_LIMIT, 0.01f * (x), ETB_DUTY_LIMIT))
 
@@ -338,14 +338,17 @@ expected<percent_t> EtbController::getSetpointEtb() {
 	adjustedEtbTarget = targetPosition;
 
 #if EFI_ANTILAG_SYSTEM
-	if (engine->antilagController.isAntilagCondition) {
+	// The anti-lag state can still reflect the previous cycle when the pedal fails.
+	if (engine->antilagController.isAntilagCondition
+		&& Sensor::get(SensorType::AcceleratorPedal).Valid
+		&& Sensor::get(SensorType::DriverThrottleIntent).Valid) {
 		targetPosition += engineConfiguration->ALSEtbAdd;
 	}
 #endif /* EFI_ANTILAG_SYSTEM */
 
   float vehicleSpeed = Sensor::getOrZero(SensorType::VehicleSpeed);
   float wheelSlip = Sensor::getOrZero(SensorType::WheelSlipRatio);
-  tcEtbDrop = tcEtbDropTable.getValue(wheelSlip, vehicleSpeed);
+  tcEtbDrop = static_cast<int8_t>(tcEtbDropTable.getValue(wheelSlip, vehicleSpeed));
 
 	// Apply any adjustment that this throttle alone needs
 	// Clamped to +-10 to prevent anything too wild
@@ -443,7 +446,7 @@ expected<percent_t> EtbController::getClosedLoopAutotune(percent_t target, perce
 		float a = m_maxCycleTps - m_minCycleTps;
 
 		// Filter - it's pretty noisy since the ultimate period is not very many loop periods
-		constexpr float alpha = 0.05;
+		constexpr float alpha = 0.05f;
 		m_a  = alpha * a  + (1 - alpha) * m_a;
 		m_tu = alpha * tu + (1 - alpha) * m_tu;
 
@@ -528,7 +531,7 @@ expected<percent_t> EtbController::getClosedLoop(percent_t target, percent_t obs
 		integralError = m_targetErrorAccumulator.accumulate(target - observation);
 
 		float dt = m_cycleTimer.getElapsedSecondsAndReset(getTimeNowNt());
-		m_lastPidDtMs = dt * 1000.0;
+		m_lastPidDtMs = dt * 1000.0f;
 
 		// Normal case - use PID to compute closed loop part
 		return m_pid.getOutput(target, observation, dt);
@@ -717,7 +720,11 @@ EtbImpl<EtbController2> etb2(throttle2TrimTable);
 static EtbController* etbControllers[] = { &etb1, &etb2 };
 static_assert(ETB_COUNT == sizeof(etbControllers) / sizeof(EtbController*));
 
+// todo: do we still need this blinking weirdness? it was a work-around for TS defect somewhere in 2024
 void blinkEtbErrorCodes(bool blinkPhase) {
+	if (!Sensor::hasSensor(SensorType::AcceleratorPedal)) {
+		return;
+	}
 	for (int i = 0;i<ETB_COUNT;i++) {
 		int8_t etbErrorCode = etbControllers[i]->etbErrorCode;
 		if (etbErrorCode && engine->etbAutoTune) {
@@ -749,6 +756,22 @@ static DcThread dcThread CCM_OPTIONAL;
 #endif // !EFI_UNIT_TEST
 
 #if EFI_UNIT_TEST
+#include <new>
+
+void resetElectronicThrottleForUnitTest() {
+	// [tag:etb_test_lifetime] EngineTestHelper owns the PID configuration, but
+	// these controllers are static. Reconstruct them before that configuration
+	// dies: a later init can skip an unused slot or return early without TPS,
+	// leaving the old PID pointer reachable from onConfigurationChange().
+	// Reset the complete objects, including bench/autocal state, and retain
+	// throttle 2's reference to its static trim table.
+	etb1.~EtbImpl();
+	new (&etb1) EtbImpl<EtbController1>();
+	etb2.~EtbImpl();
+	new (&etb2) EtbImpl<EtbController2>(throttle2TrimTable);
+	ebtResetCounter = 0;
+}
+
 void etbPidReset() {
 	for (int i = 0 ; i < ETB_COUNT; i++) {
 		if (auto controller = engine->etbControllers[i]) {
@@ -812,9 +835,9 @@ void setBoschVAGETB() {
 	engineConfiguration->tps1SecondaryMin = 102;
 	engineConfiguration->tps1SecondaryMax = 891;
 
-	engineConfiguration->etb.pFactor = 5.12;
+	engineConfiguration->etb.pFactor = 5.12f;
 	engineConfiguration->etb.iFactor = 47;
-	engineConfiguration->etb.dFactor = 0.088;
+	engineConfiguration->etb.dFactor = 0.088f;
 	engineConfiguration->etb.offset = 0;
 }
 
@@ -847,7 +870,7 @@ void setDefaultEtbParameters() {
 	engineConfiguration->etb = {
 		1,		// Kp
 		10,		// Ki
-		0.05,	// Kd
+		0.05f,	// Kd
 		0,		// offset
 		0,		// Update rate, unused
 		-100, 100 // min/max
@@ -861,6 +884,12 @@ void setDefaultEtbParameters() {
 }
 
 void onConfigurationChangeElectronicThrottleCallback(engine_configuration_s *previousConfiguration) {
+	for (int i = 0; i < ETB_COUNT; i++) {
+		if (engineConfiguration->etbFunctions[i] != previousConfiguration->etbFunctions[i]) {
+			return;
+		}
+	}
+
 	for (int i = 0; i < ETB_COUNT; i++) {
 		etbControllers[i]->onConfigurationChange(&previousConfiguration->etb);
 	}
@@ -906,6 +935,15 @@ void doInitElectronicThrottle(bool isStartupInit) {
 		if (func == DC_None) {
 			// do not touch HW pins if function not selected, this way Lua can use DC motor hardware pins directly
 			continue;
+		}
+		if (func == DC_Gpio) {
+		#if EFI_UNIT_TEST || (defined(BOARD_HBRIDGE_GPIO_COUNT) && BOARD_HBRIDGE_GPIO_COUNT > 0)
+			// The H-bridge GPIO driver owns and initializes this DC hardware slot.
+			continue;
+		#else
+			configError("DC%d GPIO is not supported on this board", i + 1);
+			continue;
+		#endif
 		}
 		auto motor = initDcMotor("ETB disable",
 				engineConfiguration->etbIo[i], i, engineConfiguration->etb_use_two_wires);
@@ -1040,7 +1078,7 @@ void setEwgLuaAdjustment(percent_t pos) {
 }
 
 void setToyota89281_33010_pedal_position_sensor() {
-	setPPSCalibration(0, 4.1, 0.73, 4.9);
+	setPPSCalibration(0, 4.1f, 0.73f, 4.9f);
 }
 
 void setHitachiEtbCalibration() {
@@ -1048,9 +1086,9 @@ void setHitachiEtbCalibration() {
 
 	setHitachiEtbBiasBins();
 
-	engineConfiguration->etb.pFactor = 2.7999;
+	engineConfiguration->etb.pFactor = 2.7999f;
 	engineConfiguration->etb.iFactor = 25.5;
-	engineConfiguration->etb.dFactor = 0.053;
+	engineConfiguration->etb.dFactor = 0.053f;
 	engineConfiguration->etb.offset = 0.0;
 	engineConfiguration->etb.periodMs = 5.0;
 	engineConfiguration->etb.minValue = -100.0;

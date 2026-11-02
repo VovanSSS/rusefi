@@ -2,6 +2,10 @@ package com.rusefi.io.can.isotp;
 
 import com.devexperts.logging.Logging;
 import com.rusefi.util.HexBinary;
+import com.rusefi.core.net.PropertiesHolder;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import org.jetbrains.annotations.NotNull;
 
 /**
@@ -20,6 +24,10 @@ public abstract class IsoTpConnector {
      */
     private static final int CONSECUTIVE_FRAME_PACING_MS = 1;
 
+    // Board bundles can pace outgoing CFs to avoid overrunning a small ECU CAN FIFO.
+    // Zero preserves the unpaced burst behavior.
+    private static final String PACING_PROPERTY = "isotp_consecutive_frame_delay_ms";
+
     private final int canId;
 
     protected IsoTpConnector(int canId) {
@@ -35,6 +43,8 @@ public abstract class IsoTpConnector {
 
         log.info(HexBinary.printHexBinary(bytes));
 
+
+        int pacingMs = consecutiveFrameDelayMs();
 
         // 1 frame
         if (bytes.length <= 7) {
@@ -60,15 +70,32 @@ public abstract class IsoTpConnector {
             connector.sendCanFrame((IsoTpConstants.ISO_TP_FRAME_CONSECUTIVE << 4) | ((idx++) & 0x0f), bytes, offset, len);
             offset += len;
             remaining -= len;
-            if (remaining > 0) {
-                // pace the burst (see CONSECUTIVE_FRAME_PACING_MS)
-                try {
-                    Thread.sleep(CONSECUTIVE_FRAME_PACING_MS);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+            if (remaining > 0 && pacingMs > 0) {
+                // pace the burst (see CONSECUTIVE_FRAME_PACING_MS / PACING_PROPERTY)
+                connector.pauseBetweenConsecutiveFrames(pacingMs);
             }
+        }
+    }
+
+    private static int consecutiveFrameDelayMs() {
+        String value = PropertiesHolder.getProperty(PACING_PROPERTY, Integer.toString(CONSECUTIVE_FRAME_PACING_MS)).trim();
+        try {
+            int milliseconds = Integer.parseInt(value);
+            if (milliseconds >= 0) {
+                return milliseconds;
+            }
+        } catch (NumberFormatException ignored) {
+            // Report the property name along with the invalid value below.
+        }
+        throw new IllegalArgumentException(PACING_PROPERTY + " must be a nonnegative integer: " + value);
+    }
+
+    protected void pauseBetweenConsecutiveFrames(int milliseconds) {
+        try {
+            Thread.sleep(milliseconds);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new UncheckedIOException(new IOException("ISO-TP pacing interrupted", e));
         }
     }
 

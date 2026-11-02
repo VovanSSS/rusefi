@@ -6,12 +6,12 @@
 # fail on error
 set -e
 
-# BSD expr on macOS has no 'substr' - use bash parameter expansion instead
-OS_NAME=$(uname -s)
-if [ "${OS_NAME:0:6}" = "CYGWIN" ] || [ "${OS_NAME:0:5}" = "MINGW" ]; then
-  echo No image on $OS_NAME
-  exit 0
-fi
+case "$(uname -s)" in
+  CYGWIN*|MINGW*|MSYS*)
+    echo "No image on $(uname -s)"
+    exit 0
+    ;;
+esac
 
 FULL_INI=$1
 H_OUTPUT=$2

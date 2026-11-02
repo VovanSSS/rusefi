@@ -12,7 +12,7 @@ pins:
     color: yellow
 
   - pin: 3D
-    function: WBO1 Heater Negative (pin 3)
+    function: WBO1 Heater Negative (pin 3) (and heater +12 could use 18C)
     color: white
     type: wbo
 
@@ -50,7 +50,7 @@ pins:
   - pin: 9D
     class: analog_inputs
     ts_name: KNOCK
-    function: KNOCK sensor (other sensor pin goes to analog ground)
+    function: KNOCK sensor (other sensor pin goes to sensor/analog ground)
 
   - pin: 10D
     ts_name: VR_9924-
@@ -86,21 +86,21 @@ pins:
 
   - pin: 16D
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 17D
     function: Power/Chassis GND ground
-    type: GND
+    type: gnd
 #   color: red / black
 
   - pin: 18D
-    function: CAN bus low
+    function: CAN bus Low
     color: blue
     type: can
 
   - pin: 19D
-    function: CAN bus high
+    function: CAN bus High
     color: green
     type: can
 
@@ -120,7 +120,7 @@ pins:
 
   - pin: 23D
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 24D
@@ -147,85 +147,87 @@ pins:
 info:
   cid: 26-4
   title: super-uaefi
-  name: super-uaefi
+  name: connector D
   image:
-    file: 26pins-4k.jpg
+    file: superuaefi-26pins-4k-front.png
+  # Mating face, indexing tabs up. Coordinates are pixels in the 1097x1024 image.
+  # Shared rows, top to bottom: y=389,479,570,660; see docs/imagegen.md.
   pins:
     - pin: 1D
-      x: 85
-      y: 90
+      x: 252
+      y: 389
     - pin: 2D
-      x: 110
-      y: 90
+      x: 349
+      y: 389
     - pin: 3D
-      x: 135
-      y: 90
+      x: 448
+      y: 389
     - pin: 4D
-      x: 160
-      y: 90
+      x: 548
+      y: 389
     - pin: 5D
-      x: 185
-      y: 90
+      x: 646
+      y: 389
     - pin: 6D
-      x: 205
-      y: 90
+      x: 745
+      y: 389
     - pin: 7D
-      x: 230
-      y: 90
+      x: 843
+      y: 389
     - pin: 8D
-      x: 100
-      y: 120
+      x: 300
+      y: 479
     - pin: 9D
-      x: 125
-      y: 120
+      x: 400
+      y: 479
     - pin: 10D
-      x: 145
-      y: 120
+      x: 498
+      y: 479
     - pin: 11D
-      x: 170
-      y: 120
+      x: 598
+      y: 479
     - pin: 12D
-      x: 195
-      y: 120
+      x: 696
+      y: 479
     - pin: 13D
-      x: 220
-      y: 120
+      x: 794
+      y: 479
     - pin: 14D
-      x: 100
-      y: 150
+      x: 300
+      y: 570
     - pin: 15D
-      x: 125
-      y: 150
+      x: 400
+      y: 570
     - pin: 16D
-      x: 145
-      y: 150
+      x: 498
+      y: 570
     - pin: 17D
-      x: 170
-      y: 150
+      x: 598
+      y: 570
     - pin: 18D
-      x: 195
-      y: 150
+      x: 696
+      y: 570
     - pin: 19D
-      x: 220
-      y: 150
+      x: 794
+      y: 570
     - pin: 20D
-      x: 85
-      y: 180
+      x: 252
+      y: 660
     - pin: 21D
-      x: 110
-      y: 180
+      x: 349
+      y: 660
     - pin: 22D
-      x: 135
-      y: 180
+      x: 448
+      y: 660
     - pin: 23D
-      x: 155
-      y: 180
+      x: 548
+      y: 660
     - pin: 24D
-      x: 180
-      y: 180
+      x: 646
+      y: 660
     - pin: 25D
-      x: 205
-      y: 180
+      x: 745
+      y: 660
     - pin: 26D
-      x: 230
-      y: 180
+      x: 843
+      y: 660

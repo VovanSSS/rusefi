@@ -22,7 +22,28 @@ SensorType ShortTermFuelTrim::getSensorForBankIndex(size_t index) {
 	}
 }
 
+ft_region_e ShortTermFuelTrim::regionForSmState(EngineStateMachineState state) {
+	switch (state) {
+		case EngineStateMachineState::Idle:
+		case EngineStateMachineState::Afterstart:
+		case EngineStateMachineState::Coasting:
+			return ftRegionIdle;
+		case EngineStateMachineState::Overrun:
+			return ftRegionOverrun;
+		case EngineStateMachineState::WOT:
+			return ftRegionPower;
+		default:
+			// All remaining primary states use the cruise cell. Existing learning gates
+			// still decide whether that cell can update.
+			return ftRegionCruise;
+	}
+}
+
 ft_region_e ShortTermFuelTrim::computeStftBin(float rpm, float load, stft_s& cfg) {
+	if (engineConfiguration->useEngineStateMachine && engineConfiguration->stateBasedStft) {
+		return regionForSmState(engine->module<EngineStateMachine>().unmock().getCurrentState());
+	}
+
 	// Low RPM -> idle
 	if (idleDeadband.lt(rpm, cfg.maxIdleRegionRpm))
 	{
@@ -87,9 +108,17 @@ stft_state_e ShortTermFuelTrim::getLearningState(SensorType sensor) {
 	// It's probably a transient and poorly tuned transient correction
 	// TODO: use getStoichiometricRatio() instead of STOICH_RATIO
 	auto afr = Sensor::getOrZero(sensor) * STOICH_RATIO;
-	if (!afr || afr < cfg.minAfr || afr > cfg.maxAfr) {
+	if (afr == 0 || afr < cfg.minAfr || afr > cfg.maxAfr) {
 		return stftDisabledAfrOurOfRange;
 	}
+
+#if EFI_LAUNCH_CONTROL
+	// Pause correction during two-step launch activities: spark skip, launch cut and
+	// launch fuel enrichment all make lambda feedback meaningless
+	if (engine->launchController.isLaunchOrPreLaunchCondition()) {
+		return stftDisabledLaunch;
+	}
+#endif // EFI_LAUNCH_CONTROL
 
 	// Pause correction if DFCO was active recently
 	auto timeSinceDfco = engine->module<DfcoController>()->getTimeSinceCut();

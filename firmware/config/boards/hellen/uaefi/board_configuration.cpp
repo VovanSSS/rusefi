@@ -83,6 +83,7 @@ static void uaefi_boardDefaultConfiguration() {
 	engineConfiguration->canRxPin = Gpio::MM100_CAN_RX;
 
 	setHellenCan2();
+	setHellenUart2();
 
 #if (EFI_CAN_BUS_COUNT >= 3)
 	engineConfiguration->can3TxPin = Gpio::MM100_CAN3_TX;
@@ -145,19 +146,20 @@ static Gpio OUTPUTS[] = {
 	Gpio::MM100_IGN1, // B15 Coil 1
 };
 
-int getBoardMetaOutputsCount() {
+static int boardGetMetaOutputsCount() {
     return efi::size(OUTPUTS);
 }
 
-int getBoardMetaLowSideOutputsCount() {
+static int boardGetMetaLowSideOutputsCount() {
   return getBoardMetaOutputsCount() - 6;
 }
 
-Gpio* getBoardMetaOutputs() {
+static Gpio* boardGetMetaOutputs() {
     return OUTPUTS;
 }
 
-int getBoardMetaDcOutputsCount() {
+// H-bridges use the dedicated CAN_QC_ETB path instead of the on-chip-only generic output path.
+static int boardGetMetaDcOutputsCount() {
     if (engineConfiguration->engineType == engine_type_e::HONDA_OBD1 ||
       engineConfiguration->engineType == engine_type_e::MAZDA_MIATA_NA6 ||
       engineConfiguration->engineType == engine_type_e::MAZDA_MIATA_NA94 ||
@@ -182,11 +184,16 @@ extern AemXSeriesWideband aem1;
 }
 
 void setup_custom_board_overrides() {
+	custom_board_getMetaOutputsCount = boardGetMetaOutputsCount;
+	custom_board_getMetaLowSideOutputsCount = boardGetMetaLowSideOutputsCount;
+	custom_board_getMetaOutputs = boardGetMetaOutputs;
+	custom_board_getMetaDcOutputsCount = boardGetMetaDcOutputsCount;
 	custom_board_InitHardware = uaefi_boardInitHardware;
 	custom_board_DefaultConfiguration = uaefi_boardDefaultConfiguration;
 	custom_board_ConfigOverrides = uaefi_boardConfigOverrides;
 	custom_board_periodicSlowCallback = uaefi_slowCallback;
 	custom_board_fix_configuration = uaefi_fixConfiguration;
+	custom_board_applyBasicConfiguration = applyUaefiBasicConfiguration;
 }
 
 int boardGetAnalogInputDiagnostic(adc_channel_e hwChannel, float voltage) {

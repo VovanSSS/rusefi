@@ -6,7 +6,49 @@
 
 #include "pch.h"
 
+void startInjection(scheduler_arg_t arg) {
+	const InjectorContext ctx(arg);
+	const auto nowNt = getTimeNowNt();
+	CylinderMask mask = ctx.outputsMask();
+	for (uint16_t i = 0; mask; mask >>= 1, i++) {
+		if (mask & 1u) {
+			enginePins.injectors[i].open(nowNt);
+			if (ctx.stage2Active()) {
+				enginePins.injectorsStage2[i].open(nowNt);
+			}
+		}
+	}
+}
+
+void endInjection(scheduler_arg_t arg) {
+	const InjectorContext ctx(arg);
+	const auto nowNt = getTimeNowNt();
+	CylinderMask mask = ctx.outputsMask();
+	for (uint16_t i = 0; mask; mask >>= 1, i++) {
+		if (mask & 1u) {
+			enginePins.injectors[i].close(nowNt);
+		}
+	}
+
+	// Priming also uses this helper on boards without engine control. Only
+	// scheduled fuel events need their injection angle refreshed afterward.
 #if EFI_ENGINE_CONTROL
+	if (ctx.eventIndex() < MAX_CYLINDER_COUNT) {
+		getFuelSchedule()->elements[ctx.eventIndex()].update();
+	}
+#endif
+}
+
+void endInjectionStage2(scheduler_arg_t arg) {
+	const InjectorContext ctx(arg);
+	const auto nowNt = getTimeNowNt();
+	CylinderMask mask = ctx.outputsMask();
+	for (uint16_t i = 0; mask; mask >>= 1, i++) {
+		if (mask & 1u) {
+			enginePins.injectorsStage2[i].close(nowNt);
+		}
+	}
+}
 
 #if EFI_PROD_CODE && HAL_USE_PWM
 #include "injection_close_hw.h"
@@ -49,24 +91,34 @@ TRIGGER_RAM_CODE void turnInjectionPinHigh(scheduler_arg_t const arg) {
 #endif // EFI_PROD_CODE && HAL_USE_PWM
 }
 
+#if EFI_ENGINE_CONTROL
+
+CylinderMask InjectionEvent::calculateInjectorOutputMask() const {
+	switch (m_injectionMode) {
+		case IM_SIMULTANEOUS:
+			return (1u << engineConfiguration->cylindersCount) - 1;
+		case IM_SINGLE_POINT:
+			return 1;
+		case IM_BATCH: {
+			const auto count = engineConfiguration->cylindersCount;
+			const auto twin = getCylinderNumberAtIndex((ownIndex + count / 2) % count);
+			return (1u << cylinderNumber) | (1u << twin);
+		}
+		case IM_SEQUENTIAL:
+			return 1u << cylinderNumber;
+		default:
+			return 0;
+	}
+}
+
 FuelSchedule::FuelSchedule() {
 	for (int cylinderIndex = 0; cylinderIndex < MAX_CYLINDER_COUNT; cylinderIndex++) {
 		elements[cylinderIndex].setIndex(cylinderIndex);
 	}
 }
 
-WallFuel& InjectionEvent::getWallFuel() {
-	return wallFuel;
-}
-
 void FuelSchedule::invalidate() {
 	isReady = false;
-}
-
-void FuelSchedule::resetOverlapping() {
-	for (auto& inj : enginePins.injectors) {
-		inj.reset();
-	}
 }
 
 // Determines how much to adjust injection opening angle based on the injection's duration and the current phasing mode
@@ -111,7 +163,10 @@ expected<float> InjectionEvent::computeInjectionAngle() const {
 	// for the duration of the injection
 	angle_t injectionDurationAngle = getInjectionAngleCorrection(fuelMs, oneDegreeUs);
 
-	// User configured offset - degrees after TDC combustion
+	// The table sets Start/Center/End of the nominal
+	// pulse in crank degrees after this cylinder's compression TDC. Negative table
+	// values wrap through the engine cycle; subtract the selected duration correction
+	// before applying the cylinder's firing-order offset below. See Injection Timing help.
 	floatus_t injectionOffset = getEngineState()->injectionOffset;
 	if (std::isnan(injectionOffset)) {
 		// injection offset map not ready - we are not ready to schedule fuel events
@@ -122,7 +177,7 @@ expected<float> InjectionEvent::computeInjectionAngle() const {
 	assertAngleRange(openingAngle, "openingAngle_r", ObdCode::CUSTOM_ERR_6554);
 	wrapAngle(openingAngle, "addFuel#1", ObdCode::CUSTOM_ERR_6555);
 	// TODO: should we log per-cylinder injection timing? #76
-	getTunerStudioOutputChannels()->injectionOffset = openingAngle;
+	getTunerStudioOutputChannels()->injectionOffset = static_cast<int16_t>(openingAngle);
 
 	// Convert from cylinder-relative to cylinder-1-relative
 	openingAngle += getPerCylinderFiringOrderOffset(ownIndex, cylinderNumber);
@@ -211,6 +266,7 @@ TRIGGER_RAM_CODE bool InjectionEvent::update() {
 	outputs[0] = output;
 	outputs[1] = secondOutput;
 	isSimultaneous = mode == IM_SIMULTANEOUS;
+	m_injectionMode = mode;
 	// Stash the cylinder number so we can select the correct fueling bank later
 	cylinderNumber = injectorIndex;
 

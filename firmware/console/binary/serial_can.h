@@ -11,6 +11,13 @@
 #include "isotp.h"
 #include "can_listener.h"
 
+// 1-based number of the CAN bus used to transmit the TunerStudio-over-CAN (ISO-TP) stream:
+// 1 = CAN1, 2 = CAN2, ... Incoming frames are accepted from every bus regardless of this value.
+// Custom boards override in board.mk: DDEFS += -DEFI_SERIAL_CAN_BUS=2
+#ifndef EFI_SERIAL_CAN_BUS
+#define EFI_SERIAL_CAN_BUS 1
+#endif
+
 class CanTsListener : public CanListener, public CanRxMessageSource {
 public:
 	CanTsListener()
@@ -52,7 +59,17 @@ public:
 		minSeparationTime = fcMinSeparationTime;
 	}
 
+	// merged from master: CanRxMessageSource declares these as pure virtual
+	void prepareFlowControlWait() override {
+		flowControlFifo.clear();
+	}
+
+	bool getFlowControl(CanRxMessage &item, int timeout) override {
+		return flowControlFifo.get(item, timeout);
+	}
+
 protected:
+	fifo_buffer_sync<CanRxMessage, CAN_FIFO_FRAME_SIZE> flowControlFifo;
   // CanStreamerState has non-sync fifo, unify?
 	fifo_buffer_sync<CanRxMessage, CAN_FIFO_FRAME_SIZE> rxFifo;
 	// diagnostics: frames dropped because rxFifo was full
@@ -74,6 +91,8 @@ public:
 	virtual uint32_t getFcCounterSnapshot() override;
 	virtual can_msg_t waitForFlowControl(uint32_t initialFcCounter, uint8_t *blockSize, uint8_t *minSeparationTime, can_sysinterval_t timeout) override;
 	virtual void onTpFirstFrame() override;
+	void prepareFlowControlWait() override;
+	can_msg_t receiveFlowControl(CANRxFrame *crfp, can_sysinterval_t timeout) override;
 
 	CanRxMessageSource *source;
 };

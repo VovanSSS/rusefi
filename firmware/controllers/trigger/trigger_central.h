@@ -155,10 +155,10 @@ public:
 		return m_lastEventTimer.getElapsedSeconds(nowNt);
 	}
 
-	// Out-of-line in trigger_central.cpp: LTO clones of inline methods ignore
-	// the TRIGGER_RAM_CODE section attribute, so this per-edge check must not
-	// stay inline or it runs from the slow flash NZW area.
-	TRIGGER_RAM_CODE bool engineMovedRecently(efitick_t nowNt) const;
+		// Out-of-line in trigger_central.cpp: LTO clones of inline methods ignore
+		// the TRIGGER_RAM_CODE section attribute, so this per-edge check must not
+		// stay inline or it runs from the slow flash NZW area.
+		TRIGGER_RAM_CODE bool engineMovedRecently(efitick_t nowNt) const;
 
 	bool engineMovedRecently() const {
 		return engineMovedRecently(getTimeNowNt());
@@ -167,6 +167,7 @@ public:
 	TriggerNoiseFilter noiseFilter;
 
 	angle_t getVVTPosition(uint8_t bankIndex, uint8_t camIndex);
+	bool isVvtPositionFresh(uint8_t bankIndex, uint8_t camIndex) const;
 
 #if EFI_UNIT_TEST
 	// latest VVT event position (could be not synchronization event)
@@ -175,6 +176,7 @@ public:
 
 	// synchronization event position
 	angle_t vvtPosition[BANKS_COUNT][CAMS_PER_BANK];
+	Timer vvtPositionUpdateTimer[BANKS_COUNT][CAMS_PER_BANK];
 
 	// whether vvtPosition holds a valid reading (first cam event has arrived)
 	bool hasVvtPosition[BANKS_COUNT][CAMS_PER_BANK] = {};

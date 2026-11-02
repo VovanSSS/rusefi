@@ -46,7 +46,7 @@ static void hellen_honda_k_boardConfigOverrides() {
 	setHellenMegaEnPin();
 
 	hellenMegaModule();
-	configureHellenCanTerminator();
+	configureHellenCanTerminator(config->boardUseCanTerminator);
 
 
 	engineConfiguration->triggerInputPins[0] = Gpio::H144_IN_RES1;
@@ -90,6 +90,7 @@ static void hellen_honda_k_boardDefaultConfiguration() {
 	engineConfiguration->enableSoftwareKnock = true;
 
 	setHellenCan();
+	config->boardUseCanTerminator = true;
 
     engineConfiguration->vvtPins[0] = Gpio::H144_OUT_PWM5; // B23 VTC VVT
 
@@ -170,19 +171,22 @@ static Gpio OUTPUTS[] = {
 	Gpio::H144_IGN_4, // A27 - IGN4
 };
 
-int getBoardMetaOutputsCount() {
+static int boardGetMetaOutputsCount() {
     return efi::size(OUTPUTS);
 }
 
-int getBoardMetaLowSideOutputsCount() {
+static int boardGetMetaLowSideOutputsCount() {
     return getBoardMetaOutputsCount() - 5;
 }
 
-Gpio* getBoardMetaOutputs() {
+static Gpio* boardGetMetaOutputs() {
     return OUTPUTS;
 }
 
 void setup_custom_board_overrides() {
+	custom_board_getMetaOutputsCount = boardGetMetaOutputsCount;
+	custom_board_getMetaLowSideOutputsCount = boardGetMetaLowSideOutputsCount;
+	custom_board_getMetaOutputs = boardGetMetaOutputs;
 	custom_board_DefaultConfiguration = hellen_honda_k_boardDefaultConfiguration;
 	custom_board_ConfigOverrides = hellen_honda_k_boardConfigOverrides;
 	custom_board_onBoardStandBy = []() {

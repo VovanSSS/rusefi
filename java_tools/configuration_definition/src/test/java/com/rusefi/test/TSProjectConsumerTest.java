@@ -13,10 +13,19 @@ import com.rusefi.output.PlainTsProjectConsumer;
 import com.rusefi.output.TSProjectConsumer;
 import com.rusefi.output.TsOutput;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.ByteArrayInputStream;
 import java.io.StringBufferInputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static com.rusefi.AssertCompatibility.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -36,6 +45,126 @@ public class TSProjectConsumerTest {
         assertEquals("1", TSProjectConsumer.removeToken("1@@if_ts"));
         assertEquals("12", TSProjectConsumer.removeToken("1@@if_ts 2"));
         assertEquals("H2\r\n", TSProjectConsumer.removeToken("H@@if_ts 2\r\n"));
+    }
+
+    @Test
+    public void oddFireMenuConditionEmitsMenuWhenEnabled() throws IOException {
+        String generated = oddFireMenuResult("true", oddFireMenuTemplateLine());
+        assertEquals("before\nsubMenu = ignitionCylExtra, \"Cylinder offsets\"\nafter\n",
+                generated.replaceAll("[\\t ]+", " ").replace("\n ", "\n"));
+    }
+
+    @Test
+    public void oddFireMenuConditionWorksWithAndWithoutZeroPlaceholder() throws IOException {
+        for (String placeholder : new String[]{"", ", 0"}) {
+            String menu = "subMenu = ignitionCylExtra, \"Cylinder offsets\"" + placeholder;
+            String template = menu + "@@if_ts_show_odd_fire";
+            // The generator preserves the optional placeholder; the flag gates either form.
+            assertEquals("before\n" + menu + "\nafter\n", oddFireMenuResult("true", template));
+            assertEquals("before\nafter\n", oddFireMenuResult("false", template));
+        }
+    }
+
+    @Test
+    public void oddFireMenuConditionDropsOnlyMenuWhenDisabled() throws IOException {
+        assertEquals("before\nafter\n", oddFireMenuResult("false", oddFireMenuTemplateLine()));
+    }
+
+    @Test
+    public void misspelledOddFireConditionIsRejected() throws IOException {
+        String line = oddFireMenuTemplateLine().replace("ts_show_odd_fire", "ts_show_odd_fier");
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> oddFireMenuResult("true", line));
+        assertTrue(e.getMessage().contains("tunerstudio.template.ini:2:"), e.getMessage());
+        assertTrue(e.getMessage().contains("Unknown condition [ts_show_odd_fier]"), e.getMessage());
+    }
+
+    @Test
+    public void singleAtOddFireConditionIsRejected() throws IOException {
+        String line = oddFireMenuTemplateLine().replace("@@if_", "@if_");
+        assertTrue(line.contains("@if_ts_show_odd_fire"));
+        for (String value : new String[]{"true", "false"}) {
+            IllegalStateException e = assertThrows(IllegalStateException.class, () -> oddFireMenuResult(value, line));
+            assertTrue(e.getMessage().contains("tunerstudio.template.ini:2:"), e.getMessage());
+            assertTrue(e.getMessage().contains("Malformed condition marker"), e.getMessage());
+        }
+    }
+
+    @Test
+    public void conditionValuesMustBeBoolean() throws IOException {
+        String line = oddFireMenuTemplateLine();
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> oddFireMenuResult("fasle", line));
+        assertTrue(e.getMessage().contains("must be true or false, got [fasle]"), e.getMessage());
+        assertEquals("before\nafter\n", oddFireMenuResult("FALSE", line));
+        assertEquals(oddFireMenuResult("true", line), oddFireMenuResult("TRUE", line));
+    }
+
+    @Test
+    public void malformedConditionsAreRejectedEvenWhenDisabled() {
+        for (String marker : new String[]{"@@@if_ts_show_odd_fire", "@@if_", "@@if_ts_show_odd_fire,",
+                "@@if_ts_show_odd_fire@@", "@@if_ts_show_odd_fire @@if_typo"}) {
+            assertThrows(IllegalStateException.class, () -> oddFireMenuResult("false", "menu" + marker));
+        }
+    }
+
+    @Test
+    public void includedConditionErrorReportsIncludedFileAndLine(@TempDir Path directory) throws IOException {
+        Path included = directory.resolve("board_menu.ini");
+        Files.write(included, ("; comment\n" + oddFireMenuTemplateLine().replace("@@if_", "@if_")).getBytes(StandardCharsets.UTF_8));
+        TSProjectConsumer consumer = new TestTSProjectConsumer(new ReaderStateImpl());
+        String template = "include_file \"" + included + "\"\n";
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> consumer.getTsFileContent(
+                new ByteArrayInputStream(template.getBytes(StandardCharsets.UTF_8))));
+        assertTrue(e.getMessage().contains(included + ":2:"), e.getMessage());
+    }
+
+    @Test
+    public void substitutedFragmentCannotLeakTemplateMarkers() {
+        ReaderStateImpl state = new ReaderStateImpl();
+        state.getVariableRegistry().put("BOARD_MENU", "; comment\nsubMenu = offsets, \"Offsets\", 0@if_typo\n");
+        TSProjectConsumer consumer = new TestTSProjectConsumer(state);
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> consumer.getTsFileContent(
+                new ByteArrayInputStream("@@BOARD_MENU@@\n".getBytes(StandardCharsets.UTF_8))));
+        assertTrue(e.getMessage().contains("Unresolved or malformed template marker"), e.getMessage());
+    }
+
+    @Test
+    public void conditionMayImmediatelyFollowSubstitution() throws IOException {
+        ReaderStateImpl state = new ReaderStateImpl();
+        state.getVariableRegistry().put("LABEL", "\"Offsets\"");
+        state.getVariableRegistry().put("FLAG", "true");
+        TSProjectConsumer consumer = new TestTSProjectConsumer(state);
+        String template = "subMenu = offsets, @@LABEL@@@@if_FLAG\n";
+        assertEquals("subMenu = offsets, \"Offsets\"\n", consumer.getTsFileContent(
+                new ByteArrayInputStream(template.getBytes(StandardCharsets.UTF_8))).getPrefix());
+    }
+
+    @Test
+    public void optionalConditionDefaultsPreserveBoardOverrides() {
+        VariableRegistry defaults = ConfigDefinitionTest.readRealConfig();
+        assertEquals("false", defaults.get("show_default_engine_type"));
+        assertEquals("false", defaults.get("ts_show_vvt_frequency"));
+        VariableRegistry proteus = new VariableRegistry();
+        proteus.readPrependValues(ConfigDefinitionTest.FIRMWARE + "/config/boards/proteus/prepend.txt", true);
+        proteus.readPrependValues(ConfigDefinitionTest.FIRMWARE + "/integration/rusefi_config.txt", true);
+        assertEquals("true", proteus.get("ts_show_vvt_frequency"));
+    }
+
+    private static String oddFireMenuTemplateLine() throws IOException {
+        return Files.readAllLines(Path.of(ConfigDefinitionTest.FIRMWARE, "tunerstudio", "top_level_menu.ini"))
+                .stream()
+                .filter(line -> line.trim().startsWith("subMenu = ignitionCylExtra,"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing Cylinder offsets menu in real template"));
+    }
+
+    private static String oddFireMenuResult(String flagValue, String line) throws IOException {
+        ReaderStateImpl state = new ReaderStateImpl();
+        state.getVariableRegistry().put("ts_show_odd_fire", flagValue);
+        TSProjectConsumer consumer = new TestTSProjectConsumer(state);
+        String template = "before\n" + line + "\nafter\n";
+        TsFileContent result = consumer.getTsFileContent(new ByteArrayInputStream(template.getBytes(StandardCharsets.UTF_8)));
+        assertEquals("", result.getPostfix());
+        return result.getPrefix();
     }
 
     @Test
@@ -202,6 +331,142 @@ public class TSProjectConsumerTest {
         state.readBufferedReader(test, tsProjectConsumer);
     }
 
+    @Test
+    public void wueAliasOffsetsArePublishedForPageOne() {
+        String test = "struct config\n" +
+                "    float[2] cltFuelCorr;warmup correction;\"ratio\", 1, 0, 0, 5, 2\n" +
+                "    uint8_t[2] lambdaTable;target;\"afr\", 1, 0, 0, 25, 1\n" +
+                "end_struct\n";
+
+        ReaderStateImpl state = new ReaderStateImpl();
+        TSProjectConsumer consumer = new TestTSProjectConsumer(state);
+        state.readBufferedReader(test, consumer);
+
+        assertEquals("0", state.getVariableRegistry().get("TS_PAGE_1_OFFSET_cltFuelCorr"));
+        assertEquals("8", state.getVariableRegistry().get("TS_PAGE_1_OFFSET_lambdaTable"));
+    }
+
+    @Test
+    public void calibrationAliasesStayInConstantsPageOneBeforeGeneratedSettingContextHelp() throws IOException {
+        ReaderStateImpl state = new ReaderStateImpl();
+        state.setDefinitionInputFile("wue-alias-fixture.txt");
+        VariableRegistry registry = state.getVariableRegistry();
+        registry.put("TS_PAGE_FIELD_BLOCKS", "page = 2\npage2Field = scalar, U08, 0, \"\", 1, 0, 0, 1, 0\n"
+                + "page = 5\npage5Field = scalar, U08, 0, \"\", 1, 0, 0, 1, 0\n");
+
+        String definition = "#define FUEL_RPM_COUNT 4\n"
+                + "#define FUEL_LOAD_COUNT 3\n"
+                + "#define PACK_MULT_AFR_CFG 10\n"
+                + "#define CLT_FUEL_CURVE_SIZE 2\n"
+                + "#define BLEND_TABLE_COUNT 8\n"
+                + "#define TARGET_AFR_BLEND_PRECISION 0.01\n"
+                + "struct blend_table_s\n"
+                + "    int16_t[BLEND_TABLE_COUNT x BLEND_TABLE_COUNT] autoscale table;native lambda offset;\"\", 0.01, 0, -100, 100, 1\n"
+                + "end_struct\n"
+                + "struct config\n"
+                + "    uint32_t precedingField;nonzero offset;\"\", 1, 0, 0, 1, 0\n"
+                + "    float[CLT_FUEL_CURVE_SIZE] cltFuelCorr;canonical ratio;\"ratio\", 1, 0, 0, 5, 2\n"
+                + "    uint8_t[FUEL_LOAD_COUNT x FUEL_RPM_COUNT] lambdaTable;canonical target;\"ratio\", 1, 0, 0, 25, 1\n"
+                + "    blend_table_s[2 iterate] targetAfrBlends\n"
+                + "end_struct\n";
+
+        TestTSProjectConsumer consumer = new TestTSProjectConsumer(state);
+        state.readBufferedReader(definition, consumer);
+
+        TsFileContent content = consumer.getTsFileContent(new ByteArrayInputStream(
+                calibrationAliasTemplateRegion().getBytes(StandardCharsets.UTF_8)));
+        String generated = consumer.writeContentForTest(consumer.getContent(), content);
+
+        assertTrue(generated.startsWith("[Constants]\npage = 2\n"));
+        assertTrue(generated.contains("page = 5\npage5Field"));
+        assertTrue(generated.contains("page = 1\nwueAnalyzeTargetTable = array, U08, 12, [4x3], \"afr\", {1/10}, 0, 0, 25, 1, noMsqSave"));
+        assertTrue(generated.contains("wueAnalyzeCltFuelCorr = array, F32, 4, [2], \"%\", 100, 0, 0, 500, 0, noMsqSave"));
+        assertTrue(generated.contains("cltFuelCorr = array, F32, 4, [2], \"ratio\", 1, 0, 0, 5, 2"));
+        assertTrue(generated.contains("lambdaTable = array, U08, 12, [4x3], \"ratio\", 1, 0, 0, 25, 1"));
+        for (int adder = 1; adder <= 2; adder++) {
+            int offset = 24 + (adder - 1) * 128;
+            assertTrue(generated.contains("targetAfrBlends" + adder + "_table = array, S16, " + offset
+                    + ", [8x8], \"\", 0.01, 0, -100, 100, 1"));
+            assertTrue(generated.contains("targetMixtureAdder" + adder + "Display = array, S16, " + offset
+                    + ", [8x8], {useLambdaOnInterface ? \"lambda\" : \"AFR (gasoline scale)\"}, "
+                    + "{useLambdaOnInterface ? 0.01 : 0.147}, 0, {useLambdaOnInterface ? -100 : -1470}, "
+                    + "{useLambdaOnInterface ? 100 : 1470}, 2, noMsqSave"));
+            assertTrue(generated.indexOf("targetMixtureAdder" + adder + "Display =")
+                    < generated.indexOf("; CONFIG_DEFINITION_START"));
+        }
+
+        int aliasIndex = generated.indexOf("wueAnalyzeTargetTable =");
+        int generatedConfigStartIndex = generated.indexOf("; CONFIG_DEFINITION_START");
+        int settingContextHelpIndex = generated.indexOf("[SettingContextHelp]");
+        assertTrue(aliasIndex > generated.indexOf("page = 5"));
+        assertTrue(aliasIndex < generatedConfigStartIndex,
+                "WUE aliases must select page 1 before the generated constants block");
+        assertTrue(settingContextHelpIndex > aliasIndex,
+                "WUE aliases must remain in [Constants], before generated [SettingContextHelp]");
+    }
+
+    @Test
+    public void targetAdderHasOneEditorForTheSameCalibration() throws IOException {
+        String template = Files.readString(Path.of(ConfigDefinitionTest.FIRMWARE, "tunerstudio", "tunerstudio.template.ini"));
+        for (int adder = 1; adder <= 2; adder++) {
+            Matcher editors = Pattern.compile("(?m)^\\ttable = [^\\n]+\\n(?:(?:\\t\\t|;)[^\\n]*\\n|\\n)*?\\t\\txBins = targetAfrBlends"
+                    + adder + "_rpmBins,").matcher(template);
+            int count = 0;
+            while (editors.find()) {
+                count++;
+            }
+            assertEquals(1, count);
+        }
+    }
+
+    @Test
+    public void targetAdderUsesOneDialogAndTableForBothDisplayModes() throws IOException {
+        String template = Files.readString(Path.of(ConfigDefinitionTest.FIRMWARE, "tunerstudio", "tunerstudio.template.ini"));
+        String menu = Files.readString(Path.of(ConfigDefinitionTest.FIRMWARE, "tunerstudio", "top_level_menu.ini"));
+        for (int adder = 1; adder <= 2; adder++) {
+            String dialog = templateDialogBody(template, "targetAfrBlend" + adder + "Cfg");
+            List<String> centers = centerPanels(dialog);
+            // Both menu labels open the same editor. A second editor over the
+            // same storage can leave overlapping controls in TunerStudio.
+            assertEquals(1, centers.size());
+            assertEquals("panel = targetAfrBlend" + adder
+                    + "Table, Center, { targetAfrBlends" + adder + "_blendParameter != 0 }, { 1 }", centers.get(0));
+            assertTrue(dialog.contains("panel = targetAdder" + adder + "Settings, East"));
+            for (String mode : new String[]{"Lambda", "Afr"}) {
+                String condition = "Lambda".equals(mode) ? "useLambdaOnInterface" : "!useLambdaOnInterface";
+                String label = "Afr".equals(mode) ? "AFR" : mode;
+                assertTrue(menu.contains("groupChildMenu = targetAfrBlend" + adder + "Cfg, \"Target " + label
+                        + " Adder " + adder + "\", { isInjectionEnabled }, { " + condition + " }"));
+            }
+        }
+    }
+
+    private static String templateDialogBody(String template, String id) {
+        Matcher matcher = Pattern.compile("(?m)^\\tdialog = " + Pattern.quote(id)
+                + ",[^\\n]*\\n((?:\\t\\t[^\\n]*\\n|\\n)*)").matcher(template);
+        assertTrue(matcher.find(), "Missing dialog " + id);
+        return matcher.group(1);
+    }
+
+    private static List<String> centerPanels(String dialog) {
+        List<String> panels = new ArrayList<>();
+        for (String line : dialog.split("\\n")) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("panel = ") && trimmed.contains(", Center")) {
+                panels.add(trimmed);
+            }
+        }
+        return panels;
+    }
+
+    private static String calibrationAliasTemplateRegion() throws IOException {
+        String template = Files.readString(Path.of(ConfigDefinitionTest.FIRMWARE, "tunerstudio", "tunerstudio.template.ini"));
+        int begin = template.indexOf("@@TS_PAGE_FIELD_BLOCKS@@");
+        int end = template.indexOf("; Continue SettingContextHelp");
+        assertTrue(begin >= 0 && end > begin, "Missing calibration alias template region");
+        return "[Constants]\n" + template.substring(begin, end);
+    }
+
     // --- [tag:ts_page_table] generator page-table emission + @@if_block (issue #9699) ---
 
     // registry seeded as if all five TS pages were generated (sizes, contents, command chars)
@@ -309,10 +574,23 @@ public class TSProjectConsumerTest {
     }
 
     @Test
-    public void ifBlockDroppedWhenTokenMissing() throws IOException {
-        // an unregistered token parses as false and drops the block (matches per-line @@if_)
+    public void ifBlockRejectedWhenTokenMissing() {
         String content = "before\n@@if_block MISSING@@\ninside\n@@endif_block\nafter\n";
-        assertEquals("before\nafter\n", ifBlockResult(null, content));
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> ifBlockResult(null, content));
+        assertTrue(e.getMessage().contains("Unknown condition [MISSING]"), e.getMessage());
+        assertTrue(e.getMessage().contains("tunerstudio.template.ini:2:"), e.getMessage());
+    }
+
+    @Test
+    public void malformedBlocksAreRejectedEvenWhenDisabled() {
+        for (String content : new String[]{
+                "@@if_block MY_FLAG@@\ninside\n",
+                "@@endif_block\n",
+                "@@if_block MY_FLAG@@\n@@if_block MY_FLAG@@\n@@endif_block\n",
+                "@@if_block MY_FLAG@@\n@if_typo\n@@endif_block\n",
+                "@@if_block MY_FLAG@@\ninside@@if_UNKNOWN\n@@endif_block\n"}) {
+            assertThrows(IllegalStateException.class, () -> ifBlockResult("false", content));
+        }
     }
 
     @Test

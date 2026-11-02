@@ -66,6 +66,18 @@ bool checkSettingsWriteFailure() {
 
 #endif // EFI_CONFIGURATION_STORAGE
 
+#if EFI_UNIT_TEST
+static int configurationWriteRequestCountForUnitTest;
+
+void resetConfigurationWriteRequestCountForUnitTest() {
+	configurationWriteRequestCountForUnitTest = 0;
+}
+
+int getConfigurationWriteRequestCountForUnitTest() {
+	return configurationWriteRequestCountForUnitTest;
+}
+#endif
+
 /* If any setting storage is exist */
 #if EFI_CONFIGURATION_STORAGE
 
@@ -76,9 +88,12 @@ void writeToFlashNow() {
 }
 
 void setNeedToWriteConfiguration() {
+#if EFI_UNIT_TEST
+	configurationWriteRequestCountForUnitTest++;
+#else
 	efiPrintf("Scheduling write");
-
 	storageRequestWriteID(EFI_SETTINGS_RECORD_ID, false);
+#endif
 }
 
 bool settingsLtftRequestWriteToFlash() {
@@ -91,6 +106,8 @@ void suspendLinearTimeWatcher() {
 
 /* TODO: extract to persistentState method */
 bool writeToFlashNowImpl() {
+	// Include primary settings, extra-page storage/GC, and the backup write.
+	const efitick_t burnStartNt = getTimeNowNt();
 	suspendLinearTimeWatcher();
 
 	// Set up the container
@@ -117,6 +134,11 @@ bool writeToFlashNowImpl() {
 			((result2 == StorageStatus::Ok) || (result2 == StorageStatus::NotSupported)));
 
 	trackSettingsWriteResult(success);
+
+	const int burnDurationMs = US2MS(NT2US(getTimeNowNt() - burnStartNt));
+	if (burnDurationMs > 5000) {
+		efiPrintf("BURN TOOK %dms", burnDurationMs);
+	}
 
 	return success;
 }
@@ -211,7 +233,16 @@ static void doRewriteConfig() {
 }
 
 static void doWriteLTFT() {
-	settingsLtftRequestWriteToFlash();
+	if (!settingsLtftRequestWriteToFlash()) {
+		efiPrintf("LTFT: failed to queue write request, storage manager mailbox is full");
+		return;
+	}
+	if (storageIsIdAvailableForId(EFI_LTFT_RECORD_ID)) {
+		efiPrintf("LTFT: write requested");
+	} else {
+		// storage manager keeps the request pending until a storage that supports LTFT becomes ready
+		efiPrintf("LTFT: no storage ready for LTFT (SD card not mounted / in PC mode?), request stays pending until one is");
+	}
 }
 
 void initFlash() {
@@ -237,3 +268,9 @@ void initFlash() {
 }
 
 #endif /* EFI_CONFIGURATION_STORAGE */
+
+#if EFI_UNIT_TEST && !(EFI_CONFIGURATION_STORAGE)
+void setNeedToWriteConfiguration() {
+	configurationWriteRequestCountForUnitTest++;
+}
+#endif

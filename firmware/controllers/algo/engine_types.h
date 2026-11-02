@@ -267,6 +267,15 @@ enum class trigger_type_e : uint32_t {
 	// cam-only VVT shape, see VVT_BMW_VANOS_RELUCTOR
 	TT_BMW_VANOS_RELUCTOR = 98,
 
+	// GM Gen II LT1 Optispark, low-resolution track only (one cycle per cam revolution).
+	TT_GM_LT1_OPTISPARK_8 = 99,
+
+	TT_SUZUKI_36_2_2 = 100,
+
+	// 36-1-1 crank wheel, repeating every 180 crank degrees.
+	TT_NISSAN_VK56DE = 101,
+	TT_NISSAN_VK56DE_CAM = 102,
+
 	// TL,DR https://github.com/rusefi/rusefi/commit/523805138589585cc8889d6afd9305d120180902 example of new trigger commit
 	//
 	// before you add a new trigger: did you have a chance to capture digital signal with a logic analyzer?
@@ -278,7 +287,7 @@ enum class trigger_type_e : uint32_t {
 	//
 	// Another point: once you add a new trigger, run get_trigger_images.bat which would run rusefi_test.exe from unit_tests
 	//
-	TT_UNUSED = 99, // this is used if we want to iterate over all trigger types
+	TT_UNUSED = 103, // this is used if we want to iterate over all trigger types
 };
 
 typedef enum {
@@ -320,6 +329,7 @@ typedef enum {
 	TS_ESTIMATE_TORQUE_TABLE = 0x23,
 	TS_ETB_BENCH_TEST_0 = 0x24,
 	TS_ETB_BENCH_TEST_1 = 0x25,
+	TS_DTC_MANAGER_SHOT = 0x26,
 } ts_14_command;
 
 typedef enum {
@@ -411,6 +421,7 @@ typedef enum {
 	LUA_COMMAND_9,
 	LUA_COMMAND_10,
 	BENCH_BOOST_VALVE,
+	BENCH_SPEEDO_TEST,
 } bench_mode_e;
 
 // Reason why SD logging is or is not currently writing (for the SD: Logging state indicator)

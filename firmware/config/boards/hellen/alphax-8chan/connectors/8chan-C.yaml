@@ -66,20 +66,20 @@ pins:
   - pin: 11C
     meta: MM176_IGN1
     class: outputs
-    function: Smart Ignition 1 Output
+    function: Smart Ignition Coil 1
     type: ign
     ts_name: 11C - Ignition 1
     color: green
 
   - pin: 12C
-    function: Power GND
+    function: Power/Chassis GND ground
     type: gnd
     color: yellow
 
   - pin: 13C
     meta: MM176_IGN3
     class: outputs
-    function: Smart Ignition 3 Output
+    function: Smart Ignition Coil 3
     type: ign
     ts_name: 13C - Ignition 3
     color: blue
@@ -87,7 +87,7 @@ pins:
   - pin: 14C
     meta: MM176_IGN5
     class: outputs
-    function: Smart Ignition 5 Output
+    function: Smart Ignition Coil 5
     type: ign
     ts_name: 14C - Ignition 5
     color: green
@@ -95,13 +95,13 @@ pins:
   - pin: 15C
     meta: MM176_IGN8
     class: outputs
-    function: Smart Ignition 8 Output
+    function: Smart Ignition Coil 8
     type: ign
     ts_name: 15C - Ignition 8
     color: orange/brown
 
   - pin: 16C
-    function: CAN2 bus low (CAN2L)
+    function: CAN2 bus Low
     type: can
     color: blue
 
@@ -119,7 +119,7 @@ pins:
   - pin: 19C
     meta: MM176_IGN2
     class: outputs
-    function: Smart Ignition 2 Output
+    function: Smart Ignition Coil 2
     type: ign
     ts_name: 19C - Ignition 2
     color: white
@@ -127,7 +127,7 @@ pins:
   - pin: 20C
     meta: MM176_IGN4
     class: outputs
-    function: Smart Ignition 4 Output
+    function: Smart Ignition Coil 4
     type: ign
     ts_name: 20C - Ignition 4
     color: orange/brown
@@ -135,26 +135,26 @@ pins:
   - pin: 21C
     meta: MM176_IGN7
     class: outputs
-    function: Smart Ignition 7 Output
+    function: Smart Ignition Coil 7
     type: ign
     ts_name: 21C - Ignition 7
     color: blue
 
   - pin: 22C
-    function: Power GND
+    function: Power/Chassis GND ground
     type: gnd
     color: orange
 
   - pin: 23C
     meta: MM176_SPI3_MISO
     class: outputs
-    function: Smart Ignition 10 Output
+    function: Smart Ignition Coil 10
     type: ign
     ts_name: 23C - Ignition 10
     color: orange
 
   - pin: 24C
-    function: CAN2 bus high (CAN2H)
+    function: CAN2 bus High
     type: can
     color: green
 
@@ -178,7 +178,7 @@ pins:
   - pin: 28C
     meta: MM176_IGN6
     class: outputs
-    function: Smart Ignition 6 Output
+    function: Smart Ignition Coil 6
     type: ign
     ts_name: 28C - Ignition 6
     color: white
@@ -186,32 +186,32 @@ pins:
   - pin: 29C
     meta: MM176_SPI3_SCK
     class: outputs
-    function: Smart Ignition 9 Output
+    function: Smart Ignition Coil 9
     type: ign
     ts_name: 29C - Ignition 9
 
   - pin: 30C
     meta: MM176_SPI3_MOSI
     class: outputs
-    function: Smart Ignition 11 Output
+    function: Smart Ignition Coil 11
     type: ign
     ts_name: 30C - Ignition 11
 
   - pin: 31C
     meta: MM176_SPI3_CS
     class: outputs
-    function: Smart Ignition 12 Output
+    function: Smart Ignition Coil 12
     type: ign
     ts_name: 31C - Ignition 12
     color: orange
 
   - pin: 32C
-    function: CAN bus high (CANH)
+    function: CAN bus High
     type: can
     color: green
 
   - pin: 33C
-    function: CAN bus low (CANL)
+    function: CAN bus Low
     type: can
     color: blue
 
@@ -225,109 +225,111 @@ info:
   title: AlphaX Platinum
   cid: c
   # directory see D.yaml
-  name: AlphaX Platinum
+  name: connector C
   image:
-    file: 34pins-4k.jpg
+    file: alphax-8chan-34pins-4k-front.png
+  # Mating face, tabs up. Coordinates on the 1163x1024 technical drawing;
+  # terminal row centers are y=389,479,570,660.
   pins:
     - pin: 1C
-      x: 75
-      y: 90
+      x: 242
+      y: 389
     - pin: 2C
-      x: 95
-      y: 90
+      x: 328
+      y: 389
     - pin: 3C
-      x: 120
-      y: 90
+      x: 412
+      y: 389
     - pin: 4C
-      x: 145
-      y: 90
+      x: 497
+      y: 389
     - pin: 5C
-      x: 165
-      y: 90
+      x: 581
+      y: 389
     - pin: 6C
-      x: 190
-      y: 90
+      x: 666
+      y: 389
     - pin: 7C
-      x: 215
-      y: 90
+      x: 750
+      y: 389
     - pin: 8C
-      x: 240
-      y: 90
+      x: 834
+      y: 389
     - pin: 9C
-      x: 265
-      y: 90
+      x: 920
+      y: 389
     - pin: 10C
-      x: 85
-      y: 120
+      x: 279
+      y: 479
     - pin: 11C
-      x: 105
-      y: 120
+      x: 364
+      y: 479
     - pin: 12C
-      x: 130
-      y: 120
+      x: 451
+      y: 479
     - pin: 13C
-      x: 155
-      y: 120
+      x: 537
+      y: 479
     - pin: 14C
-      x: 180
-      y: 120
+      x: 624
+      y: 479
     - pin: 15C
-      x: 205
-      y: 120
+      x: 710
+      y: 479
     - pin: 16C
-      x: 225
-      y: 120
+      x: 796
+      y: 479
     - pin: 17C
-      x: 245
-      y: 120
+      x: 883
+      y: 479
     - pin: 18C
-      x: 85
-      y: 150
+      x: 279
+      y: 570
     - pin: 19C
-      x: 110
-      y: 150
+      x: 364
+      y: 570
     - pin: 20C
-      x: 130
-      y: 150
+      x: 451
+      y: 570
     - pin: 21C
-      x: 155
-      y: 150
+      x: 537
+      y: 570
     - pin: 22C
-      x: 180
-      y: 150
+      x: 624
+      y: 570
     - pin: 23C
-      x: 205
-      y: 150
+      x: 710
+      y: 570
     - pin: 24C
-      x: 225
-      y: 150
+      x: 796
+      y: 570
     - pin: 25C
-      x: 245
-      y: 150
+      x: 883
+      y: 570
     - pin: 26C
-      x: 74
-      y: 180
+      x: 242
+      y: 660
     - pin: 27C
-      x: 98
-      y: 180
+      x: 328
+      y: 660
     - pin: 28C
-      x: 122
-      y: 180
+      x: 412
+      y: 660
     - pin: 29C
-      x: 146
-      y: 180
+      x: 497
+      y: 660
     - pin: 30C
-      x: 170
-      y: 180
+      x: 581
+      y: 660
     - pin: 31C
-      x: 195
-      y: 180
+      x: 666
+      y: 660
     - pin: 32C
-      x: 220
-      y: 180
+      x: 750
+      y: 660
     - pin: 33C
-      x: 245
-      y: 180
+      x: 834
+      y: 660
     - pin: 34C
-      x: 265
-      y: 180
+      x: 920
+      y: 660

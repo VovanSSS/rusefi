@@ -9,6 +9,12 @@
 
 #include "rusefi_hw_enums.h"
 
+#ifndef SLOW_ADC_RATE
+#define SLOW_ADC_RATE 500
+#endif
+
+float getAnalogInputDividerCoefficient(adc_channel_e);
+
 inline bool isAdcChannelValid(adc_channel_e hwChannel) {
 	/* Compiler will optimize, keep following if as a reminder */
 	if (hwChannel >= EFI_ADC_TOTAL_CHANNELS) {

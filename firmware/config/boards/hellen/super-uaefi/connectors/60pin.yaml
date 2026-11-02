@@ -25,7 +25,7 @@ pins:
     meta: MM100_IN_TPS_ANALOG
     class: analog_inputs
     ts_name: ___ TPS1
-    function: TPS 1 sensor input
+    function: Universal analog input. Suggested TPS 1 sensor input
     type: av
     color: green
 
@@ -33,13 +33,14 @@ pins:
     class: analog_inputs
     meta: MM100_IN_O2S2_ANALOG
     ts_name: ___ AIN 2
-    function: AUX2 analog input
+    function: Auxiliary analog input 2 PullDown 500K
+    type: av
 
   - pin: 7A
     class: analog_inputs
     meta: MM100_IN_AUX2_ANALOG
     ts_name: ___ PPS2
-    function: PPS input 2
+    function: Universal analog input. Suggested PPS input 2
     type: av
     color: orange/brown
 
@@ -67,7 +68,7 @@ pins:
     class: analog_inputs
     meta: MM100_IN_CLT_ANALOG
     ts_name: ___ CLT Coolant
-    function: CLT input
+    function: ECT CLT Coolant Sensor Input
     type: at
     color: grey
 
@@ -75,7 +76,7 @@ pins:
     class: analog_inputs
     meta: MM100_IN_IAT_ANALOG
     ts_name: ___ IAT
-    function: IAT input
+    function: IAT Sensor Input
     type: at
     color: blue
 
@@ -83,7 +84,7 @@ pins:
     class: analog_inputs
     meta: MM100_IN_PPS_ANALOG
     ts_name: ___ PPS1
-    function: PPS input 1
+    function: Universal analog input. Suggested PPS input 1
     type: av
     color: white
 
@@ -91,13 +92,14 @@ pins:
     class: analog_inputs
     meta: MM100_IN_O2S_ANALOG
     ts_name: ___ AIN 1
-    function: AUX1 analog input
+    function: Auxiliary analog input 1 PullDown 500K
+    type: av
 
   - pin: 15A
     class: analog_inputs
     meta: MM100_IN_AUX1_ANALOG
     ts_name: ___ TPS2
-    function: TPS 2 sensor input
+    function: Universal analog input. Suggested TPS 2 sensor input
     type: av
     color: blue
 
@@ -147,62 +149,62 @@ pins:
 
   - pin: 23A
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 24A
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 25A
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 26A
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 27A
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 28A
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 29A
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 30A
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 31A
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 32A
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 33A
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 34A
     function: GNDA Analog/Sensor Ground
-    type: gnd
+    type: agnd
     color: black
 
 #  - pin: 1B
@@ -215,7 +217,7 @@ pins:
     class: outputs
     meta: MM100_IGN1
     ts_name: Coil 1
-    function: Coil 1 (5v)
+    function: Smart Ignition Coil 1
     type: ign
     color: green
 
@@ -223,7 +225,7 @@ pins:
     class: outputs
     meta: MM100_IGN2
     ts_name: Coil 2
-    function: Coil 2
+    function: Smart Ignition Coil 2
     type: ign
     color: white
 
@@ -231,7 +233,7 @@ pins:
     class: outputs
     meta: MM100_IGN3
     ts_name: Coil 3
-    function: Coil 3
+    function: Smart Ignition Coil 3
     type: ign
     color: blue
 
@@ -239,7 +241,7 @@ pins:
     class: outputs
     meta: MM100_IGN4
     ts_name: Coil 4
-    function: Coil 4
+    function: Smart Ignition Coil 4
     type: ign
     color: orange
 
@@ -247,7 +249,7 @@ pins:
     class: outputs
     meta: MM100_IGN5
     ts_name: Coil 5
-    function: Coil 5
+    function: Smart Ignition Coil 5
     color: brown
     type: ign
 
@@ -255,7 +257,7 @@ pins:
     class: outputs
     meta: MM100_IGN6
     ts_name: Coil 6
-    function: Coil 6
+    function: Smart Ignition Coil 6
     color: yellow
     type: ign
 
@@ -315,7 +317,7 @@ pins:
 
   - pin: 15B
     function: Power/Chassis GND ground
-    type: GND
+    type: gnd
 #   color: red / black
 
   - pin: 16B
@@ -370,17 +372,18 @@ pins:
   - pin: 23B
     function: GNDA Analog/Sensor Ground
 
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 24B
     function: GNDA Analog/Sensor Ground
 
-    type: gnd
+    type: agnd
     color: black
 
   - pin: 25B
-    function: FLEX
+    function: Digital Input / Flex fuel sensor
+    type: din
     class: event_inputs
     meta: MM100_IN_VSS
     ts_name: FLEX
@@ -401,189 +404,191 @@ pins:
 info:
   cid: main
   title: super-uaefi
-  name: super-uaefi
+  name: connector A/B
   board_url: https://wiki.rusefi.com/super-uaEFI
   image:
-    file: 60pins.jpg
+    file: superuaefi-60pins-front.png
+  # Mating face, indexing tabs up. Coordinates are pixels in the 1973x1024 image.
+  # Shared rows, top to bottom: y=389,479,570,660; see docs/imagegen.md.
   pins:
     - pin: 1A
-      x: 95
-      y: 90
+      x: 248
+      y: 389
     - pin: 2A
-      x: 120
-      y: 90
+      x: 338
+      y: 389
     - pin: 3A
-      x: 155
-      y: 90
+      x: 429
+      y: 389
     - pin: 4A
-      x: 180
-      y: 90
+      x: 518
+      y: 389
     - pin: 5A
-      x: 205
-      y: 90
+      x: 606
+      y: 389
     - pin: 6A
-      x: 230
-      y: 90
+      x: 696
+      y: 389
     - pin: 7A
-      x: 255
-      y: 90
+      x: 784
+      y: 389
     - pin: 8A
-      x: 280
-      y: 90
+      x: 874
+      y: 389
     - pin: 9A
-      x: 305
-      y: 90
+      x: 966
+      y: 389
     - pin: 10A
-      x: 110
-      y: 120
+      x: 292
+      y: 479
     - pin: 11A
-      x: 135
-      y: 120
+      x: 384
+      y: 479
     - pin: 12A
-      x: 160
-      y: 120
+      x: 474
+      y: 479
     - pin: 13A
-      x: 185
-      y: 120
+      x: 564
+      y: 479
     - pin: 14A
-      x: 210
-      y: 120
+      x: 654
+      y: 479
     - pin: 15A
-      x: 235
-      y: 120
+      x: 744
+      y: 479
     - pin: 16A
-      x: 260
-      y: 120
+      x: 832
+      y: 479
     - pin: 17A
-      x: 285
-      y: 120
+      x: 922
+      y: 479
     - pin: 18A
-      x: 110
-      y: 150
+      x: 292
+      y: 570
     - pin: 19A
-      x: 135
-      y: 150
+      x: 384
+      y: 570
     - pin: 20A
-      x: 160
-      y: 150
+      x: 474
+      y: 570
     - pin: 21A
-      x: 185
-      y: 150
+      x: 564
+      y: 570
     - pin: 22A
-      x: 210
-      y: 150
+      x: 654
+      y: 570
     - pin: 23A
-      x: 235
-      y: 150
+      x: 744
+      y: 570
     - pin: 24A
-      x: 260
-      y: 150
+      x: 832
+      y: 570
     - pin: 25A
-      x: 285
-      y: 150
+      x: 922
+      y: 570
     - pin: 26A
-      x: 95
-      y: 180
+      x: 248
+      y: 660
     - pin: 27A
-      x: 120
-      y: 180
+      x: 338
+      y: 660
     - pin: 28A
-      x: 155
-      y: 180
+      x: 429
+      y: 660
     - pin: 29A
-      x: 180
-      y: 180
+      x: 518
+      y: 660
     - pin: 30A
-      x: 205
-      y: 180
+      x: 606
+      y: 660
     - pin: 31A
-      x: 230
-      y: 180
+      x: 696
+      y: 660
     - pin: 32A
-      x: 255
-      y: 180
+      x: 784
+      y: 660
     - pin: 33A
-      x: 280
-      y: 180
+      x: 874
+      y: 660
     - pin: 34A
-      x: 305
-      y: 180
+      x: 966
+      y: 660
 
     - pin: 1B
-      x: 425
-      y: 90
+      x: 1274
+      y: 389
     - pin: 2B
-      x: 450
-      y: 90
+      x: 1352
+      y: 389
     - pin: 3B
-      x: 475
-      y: 90
+      x: 1430
+      y: 389
     - pin: 4B
-      x: 500
-      y: 90
+      x: 1508
+      y: 389
     - pin: 5B
-      x: 525
-      y: 90
+      x: 1586
+      y: 389
     - pin: 6B
-      x: 550
-      y: 90
+      x: 1664
+      y: 389
     - pin: 7B
-      x: 575
-      y: 90
+      x: 1743
+      y: 389
     - pin: 8B
-      x: 435
-      y: 120
+      x: 1313
+      y: 479
     - pin: 9B
-      x: 460
-      y: 120
+      x: 1392
+      y: 479
     - pin: 10B
-      x: 485
-      y: 120
+      x: 1471
+      y: 479
     - pin: 11B
-      x: 510
-      y: 120
+      x: 1550
+      y: 479
     - pin: 12B
-      x: 535
-      y: 120
+      x: 1629
+      y: 479
     - pin: 13B
-      x: 560
-      y: 120
+      x: 1708
+      y: 479
     - pin: 14B
-      x: 435
-      y: 150
+      x: 1313
+      y: 570
     - pin: 15B
-      x: 460
-      y: 150
+      x: 1392
+      y: 570
     - pin: 16B
-      x: 485
-      y: 150
+      x: 1471
+      y: 570
     - pin: 17B
-      x: 510
-      y: 150
+      x: 1550
+      y: 570
     - pin: 18B
-      x: 535
-      y: 150
+      x: 1629
+      y: 570
     - pin: 19B
-      x: 560
-      y: 150
+      x: 1708
+      y: 570
     - pin: 20B
-      x: 425
-      y: 180
+      x: 1274
+      y: 660
     - pin: 21B
-      x: 450
-      y: 180
+      x: 1352
+      y: 660
     - pin: 22B
-      x: 475
-      y: 180
+      x: 1430
+      y: 660
     - pin: 23B
-      x: 500
-      y: 180
+      x: 1508
+      y: 660
     - pin: 24B
-      x: 525
-      y: 180
+      x: 1586
+      y: 660
     - pin: 25B
-      x: 550
-      y: 180
+      x: 1664
+      y: 660
     - pin: 26B
-      x: 575
-      y: 180
+      x: 1743
+      y: 660

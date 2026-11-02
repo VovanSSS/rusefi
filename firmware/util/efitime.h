@@ -52,14 +52,10 @@ constexpr bool _assertFloatFitsInto32BitsAndCast(float value) {
   return constexpr_isfinite(value) && value >= kInt32MinF && value < FirstUnrepresentableBigFloat;
 }
 
-static_assert(_assertFloatFitsInto32BitsAndCast(INT32_MAX) == false);
 static_assert(_assertFloatFitsInto32BitsAndCast(static_cast<float>(INT32_MAX)) == false);
 
 // 64 for int because during conversion it is rounding to nearest
 // i.e. -64 to +63 = 128 or 2^7 because 2^31 (int) / 2^24 (float)
-static_assert(_assertFloatFitsInto32BitsAndCast(INT32_MAX - 1) == false);
-static_assert(_assertFloatFitsInto32BitsAndCast(INT32_MAX - 63) == false);
-static_assert(_assertFloatFitsInto32BitsAndCast(INT32_MAX - 64) == true);
 static_assert(_assertFloatFitsInto32BitsAndCast(static_cast<float>(INT32_MAX - 1)) == false);
 static_assert(_assertFloatFitsInto32BitsAndCast(static_cast<float>(INT32_MAX - 63)) == false);
 static_assert(_assertFloatFitsInto32BitsAndCast(static_cast<float>(INT32_MAX - 64)) == true);
@@ -126,6 +122,11 @@ efitimems_t getTimeNowMs();
  * @brief   Current system time in seconds (32 bits)
  */
 efitimesec_t getTimeNowS();
+
+/**
+ * @brief   UTC date-time to Unix epoch seconds, valid for years 1970..2105
+ */
+uint32_t dateTimeToEpochTime(const efidatetime_t& dateTime);
 
 #if EFI_UNIT_TEST
 void setTimeNowUs(int us);

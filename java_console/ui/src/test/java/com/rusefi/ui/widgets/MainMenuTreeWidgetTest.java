@@ -18,12 +18,15 @@ import com.rusefi.ui.widgets.tune.MainMenuTreeWidget;
 import org.junit.jupiter.api.Test;
 
 import javax.swing.*;
+import javax.swing.plaf.basic.BasicTreeUI;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.TreeCellRenderer;
 import javax.swing.tree.TreeModel;
 import javax.swing.tree.TreePath;
 import java.awt.*;
 import java.awt.event.MouseEvent;
+import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
 import java.awt.image.BufferedImage;
 import java.awt.image.BufferedImageOp;
 import java.awt.image.ImageObserver;
@@ -320,6 +323,252 @@ todo: spllit into smaller tests?
         assertEquals(fuelPath, tree.getSelectionPath(), "disabled node should not replace the selection");
     }
 
+    @Test
+    public void testDisabledNodesStayDisabledInSearchResults() throws FileNotFoundException {
+        UIContext uiContext = new UIContext();
+        String iniPath = "../../java_console/io/src/test/java/com/rusefi/io/pin_output_mode_with_and_without_dollar/test_data/rusefi_uaefi.ini";
+        IniFileModel model = IniFileReaderUtil.readIniFile(iniPath);
+        uiContext.iniFileState.setIniFileModelForTest(model);
+
+        MainMenuTreeWidget widget = new MainMenuTreeWidget(uiContext);
+        JTextField searchField = (JTextField) ((JPanel) widget.getContentPane().getComponent(0)).getComponent(0);
+        JTree tree = (JTree) ((JScrollPane) widget.getContentPane().getComponent(1)).getViewport().getView();
+        widget.refreshExpressions(new ConfigurationImage(new byte[model.getMetaInfo().getPageSize(0)]));
+
+        // search results are built from copies of the tree nodes
+        searchField.setText("Fuel trim cyl 5");
+        DefaultMutableTreeNode filteredRoot = (DefaultMutableTreeNode) tree.getModel().getRoot();
+        DefaultMutableTreeNode disabled = findNode(findNode(findNode(filteredRoot, "Fuel"), "Cylinder fuel trims"), "Fuel trim cyl 5");
+        assertNotNull(disabled);
+
+        Component rendered = tree.getCellRenderer().getTreeCellRendererComponent(
+            tree, disabled, false, false, true, 0, false);
+        assertEquals(UIManager.getColor("Label.disabledForeground"), rendered.getForeground(),
+            "a disabled item must stay greyed out in search results");
+        tree.setSelectionPaths(new TreePath[]{new TreePath(disabled.getPath())});
+        assertNull(tree.getSelectionPath(), "a disabled search result should not be selectable");
+    }
+
+    @Test
+    public void testKeyboardNavigationSkipsUnavailableRows() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            for (String blockedItem : Arrays.asList(
+                "subMenu = std_separator\n",
+                "subMenu = disabled, \"Disabled\", {0}\n",
+                "subMenu = invisible, \"Invisible\", , {0}\n")) {
+                MainMenuTreeWidget widget = navigationWidget(blockedItem);
+                JTree tree = (JTree) ((JScrollPane) widget.getContentPane().getComponent(1)).getViewport().getView();
+                tree.expandRow(0);
+                TreePath first = tree.getPathForRow(1);
+                TreePath last = tree.getPathForRow(3);
+                tree.setSelectionPath(first);
+                pressTreeKey(tree, KeyEvent.VK_DOWN, 0);
+                assertEquals(last, tree.getSelectionPath(), "Down skips " + blockedItem);
+                assertEquals(last, tree.getLeadSelectionPath());
+                pressTreeKey(tree, KeyEvent.VK_DOWN, 0);
+                assertEquals(last, tree.getSelectionPath(), "Down stops at the last row");
+
+                tree.setSelectionPath(last);
+                pressTreeKey(tree, KeyEvent.VK_UP, 0);
+                assertEquals(first, tree.getSelectionPath(), "Up skips " + blockedItem);
+                assertEquals(first, tree.getLeadSelectionPath());
+                pressTreeKey(tree, KeyEvent.VK_UP, 0);
+                assertEquals(tree.getPathForRow(0), tree.getSelectionPath(), "Up continues to the category");
+            }
+        });
+    }
+
+    private static MainMenuTreeWidget navigationWidget(String blockedItems) {
+        String text = "[Constants]\npage = 1\n[Menu]\nmenu = \"Setup\"\n"
+            + "subMenu = first, \"First\"\n" + blockedItems + "subMenu = last, \"Last\"\n";
+        IniFileModel ini = readLines(IniFileReaderUtil.read(
+            new ByteArrayInputStream(text.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+        UIContext context = new UIContext();
+        context.iniFileState.setIniFileModelForTest(ini);
+        MainMenuTreeWidget widget = new MainMenuTreeWidget(context);
+        widget.refreshExpressions(new ConfigurationImage(new byte[100]));
+        return widget;
+    }
+
+    @Test
+    public void testMouseAndProgrammaticSelectionsInvokeCallbacksOnce() throws Exception {
+        String text = "[Constants]\npage = 1\n[Menu]\nmenu = \"Setup\"\n"
+            + "subMenu = first, \"First\"\nsubMenu = second, \"Second\"\n";
+        IniFileModel ini = readLines(IniFileReaderUtil.read(
+            new ByteArrayInputStream(text.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+        SwingUtilities.invokeAndWait(() -> {
+            UIContext context = new UIContext();
+            context.iniFileState.setIniFileModelForTest(ini);
+            MainMenuTreeWidget widget = new MainMenuTreeWidget(context);
+            List<String> selected = new ArrayList<>();
+            widget.setOnSelect(subMenu -> selected.add(subMenu.getKey()));
+            JTree tree = (JTree) ((JScrollPane) widget.getContentPane().getComponent(1)).getViewport().getView();
+            tree.setUI(new BasicTreeUI() {
+                @Override
+                protected boolean isToggleSelectionEvent(MouseEvent event) {
+                    return false;
+                }
+            });
+            tree.setSize(400, 400);
+            tree.expandRow(0);
+            TreePath second = tree.getPathForRow(2);
+            dispatchMouseClick(tree, second);
+
+            assertEquals(Arrays.asList("second"), selected,
+                "A changed mouse selection should emit one callback");
+            dispatchMouseClick(tree, second);
+            assertEquals(Arrays.asList("second", "second"), selected,
+                "Clicking the now-selected page should refresh exactly once");
+            selected.clear();
+            widget.selectSubMenu("first");
+            assertEquals(Arrays.asList("first"), selected,
+                "Programmatic selection should emit one callback");
+            selected.clear();
+            widget.selectSubMenu("first");
+            assertEquals(Arrays.asList("first"), selected,
+                "Explicitly selecting the current page still refreshes it exactly once");
+        });
+    }
+
+    @Test
+    public void testSameSelectedMouseClickRefreshesOfflinePage() throws Exception {
+        String text = "[Constants]\npage = 1\n[Menu]\nmenu = \"Setup\"\nsubMenu = first, \"First\"\n";
+        IniFileModel ini = readLines(IniFileReaderUtil.read(
+            new ByteArrayInputStream(text.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+        SwingUtilities.invokeAndWait(() -> {
+            UIContext context = new UIContext();
+            context.iniFileState.setIniFileModelForTest(ini);
+            MainMenuTreeWidget widget = new MainMenuTreeWidget(context);
+            List<String> selected = new ArrayList<>();
+            widget.setOnSelect(subMenu -> selected.add(subMenu.getKey()));
+            JTree tree = (JTree) ((JScrollPane) widget.getContentPane().getComponent(1)).getViewport().getView();
+            tree.setUI(new BasicTreeUI() {
+                @Override
+                protected boolean isToggleSelectionEvent(MouseEvent event) {
+                    return false;
+                }
+            });
+            tree.setSize(400, 400);
+            tree.expandRow(0);
+            TreePath first = tree.getPathForRow(1);
+            tree.setSelectionPath(first);
+            selected.clear();
+            Rectangle bounds = tree.getPathBounds(first);
+            tree.dispatchEvent(new MouseEvent(tree, MouseEvent.MOUSE_CLICKED, System.currentTimeMillis(), 0,
+                bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, 1, false));
+
+            assertEquals(Arrays.asList("first"), selected,
+                "Clicking the already-selected page should refresh it exactly once");
+        });
+    }
+
+    private static void dispatchMouseClick(JTree tree, TreePath path) {
+        TreePath selected = tree.getSelectionPath();
+        tree.setUI(new BasicTreeUI() {
+            @Override
+            protected boolean isToggleSelectionEvent(MouseEvent event) {
+                return false;
+            }
+        });
+        if (selected != null) {
+            tree.setSelectionPath(selected);
+        }
+        Rectangle bounds = tree.getPathBounds(path);
+        int x = bounds.x + bounds.width / 2;
+        int y = bounds.y + bounds.height / 2;
+        long now = System.currentTimeMillis();
+        tree.dispatchEvent(new MouseEvent(tree, MouseEvent.MOUSE_PRESSED, now,
+            InputEvent.BUTTON1_DOWN_MASK, x, y, 1, false, MouseEvent.BUTTON1));
+        tree.dispatchEvent(new MouseEvent(tree, MouseEvent.MOUSE_RELEASED, now + 1,
+            0, x, y, 1, false, MouseEvent.BUTTON1));
+        tree.dispatchEvent(new MouseEvent(tree, MouseEvent.MOUSE_CLICKED, now + 2,
+            0, x, y, 1, false, MouseEvent.BUTTON1));
+    }
+
+    @Test
+    public void testNavigationAfterSearchSelectionIsNotSwallowed() throws Exception {
+        String text = "[Constants]\npage = 1\n[Menu]\nmenu = \"Setup\"\n"
+            + "subMenu = first, \"First\"\nsubMenu = second, \"Second\"\n";
+        IniFileModel ini = readLines(IniFileReaderUtil.read(
+            new ByteArrayInputStream(text.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+        AtomicReference<MainMenuTreeWidget> widgetRef = new AtomicReference<>();
+        List<String> selected = new ArrayList<>();
+        SwingUtilities.invokeAndWait(() -> {
+            UIContext context = new UIContext();
+            context.iniFileState.setIniFileModelForTest(ini);
+            MainMenuTreeWidget widget = new MainMenuTreeWidget(context);
+            widget.setOnSelect(subMenu -> selected.add(subMenu.getKey()));
+            widgetRef.set(widget);
+            JTextField search = (JTextField) ((JPanel) widget.getContentPane().getComponent(0)).getComponent(0);
+            JTree tree = (JTree) ((JScrollPane) widget.getContentPane().getComponent(1)).getViewport().getView();
+            search.setText("First");
+            DefaultMutableTreeNode result = findNode(
+                findNode((DefaultMutableTreeNode) tree.getModel().getRoot(), "Setup"), "First");
+            tree.setSelectionPath(new TreePath(result.getPath()));
+        });
+        SwingUtilities.invokeAndWait(() -> { });
+        SwingUtilities.invokeAndWait(() -> { });
+        SwingUtilities.invokeAndWait(() -> { });
+        SwingUtilities.invokeAndWait(() -> {
+            MainMenuTreeWidget widget = widgetRef.get();
+            JTree tree = (JTree) ((JScrollPane) widget.getContentPane().getComponent(1)).getViewport().getView();
+            DefaultMutableTreeNode second = findNode(
+                findNode((DefaultMutableTreeNode) tree.getModel().getRoot(), "Setup"), "Second");
+            tree.setSelectionPath(new TreePath(second.getPath()));
+            assertEquals(Arrays.asList("first", "second"), selected,
+                "The first real navigation after a search result must not be suppressed");
+        });
+    }
+
+    private static void pressTreeKey(JTree tree, int keyCode, int modifiers) {
+        Object binding = tree.getInputMap(JComponent.WHEN_FOCUSED).get(KeyStroke.getKeyStroke(keyCode, modifiers));
+        assertNotNull(binding, "Tree key must have a binding");
+        Action action = tree.getActionMap().get(binding);
+        assertNotNull(action, "Tree key must have an action");
+        action.actionPerformed(new java.awt.event.ActionEvent(tree, java.awt.event.ActionEvent.ACTION_PERFORMED,
+            binding.toString()));
+    }
+
+    @Test
+    public void testSelectFieldFindsAvailableParentInMenuGroup() throws Exception {
+        String text = "[Constants]\npage = 1\n"
+            + "fuelPumpPin = bits, U08, 0, [0:1], \"NONE\", \"B6 Low Side output\"\n"
+            + "[Menu]\nmenu = \"Setup\"\n"
+            + "subMenu = cyclicDialog, \"Cyclic panel\"\n"
+            + "subMenu = disabledOutputs, \"Disabled outputs\", {0}\n"
+            + "groupMenu = \"Actuators\"\ngroupChildMenu = outputsDialog, \"Outputs\"\n"
+            + "[UserDefined]\n"
+            + "dialog = unusedPins\nfield = \"Fuel Pump\", fuelPumpPin\n"
+            + "field = \"Unlisted field\", unlistedPin\n"
+            + "dialog = cyclicDialog\npanel = cyclicDialog\npanel = missingDialog\n"
+            + "dialog = disabledOutputs\npanel = fuelPumpDialog\n"
+            + "dialog = fuelPumpDialog\nfield = \"Fuel Pump\", fuelPumpPin\n"
+            + "dialog = outputsDialogLeft\npanel = fuelPumpDialog\n"
+            + "dialog = outputsDialog\npanel = outputsDialogLeft\n";
+        IniFileModel ini = readLines(IniFileReaderUtil.read(
+            new ByteArrayInputStream(text.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+
+        SwingUtilities.invokeAndWait(() -> {
+            UIContext context = new UIContext();
+            context.iniFileState.setIniFileModelForTest(ini);
+            MainMenuTreeWidget widget = new MainMenuTreeWidget(context);
+            widget.refreshExpressions(new ConfigurationImage(new byte[100]));
+            AtomicReference<String> opened = new AtomicReference<>();
+            widget.setOnSelect(subMenu -> opened.set(subMenu.getKey()));
+
+            assertTrue(widget.selectField("fuelPumpPin"));
+            assertEquals("outputsDialog", opened.get(),
+                "Skip unlisted/disabled dialogs and follow panels inside a menu group");
+            JTree tree = (JTree) ((JScrollPane) widget.getContentPane().getComponent(1)).getViewport().getView();
+            DefaultMutableTreeNode selected = (DefaultMutableTreeNode) tree.getLastSelectedPathComponent();
+            assertEquals("Actuators", ((DefaultMutableTreeNode) selected.getParent()).getUserObject());
+            assertFalse(widget.selectField("unlistedPin"));
+            assertFalse(widget.selectField("unknownPin"));
+            assertFalse(widget.selectField(null));
+            assertEquals("outputsDialog", opened.get(), "An unavailable field must not change pages");
+        });
+    }
+
     private void assertNoSeparators(DefaultMutableTreeNode node) {
         assertFalse(node.getUserObject() instanceof com.opensr5.ini.SeparatorMenuItem, "search results must not contain separators");
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -346,7 +595,10 @@ todo: spllit into smaller tests?
         assertEquals(model.getMenus().size(), ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildCount());
 
         // 2. Search for "setup limit"
-        searchField.setText("setup limit");
+        // Every Swing mutation below runs on the EDT: the widget reacts to a selection with invokeLater,
+        // and a selection made from the test thread races that runnable inside the selection model's
+        // listener loop (a null selection array inside BasicTreeUI, seen as a flaky NPE on CI).
+        SwingUtilities.invokeAndWait(() -> searchField.setText("setup limit"));
         DefaultMutableTreeNode filteredRoot = (DefaultMutableTreeNode) tree.getModel().getRoot();
         // Should only have "Setup" at top level
         assertEquals(1, filteredRoot.getChildCount());
@@ -358,9 +610,9 @@ todo: spllit into smaller tests?
         assertNotNull(limitsNode);
 
         // 3. Reset search by clicking (simulated)
-        tree.setSelectionPath(new TreePath(limitsNode.getPath()));
+        SwingUtilities.invokeAndWait(() -> tree.setSelectionPath(new TreePath(limitsNode.getPath())));
         // Selection listener should trigger search reset
-            SwingUtilities.invokeAndWait(() -> {});
+        SwingUtilities.invokeAndWait(() -> {});
         assertTrue(searchField.getText().isEmpty(), "Search field should be empty after click");
         assertEquals(model.getMenus().size(), ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildCount(), "Tree should be fully restored");
 
@@ -372,34 +624,19 @@ todo: spllit into smaller tests?
         assertTrue(tree.isExpanded(new TreePath(fuelNode.getPath())), "Fuel node should be expanded");
 
         // 4. Second search
-        searchField.setText("fuel");
-        try {
-            SwingUtilities.invokeAndWait(() -> {});
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        SwingUtilities.invokeAndWait(() -> searchField.setText("fuel"));
         filteredRoot = (DefaultMutableTreeNode) tree.getModel().getRoot();
         assertTrue(filteredRoot.getChildCount() > 0, "Filtered root should have children");
         // Verify we found "Fuel"
         assertNotNull(findNode(filteredRoot, "Fuel"), "Should find 'Fuel' in second search");
 
         // 5. Search for something non-existent
-        searchField.setText("nonexistentstuff");
-        try {
-            SwingUtilities.invokeAndWait(() -> {});
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        SwingUtilities.invokeAndWait(() -> searchField.setText("nonexistentstuff"));
         filteredRoot = (DefaultMutableTreeNode) tree.getModel().getRoot();
         assertEquals(0, filteredRoot.getChildCount(), "Should have no results");
 
         // 6. Backspace/Remove some text
-        searchField.setText("fuel");
-        try {
-            SwingUtilities.invokeAndWait(() -> {});
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        SwingUtilities.invokeAndWait(() -> searchField.setText("fuel"));
         filteredRoot = (DefaultMutableTreeNode) tree.getModel().getRoot();
         assertTrue(filteredRoot.getChildCount() > 0, "Should have results again");
     }
@@ -439,7 +676,7 @@ todo: spllit into smaller tests?
         // Now test re-selection (clicking the same node again)
 
         // Simulate click on the same node
-        tree.getMouseListeners()[1].mouseClicked(new MouseEvent(tree, MouseEvent.MOUSE_CLICKED, System.currentTimeMillis(), 0, 0, 0, 1, false));
+        dispatchMouseClick(tree, tree.getSelectionPath());
 
         // The table should have been updated (re-populated), so our "ModifiedValue" should be gone if it was in first column
         // Actually, update() probably clears and refills the table.
@@ -481,6 +718,7 @@ todo: spllit into smaller tests?
             "scriptCurve1 = array, F32, 64, [16], \"y\", 1, 0, 0, 100, 3\n " +
             "[CurveEditor]\n" +
             "\tcurve = scriptCurve1, \"Script Curve #1\"\n" +
+            "\t\tcolumnLabel = \"Coolant\", \"RPM Limit\"\n" +
             "\t\txAxis\t\t=  0, 100, 10\n" +
             "\t\tyAxis\t\t=  0, 200, 20\n" +
             "\t\txBins\t\t= scriptCurve1Bins\n" +
@@ -517,13 +755,32 @@ todo: spllit into smaller tests?
         assertNotNull(table);
         assertEquals(16, table.getRowCount());
         assertEquals(2, table.getColumnCount());
+        assertEquals("Coolant", table.getColumnName(0));
+        assertEquals("RPM Limit", table.getColumnName(1));
+        assertTrue(table.getCellSelectionEnabled());
+
+        table.setRowSelectionInterval(0, 1);
+        table.setColumnSelectionInterval(1, 1);
+        table.setValueAt("42", 0, 1);
+        assertEquals(42, Double.parseDouble(table.getValueAt(0, 1).toString()));
+        assertEquals(42, Double.parseDouble(table.getValueAt(1, 1).toString()));
+
+        assertTrue(table.editCellAt(0, 1, new MouseEvent(table, MouseEvent.MOUSE_PRESSED,
+            System.currentTimeMillis(), 0, 0, 0, 2, false)));
+        assertEquals(42, Double.parseDouble(((JTextField) table.getEditorComponent()).getText()));
+        table.getCellEditor().cancelCellEditing();
+
+        assertTrue(table.editCellAt(0, 1, new KeyEvent(table, KeyEvent.KEY_PRESSED,
+            System.currentTimeMillis(), 0, KeyEvent.VK_5, '5')));
+        assertEquals("", ((JTextField) table.getEditorComponent()).getText());
+        table.getCellEditor().cancelCellEditing();
     }
 
     @Test
     public void testCurveWidgetGridLines() {
         AxisModel xAxis = new AxisModel(0, 100, 5); // 6 lines expected: 0, 20, 40, 60, 80, 100
         AxisModel yAxis = new AxisModel(0, 200, 10); // 11 lines expected: 0, 20, ..., 200
-        CurveModel curveModel = new CurveModel("id", "title", xAxis, yAxis, "xBins", "yBins");
+        CurveModel curveModel = new CurveModel("id", "title", null, null, xAxis, yAxis, "xBins", "yBins");
 
         IniFileModel model = new com.opensr5.ini.IniFileModel() {
             @Override public String getSignature() { return null; }
@@ -542,6 +799,7 @@ todo: spllit into smaller tests?
             }
             @Override public com.opensr5.ini.field.IniField getIniField(com.rusefi.config.Field field) { return null; }
             @Override public com.opensr5.ini.field.IniField getIniField(String key) { return null; }
+            @Override public java.util.List<com.opensr5.ini.DatalogEntry> getDatalogEntries() { return java.util.Collections.emptyList(); }
             @Override public com.opensr5.ini.field.IniField getOutputChannel(String key) { return null; }
             @Override public Map<String, com.opensr5.ini.field.IniField> getAllOutputChannels() { return java.util.Collections.emptyMap(); }
             @Override public String getExpressionOutputChannel(String key) { return null; }
@@ -574,6 +832,11 @@ todo: spllit into smaller tests?
         };
 
         com.rusefi.ui.widgets.tune.CurveWidget widget = new com.rusefi.ui.widgets.tune.CurveWidget(curveModel, model, null);
+
+        JTable table = findTable(widget.getContentPane());
+        assertNotNull(table);
+        assertEquals("X Axis", table.getColumnName(0));
+        assertEquals("Y Axis", table.getColumnName(1));
 
         // Find the CurveCanvas
         com.rusefi.ui.widgets.tune.CurveWidget.CurveCanvas canvas = null;
@@ -687,7 +950,8 @@ todo: spllit into smaller tests?
         canvas.paintComponent(spyG2);
 
         assertTrue(drawnStrings.contains("title"), "Should draw title");
-        assertTrue(drawnStrings.contains("RPM"), "Should draw units");
+        assertTrue(drawnStrings.contains("RPM"), "Should draw X-axis units");
+        assertTrue(drawnStrings.contains("Deg"), "Should draw Y-axis units");
         assertTrue(drawnStrings.contains("0"), "Should draw 0 for X axis");
         assertTrue(drawnStrings.contains("100"), "Should draw 100 for X axis");
         assertTrue(drawnStrings.contains("0.00"), "Should draw 0.00 for Y axis with 2 digits");

@@ -4,10 +4,22 @@ The rusEFI CAN sniffer implements the [slcan](https://github.com/torvalds/linux/
 
 ## Hardware Setup
 
-On some F7-based rusEFI boards (like uaefi pro), the CAN sniffer is exposed via a second USB CDC (Virtual COM Port) channel.
+On rusEFI boards built with a second USB CDC channel (`HAL_USE_USB_CDC_2`, e.g. uaefi pro (F7), purple-gateway (H7)), the CAN sniffer is exposed via the second Virtual COM Port (`SDU[1]`, see `can_hw.cpp`).
 
 - **Primary VCP**: rusEFI Console / TunerStudio.
 - **Secondary VCP**: CAN Sniffer.
+
+Both CDC interfaces belong to one composite USB device and carry the same product string and serial number, so the host cannot tell them apart from USB descriptors alone (on Linux they typically enumerate as `/dev/ttyACM0` = console, `/dev/ttyACM1` = sniffer, but ordering is not guaranteed). Identify by probing: the console port answers the TunerStudio HELLO with the rusEFI signature, the sniffer port answers the SLCAN `V` command. That is exactly what the console's `SlcanTab` (shown automatically when the connected board's INI includes the CAN sniffer menu) does when "Scanning for SLCAN port".
+
+## Console tab visibility
+
+The universal updater shows **SLCAN Sniffer** when the connected ECU's INI contains the
+`canBusSniffer` menu entry. Enable it with `#define ts_show_canbus_sniffer true` in the
+board's prepend, alongside firmware support for the second USB CDC channel. Rebuild
+firmware so the corresponding INI includes the entry; no board-specific console JAR is needed.
+The tab updates on connection changes and starts scanning only when opened.
+`show_slcan_sniffer=true` remains a force-show override for standalone use; the default
+`false` allows automatic detection. Older INIs without the menu need the override.
 
 ## Configuration
 
@@ -16,6 +28,10 @@ The sniffer must be enabled in TunerStudio:
 1. Go to **Connectivity -> CAN Bus**.
 2. Enable **CAN Sniffer** for the desired bus (CAN1, CAN2, etc.).
 3. (Optional) Set **Sniffer Tx CAN bus** if you intend to transmit messages via the sniffer.
+4. **Include CAN bus in trace** is checked for new/default tunes. Uncheck it for
+   standard SLCAN clients such as SavvyCAN or `slcand`. Reconnect the sniffer after
+   changing this setting; the format stays fixed until the channel is closed.
+   Existing tunes keep legacy output until explicitly enabled.
 
 ## Protocol Support
 
@@ -25,7 +41,7 @@ The sniffer supports the standard Lawicel ASCII protocol. Commands are terminate
 
 | Command | Description | Example |
 | :--- | :--- | :--- |
-| `Sx` | Set CAN bit rate (where `x` is 0-8). **(Not supported, controlled by ECU)** | `S6` (500k) |
+| `Sx` | Set CAN bit rate (where `x` is 0-8). **(Value ignored — but sending it is REQUIRED before `O`/`L`, see below)** | `S6` (500k) |
 | `O` | Open CAN channel in normal mode. **(Soft-open only, hardware controlled by ECU)** | `O` |
 | `L` | Open CAN channel in listen-only mode. **(Soft-open only, hardware controlled by ECU)** | `L` |
 | `C` | Close CAN channel. **(Soft-close only, hardware controlled by ECU)** | `C` |
@@ -35,6 +51,7 @@ The sniffer supports the standard Lawicel ASCII protocol. Commands are terminate
 | `N` | Get serial number. | `N` |
 | `Z0` / `Z1` | Disable/Enable timestamps. | `Z1` |
 | `F` | Read status flags. | `F` |
+| `I` | rusEFI read-only trace format query: `I1` means channel prefixes, `I0` means legacy. While closed, reports the configured format for the next open; while open, reports the active format. | `I` |
 
 ### Bit Rate Codes (`Sx`)
 
@@ -50,7 +67,19 @@ The sniffer supports the standard Lawicel ASCII protocol. Commands are terminate
 | `S7` | 800k |
 | `S8` | 1M |
 
-*Note: The actual baud rate used by the ECU is pre-configured in TunerStudio. The `S` command in the sniffer is ignored because the ECU manages the CAN hardware bit rate.*
+*Note: The actual baud rate used by the ECU is pre-configured in TunerStudio. The `S` command's value is ignored because the ECU manages the CAN hardware bit rate.*
+
+### Open sequence: `S` is mandatory before `O`
+
+Although the bit rate value is ignored, `O`/`L` are **refused with BELL (`\a`) unless an `S0`..`S8` was accepted since the last close** (`baudrate_configured` in `executeCommand`), and `C` clears that state again. So the canonical (re)open sequence is always:
+
+```
+C       (close — BELL if already closed, harmless)
+S6      (any code; arms baudrate_configured)
+O       (open, streaming starts)
+```
+
+A bare `O` on a freshly closed channel silently gets you nothing but BELLs — verified on hardware 2026-08-23. This matches what `SlcanTab`/`SlcanClient` sends.
 
 ### Reception Format
 
@@ -66,16 +95,44 @@ Where:
 - `D`: Data bytes (Hex).
 - `TTTT`: Optional 16-bit timestamp (if enabled with `Z1`).
 
+With **Include CAN bus in trace** enabled, frames use the
+[Elmue CANable 2.5 channel-prefix convention](https://netcult.ch/elmue/CANable%20Firmware%20Update/):
+
+| Bus | Example (ID 0x123, data AA BB) |
+| --- | --- |
+| CAN1 (index 0) | `t1232AABB\r` |
+| CAN2 (index 1) | `&t1232AABB\r` |
+| CAN3 (index 2) | `$t1232AABB\r` |
+
+Prefixes also apply to `T`, `r`, and `R` frames and ECU transmit echoes. The CAN
+identifier, payload, and optional timestamp retain their existing encoding.
+This adopts only the channel-prefix frame format, not Elmue's full command set.
+PC transmit commands still use **Sniffer Tx CAN bus**; prefixed transmit commands
+are not supported.
+
+The console and CAN MCP query `I` before opening. An old adapter that does not
+answer, or an `I0` reply, leaves unprefixed frames' bus unknown. Prefixed frames
+always identify their bus. The console shows `CAN1`/`CAN2`/`CAN3` or `Bus unknown`;
+candump export uses `can0`/`can1`/`can2` or `canUnknown`. Legacy captures cannot
+recover the bus identity discarded by the firmware. Standard SLCAN clients do
+not understand the prefixes: uncheck the option when using them.
+
 ## Implementation Details
 
 ### Configuration Fields
 
 The sniffer behavior is controlled by the following fields in `engineConfiguration`:
 
-- `canSniffer[index].read`: Enable/Disable listening to the specified CAN bus (index 0 for CAN1, 1 for CAN2, etc.).
-- `canSniffer[index].listenOurs`: If enabled, the sniffer will also report messages transmitted by the ECU itself on this bus.
+- `canSniffer[index].read`: Enable/Disable listening to the specified CAN bus (index 0 for CAN1, 1 for CAN2, etc.). **Default: off** (gates the RX path in `can_hw.cpp`).
+- `canSniffer[index].listenOurs`: If enabled, the sniffer will also report messages transmitted by the ECU itself on this bus. **Default: on for every bus** (`engine_configuration.cpp`, gates the TX echo in `can_msg_tx.cpp`).
 - `canSniffer[index].handleInjected`: If enabled, messages transmitted from the PC via the sniffer will be treated by the ECU as if they were received from the CAN bus (useful for simulation/testing).
-- `canSnifferTxBus`: Specifies which CAN bus to use for transmitting messages sent from the PC.
+- `canSnifferTxBus`: Specifies which CAN bus to use for transmitting messages sent from the PC. **Default: None**, in which case `t`/`T` transmit commands are refused with BELL.
+- `canSnifferIncludeBus`: Global trace format bit. **Default: on in new/default
+  tunes**. Reuses a spare bit, so existing configuration offsets are unchanged
+  and older tunes with that bit clear retain legacy output. There is no migration
+  that overrides a user's choice to turn it off.
+
+Consequence of the defaults (a common surprise, verified on hardware 2026-08-23): **out of the box the sniffer streams only the ECU's own transmitted frames** — the bus can be fully alive with other nodes and the SLCAN stream will not show a single frame from them until `canSnifferN_read` is enabled for that bus in the tune. If the ID inventory you see is suspiciously identical to what the ECU sends, check the `read` flags before suspecting wiring.
 
 ### ECU Control
 
@@ -87,3 +144,14 @@ The rusEFI CAN sniffer is a "passive" implementation of `slcan`. It does not hav
 The implementation is located in:
 - `firmware/controllers/can/can_sniffer.cpp`
 - `firmware/controllers/can/can_sniffer.h`
+
+Host-side counterparts in the Java console:
+- `java_console/ui/src/main/java/com/rusefi/ui/SlcanTab.java` — sniffer tab (port auto-scan, record to file)
+- `com.rusefi.io.can.slcan.SlcanClient` — the SLCAN client the tab is built on
+
+## MCP capture
+
+The CAN MCP server supports the built-in sniffer with `--backend slcan` and an optional
+`--port` naming the secondary USB serial port. It exposes the same read-only packet and
+wait tools as the PCAN backend. See [CAN MCP usage](../../../java_console/mcp_can/README.md)
+for build instructions, launch examples, and packet fields.

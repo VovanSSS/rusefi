@@ -32,7 +32,7 @@ Access the scheduler via `engine->scheduler` or `getScheduler()`.
 
 - `scheduleByAngle(timer, nowNt, angle, action)` (`firmware/controllers/engine_cycle/rpm_calculator.cpp`) converts an angle delta to time using `rpmCalculator.oneDegreeUs` (recomputed on each RPM update) and calls the plain time scheduler. So "angle" scheduling is really "time as of the most recent tooth" - accuracy depends on how recently RPM/phase was refreshed.
 - `TriggerScheduler` (`firmware/controllers/system/timer/trigger_scheduler.{h,cpp}`, an `EngineModule`) adds a tooth-synchronized layer for events far in the future (e.g. a spark many teeth away). `scheduleOrQueue()`: if the target angle falls before the next expected tooth, it time-schedules immediately via `scheduleByAngle`; otherwise the `AngleBasedEvent` is parked on a linked list and `scheduleEventsUntilNextTriggerTooth()` (called on every decoded tooth from `mainTriggerCallback`) converts it to a time-based schedule once its angle window arrives. This keeps long-range events phase-accurate under RPM change instead of extrapolating stale RPM over many degrees.
-- Consumers: `spark_logic.cpp` (dwell start via `scheduleByAngle`, spark fire via `scheduleOrQueue`, overdwell protection auto-fires at 1.5x nominal dwell if the fire event stays queued), `main_trigger_callback.cpp` (injector open via `scheduleByAngle`, close at open-time + duration via `getScheduler()->schedule`).
+- Consumers: `spark_logic.cpp` (dwell start via `scheduleByAngle`, spark fire via `scheduleOrQueue`, overdwell protection auto-fires at 1.5x the event's saved dwell if the fire event stays queued), `main_trigger_callback.cpp` (injector open via `scheduleByAngle`, close at open-time + duration via `getScheduler()->schedule`). The spark watchdog uses the same pending plan as the dwell/spark angles. For example, a queued 6 ms plan retains a 9 ms timeout across a global dwell reduction to 3.25 ms; the next plan adopts the new dwell after this spark fires.
 
 ## Periodic Control Loops
 
@@ -49,6 +49,15 @@ Rates are centralized in `firmware/controllers/core/main_loop.h`:
 **Migration in progress**: `MainLoop` (`main_loop.cpp`, a 1000 Hz `PeriodicController` at `PRIO_MAIN_LOOP = NORMALPRIO+10`) derives per-tick `LoopPeriod` flags (1000/500/250/200/20 Hz, integer divisors of 1000 enforced by `static_assert`) and currently drives **only the ADC update**. The fast/slow/ETB branches are `//TODO` stubs; the real drivers of `periodicFastCallback`/`periodicSlowCallback` are still the legacy `PeriodicFastController`/`PeriodicSlowController` virtual timers in `engine_controller.cpp` (started by `initPeriodicEvents()`). Both are started in `rusefi.cpp`. When touching rates, `main_loop.h` is the single source of truth either way.
 
 `PeriodicController` base (`periodic_thread_controller.h`) sleeps until a window measured from loop *start* (`chThdSleepUntilWindowed`), so the frequency stays constant regardless of how long the task body takes.
+
+Do not confuse that thread base with `PeriodicTimerController`
+(`firmware/controllers/system/periodic_task.{h,cpp}`). Its `start()` runs the first
+iteration synchronously, then `chVTSetAny` schedules subsequent iterations in
+virtual-timer interrupt context. Code reached through module `onFastCallback()`
+must therefore remain safe in interrupt context; a passing host test does not
+establish that blocking calls are safe there. When exposing a control action through
+a console/TS command, hand off the request with appropriate synchronization rather
+than concurrently driving callback-owned state from the command thread.
 
 ### periodicFastCallback (200 Hz)
 

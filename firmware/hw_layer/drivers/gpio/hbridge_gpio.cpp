@@ -1,0 +1,117 @@
+#include "pch.h"
+
+#include "hbridge_gpio.h"
+
+#include "dc_motors.h"
+
+#if (EFI_PROD_CODE && BOARD_HBRIDGE_GPIO_COUNT > 0) || EFI_UNIT_TEST
+
+class HbridgeGpio final : public GpioChip {
+public:
+	int init() override {
+		for (size_t i = 0; i < ETB_COUNT; i++) {
+			m_motors[i] = nullptr;
+			m_frequency[i] = 0;
+
+			if (engineConfiguration->etbFunctions[i] == DC_Gpio) {
+				m_motors[i] = initDcMotor("H-bridge GPIO inactive", engineConfiguration->etbIo[i], i,
+					engineConfiguration->etb_use_two_wires);
+				m_motors[i]->disable("H-bridge GPIO inactive");
+			}
+		}
+
+		return 0;
+	}
+
+	int setPadMode(size_t pin, iomode_t mode) override {
+		auto motor = getMotor(pin);
+		if (!motor) {
+			if (mode == PAL_MODE_OUTPUT_PUSHPULL) {
+				configError("H-bridge GPIO %d requires DC function GPIO", static_cast<int>(pin + 1));
+			}
+
+			return -1;
+		}
+
+		if (mode == PAL_MODE_OUTPUT_PUSHPULL) {
+			motor->enable();
+		} else {
+			motor->disable("H-bridge GPIO inactive");
+		}
+
+		return 0;
+	}
+
+	int writePad(size_t pin, int value) override {
+		auto motor = getMotor(pin);
+		if (!motor) {
+			return -1;
+		}
+
+		motor->set(value ? 1.0f : 0.0f);
+		return 0;
+	}
+
+	int readPad(size_t pin) override {
+		auto motor = getMotor(pin);
+		return motor ? motor->get() > 0.5f : -1;
+	}
+
+	/**
+	 * PWM output: the requested duty goes straight to the bridge, which already runs its own
+	 * hardware PWM on the direction/enable pins (see initDcMotor()). This is what makes
+	 * startSimplePwm() on an H-bridge GPIO pin use hardware duty (via gpiochip_tryInitPwm())
+	 * instead of bit-banging the motor from the software PWM scheduler.
+	 *
+	 * The slot is started at etbFreq; the consumer's frequency is programmed into the bridge's
+	 * timer on the first call (external_hardware_pwm::setDuty() repeats the same frequency, which
+	 * is a no-op here). If the timer cannot do that frequency we report failure: gpiochip_tryInitPwm()
+	 * then falls back to software PWM through writePad(), i.e. the bridge stays at full duty and the
+	 * scheduler chops it at the requested rate - the right result for frequencies below the timer's
+	 * range. Timer frequency is shared by every channel of that timer.
+	 */
+	int setPadPWM(size_t pin, float frequency, float duty) override {
+		auto motor = getMotor(pin);
+		if (!motor) {
+			return -1;
+		}
+
+		if (frequency != m_frequency[pin]) {
+			if (!setDcMotorFrequency(pin, static_cast<int>(frequency))) {
+				return -1;
+			}
+
+			m_frequency[pin] = frequency;
+		}
+
+		motor->set(duty);
+		return 0;
+	}
+
+private:
+	DcMotor* getMotor(size_t pin) const {
+		return pin < ETB_COUNT ? m_motors[pin] : nullptr;
+	}
+
+	DcMotor* m_motors[ETB_COUNT] = {};
+	// frequency currently programmed for the PWM consumer, 0 = none yet (slot runs at etbFreq)
+	float m_frequency[ETB_COUNT] = {};
+};
+
+static HbridgeGpio hbridgeGpio;
+
+#endif
+
+int hbridgeGpio_add() {
+#if EFI_PROD_CODE && BOARD_HBRIDGE_GPIO_COUNT > 0
+	return gpiochip_register(Gpio::HBRIDGE_1_OUT, "H-bridge", hbridgeGpio, ETB_COUNT);
+#else
+	return 0;
+#endif
+}
+
+#if EFI_UNIT_TEST
+GpioChip& getHbridgeGpioForUnitTest() {
+	return hbridgeGpio;
+}
+#endif

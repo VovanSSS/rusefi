@@ -19,116 +19,9 @@
 #include "injector_model.h"
 #include "tunerstudio.h"
 
-#include "rusefi/efistring.h"
-
 #if ! EFI_UNIT_TEST
 #include "status_loop.h"
 #endif
-
-WarningCodeState::WarningCodeState() {
-	clear();
-}
-
-void WarningCodeState::clear() {
-	warningCounter = 0;
-	lastErrorCode = ObdCode::None;
-	recentWarnings.clear();
-}
-
-void WarningCodeState::addWarningCode(ObdCode code, const char *text) {
-	warningCounter++;
-	lastErrorCode = code;
-
-	warning_t* existing = recentWarnings.find(code);
-	if (!existing) {
-		chibios_rt::CriticalSectionLocker csl;
-
-		// Add the code to the list
-		existing = recentWarnings.add(warning_t(code));
-	}
-
-	if (existing) {
-		// Reset the timer on the code to now
-		existing->LastTriggered.reset();
-
-		// no pending message? lets try to add this
-		if ((m_msgWarning == nullptr) && (text)) {
-			strlncpy(m_msg, text, sizeof(m_msg));
-			m_msgWarning = existing;
-		}
-	}
-
-	// Reset the "any warning" timer too
-	timeSinceLastWarning.reset();
-}
-
-void WarningCodeState::refreshTs() {
-	output_channels_s *tsOutputChannels = &engine->outputChannels;
-	const int period = maxI(3, engineConfiguration->warningPeriod);
-
-	// TODO: do we neet this sticky warning code?
-	tsOutputChannels->warningCounter = engine->engineState.warnings.warningCounter;
-	tsOutputChannels->lastErrorCode = static_cast<uint16_t>(engine->engineState.warnings.lastErrorCode);
-
-	// TODO: fix OBD codes "jumping" between positions when one of codes disapears
-
-	size_t i = 0;
-	for (size_t j = 0; j < recentWarnings.getCount(); j++) {
-		warning_t& warn = recentWarnings.get(j);
-		if (warn.Code != ObdCode::None) {
-			if (!warn.LastTriggered.hasElapsedSec(period)) {
-				if (i < efi::size(tsOutputChannels->recentErrorCode)) {
-					tsOutputChannels->recentErrorCode[i] = static_cast<uint16_t>(warn.Code);
-					i++;
-				}
-			} else {
-				// warning message is outdated, stop showing to TS
-				if (m_msgWarning == &warn) {
-					m_msg[0] = 0;
-					m_msgWarning = nullptr;
-				}
-				// TODO:
-				// reset warning as it is outdated
-			}
-		}
-	}
-
-	// reset rest
-	for ( ; i < efi::size(tsOutputChannels->recentErrorCode); i++) {
-		tsOutputChannels->recentErrorCode[i] = 0;
-	}
-}
-
-bool WarningCodeState::hasWarningMessage() {
-	// Do we have any error code to show as text?
-	return (m_msgWarning != nullptr);
-}
-
-const char* WarningCodeState::getWarningMessage() {
-	return m_msg;
-}
-
-/**
- * @param forIndicator if we want to retrieving value for TS indicator, this case a minimal period is applued
- */
-bool WarningCodeState::isWarningNow() const {
-	int period = maxI(3, engineConfiguration->warningPeriod);
-
-	return !timeSinceLastWarning.hasElapsedSec(period);
-}
-
-// Check whether a particular warning is active
-bool WarningCodeState::isWarningNow(ObdCode code) const {
-	warning_t* warn = recentWarnings.find(code);
-
-	// No warning found at all
-	if (!warn) {
-		return false;
-	}
-
-	// If the warning is old, it is not active
-	return !warn->LastTriggered.hasElapsedSec(maxI(3, engineConfiguration->warningPeriod));
-}
 
 EngineState::EngineState() {
 	timeSinceLastTChargeK.reset(getTimeNowNt());
@@ -145,6 +38,7 @@ void EngineState::updateSparkSkip() {
 			 * https://github.com/rusefi/rusefi/issues/6566#issuecomment-2153149902).
 			 */
 			engine->launchController.getSparkSkipRatio() + engine->shiftTorqueReductionController.getSparkSkipRatio()
+				+ engine->module<RollingLaunchControl>().unmock().getSparkSkipRatio()
 		);
 #endif // EFI_LAUNCH_CONTROL
 }
@@ -259,7 +153,7 @@ void EngineState::periodicFastCallback() {
 #if EFI_LTFT_CONTROL
 				ltftResult.banks[bankIndex] *
 #endif
-				1.0;
+					1.0;
 		auto cylinderTrim = getCylinderFuelTrim(cylinderIndex, rpm, fuelLoad);
 		auto knockTrim = engine->module<KnockController>()->getFuelTrimMultiplier();
 
@@ -299,14 +193,23 @@ void EngineState::periodicFastCallback() {
 
 #if EFI_ENGINE_CONTROL
 void EngineState::updateTChargeK(float rpm, float tps) {
+	// [tag:charge_temperature_startup] Finite fallbacks must not consume startup
+	// initialization. Bypass the limiter once for each sensor's first valid reading,
+	// including staggered CLT/IAT arrival. Later sensor loss must not reset these latches.
+	const bool firstClt = !m_tChargeCltInitialized && Sensor::get(SensorType::Clt);
+	const bool firstIat = !m_tChargeIatInitialized && Sensor::get(SensorType::Iat);
 	float newTCharge = engine->fuelComputer.getTCharge(rpm, tps);
 	if (!std::isnan(newTCharge)) {
 		// control the rate of change or just fill with the initial value
 		efitick_t nowNt = getTimeNowNt();
 		float secsPassed = timeSinceLastTChargeK.getElapsedSeconds(nowNt);
-		sd.tCharge = (sd.tChargeK == 0) ? newTCharge : limitRateOfChange(newTCharge, sd.tCharge, engineConfiguration->tChargeAirIncrLimit, engineConfiguration->tChargeAirDecrLimit, secsPassed);
+		sd.tCharge = (sd.tChargeK == 0 || firstClt || firstIat)
+			? newTCharge
+			: limitRateOfChange(newTCharge, sd.tCharge, engineConfiguration->tChargeAirIncrLimit, engineConfiguration->tChargeAirDecrLimit, secsPassed);
 		sd.tChargeK = convertCelsiusToKelvin(sd.tCharge);
 		timeSinceLastTChargeK.reset(nowNt);
+		m_tChargeCltInitialized |= firstClt;
+		m_tChargeIatInitialized |= firstIat;
 	}
 }
 #endif

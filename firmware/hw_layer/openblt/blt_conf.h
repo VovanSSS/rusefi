@@ -92,11 +92,6 @@
 
 /** \brief Configure number of bytes in the host->target CAN message. */
 #define BOOT_COM_CAN_RX_MAX_DATA        (8)
-/** \brief Select the desired CAN peripheral as a zero based index. */
-#ifndef BOOT_COM_CAN_CHANNEL_INDEX
-#define BOOT_COM_CAN_CHANNEL_INDEX      (0)
-#endif /* BOOT_COM_CAN_CHANNEL_INDEX */
-
 /* The RS232 communication interface is selected by setting the BOOT_COM_RS232_ENABLE
  * configurable to 1. Configurable BOOT_COM_RS232_BAUDRATE selects the communication speed
  * in bits/second. The maximum amount of data bytes in a message for data transmission
@@ -219,7 +214,9 @@
  * BOOT_NVM_CHECKSUM_HOOKS_ENABLE.
  */
 /** \brief Enable/disable the NVM hook function for supporting additional memory devices. */
+#ifndef BOOT_NVM_HOOKS_ENABLE
 #define BOOT_NVM_HOOKS_ENABLE           (0)
+#endif
 /** \brief Configure the size of the default memory device (typically flash EEPROM). */
 #define BOOT_NVM_SIZE_KB                (2048)
 /** \brief Enable/disable hooks functions to override the user program checksum handling. */
@@ -258,7 +255,9 @@
  */
 #define BOOT_XCP_SEED_KEY_ENABLE        (0)
 
+#ifndef BOOT_XCP_UPLOAD_ENABLE
 #define BOOT_XCP_UPLOAD_ENABLE          (0)
+#endif
 
 /** \brief Enable custom plain-text probes ('?' version, 0xBF board signature). */
 #ifndef BOOT_XCP_PACKET_RECEIVED_HOOK

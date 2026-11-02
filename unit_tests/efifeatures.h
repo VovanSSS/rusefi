@@ -7,11 +7,22 @@
 
 #pragma once
 
+#ifndef KNOCK_SPECTROGRAM
+#define KNOCK_SPECTROGRAM FALSE
+#endif
+
+#ifndef EFI_UDS
+#define EFI_UDS TRUE
+#endif
+
 #define EFI_ENABLE_ASSERTS TRUE
 
 #define EFI_ANTILAG_SYSTEM TRUE
 
 #define EFI_TUNER_STUDIO TRUE
+
+// scattered ("Full Optimized - High Speed") output channel reads, see handleScatteredReadCommand()
+#define EFI_TS_SCATTER TRUE
 
 #define EFI_AUX_VALVES TRUE
 
@@ -72,6 +83,7 @@
 #define EFI_MAP_AVERAGING TRUE
 
 #define EFI_LUA TRUE
+#define LUA_I2C_DAC TRUE
 
 #define EFI_HPFP TRUE
 

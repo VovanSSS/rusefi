@@ -11,6 +11,7 @@ import com.rusefi.core.io.UnsupportedEcuInfo;
 import com.rusefi.io.serial.BufferedSerialIoStream;
 import com.rusefi.io.serial.StreamConnector;
 import com.rusefi.io.can.PCanIoStream;
+import com.rusefi.io.can.SLCANConnector;
 import com.rusefi.io.can.SocketCANIoStream;
 import com.rusefi.io.tcp.TcpConnector;
 import com.rusefi.io.tcp.TcpIoStream;
@@ -19,6 +20,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.io.Closeable;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
@@ -37,6 +39,7 @@ import static com.devexperts.logging.Logging.getLogging;
 public class LinkManager implements Closeable {
     private static final Logging log = getLogging(LinkManager.class);
     public static final String PCAN = "PCAN";
+    public static final String SLCAN_PREFIX = "SLCAN:";
     public static final String SOCKET_CAN = "SocketCAN";
     // Synthetic marker for a board in the STM32 built-in bootloader (DFU). Not a real serial port —
     // never opened as a stream; used only to surface DFU in the ports list [tag:better_ux_for_flashing].
@@ -297,12 +300,14 @@ public class LinkManager implements Closeable {
     private final CommunicationThreadFactory COMMUNICATION_THREAD_FACTORY = new CommunicationThreadFactory();
     /**
      * All request/responses to underlying controller are happening on this single-threaded executor in a FIFO manner
+     * No permanent core thread: discovery discards LinkManagers after each probe. Idle workers
+     * must exit, while the executor remains usable after close() for console reconnects.
      */
     public final ExecutorService COMMUNICATION_EXECUTOR = new ThreadPoolExecutor(
+        0,
         1,
-        1,
-        0L,
-        TimeUnit.MILLISECONDS,
+        1L,
+        TimeUnit.SECONDS,
         COMMUNICATION_QUEUE,
         COMMUNICATION_THREAD_FACTORY
     );
@@ -365,6 +370,15 @@ public class LinkManager implements Closeable {
                 return stream;
             };
             setConnector(new StreamConnector(this, streamFactory));
+        } else if (isSlcanPort(port)) {
+            setConnector(new StreamConnector(this, () -> {
+                try {
+                    return SLCANConnector.createStream(port.substring(SLCAN_PREFIX.length()), 6);
+                } catch (java.io.IOException e) {
+                    log.info("Unable to open " + port + ": " + e.getMessage());
+                    return null;
+                }
+            }));
         } else if (isSocketCan(port)) {
             Callable<IoStream> streamFactory = SocketCANIoStream::createStream;
             setConnector(new StreamConnector(this, streamFactory));
@@ -377,8 +391,8 @@ public class LinkManager implements Closeable {
                         return TcpIoStream.open(port);
                     } catch (Throwable e) {
                         log.error("TCP error " + e);
-                        stateListener.onConnectionFailed("Error " + e);
-                        return null;
+                        // PortHolder owns failure notification so cancelled opens stay silent.
+                        throw new IllegalStateException("Error " + e, e);
                     }
                 }
             };
@@ -410,6 +424,14 @@ public class LinkManager implements Closeable {
         return PCAN.equals(port);
     }
 
+    public static boolean isCanPort(String port) {
+        return PCAN.equals(port) || SOCKET_CAN.equals(port) || isSlcanPort(port);
+    }
+
+    public static boolean isSlcanPort(String port) {
+        return port != null && port.startsWith(SLCAN_PREFIX);
+    }
+
     public void setConnector(LinkConnector connector) {
         if (isStarted) {
             throw new IllegalStateException("Already started");
@@ -424,7 +446,7 @@ public class LinkManager implements Closeable {
 
     public static boolean isSpecialNotSerial(String port) {
         // DFU is a synthetic, non-serial marker [tag:better_ux_for_flashing] — never open it as a stream.
-        return isLogViewerMode(port) || isPcanPort(port) || isSocketCan(port) || TcpConnector.isTcpPort(port) || isDfu(port);
+        return isLogViewerMode(port) || isCanPort(port) || TcpConnector.isTcpPort(port) || isDfu(port);
     }
 
     public static boolean isLogViewerMode(String port) {
@@ -459,8 +481,8 @@ public class LinkManager implements Closeable {
         // PCAN / SocketCAN / TCP are not serial ports, so they never appear in getCommPorts()
         // and are always available - reconnect them directly instead of dropping the session
         // (previously a watchdog restart over CAN killed the console link for good).
-        final boolean isNonSerialTransport = isPcanPort(lastTriedPort) || isSocketCan(lastTriedPort) || TcpConnector.isTcpPort(lastTriedPort);
-        final boolean isPortAvailableAgain = isNonSerialTransport || getCommPorts().contains(lastTriedPort);
+        final Set<String> ports = isSocketCan(lastTriedPort) ? Collections.emptySet() : getCommPorts();
+        final boolean isPortAvailableAgain = isPortAvailableForReconnect(lastTriedPort, ports);
         log.info("restart isPortAvailableAgain=" + isPortAvailableAgain + " port=" + lastTriedPort);
         if (isPortAvailableAgain) {
             // Use isScanningForEcu=true to prevent ExitUtil.exit() on failure -
@@ -470,6 +492,10 @@ public class LinkManager implements Closeable {
         } else {
             log.info("restart: port not available, skipping connect");
         }
+    }
+
+    static boolean isPortAvailableForReconnect(String port, Set<String> serialPorts) {
+        return isCanPort(port) || TcpConnector.isTcpPort(port) || serialPorts.contains(port);
     }
 
     @Override

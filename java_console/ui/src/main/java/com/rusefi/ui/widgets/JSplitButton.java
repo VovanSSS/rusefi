@@ -15,6 +15,7 @@ public class JSplitButton extends JPanel {
     private final JButton mainButton;
     private final JButton arrowButton;
     private JPopupMenu popupMenu;
+    private int fixedHeight;
 
     public JSplitButton(String text) {
         this(text, null);
@@ -43,6 +44,21 @@ public class JSplitButton extends JPanel {
 
     public void setIcon(Icon icon) {
         mainButton.setIcon(icon);
+    }
+
+    /** Keeps the natural width but uses {@code height}, e.g. a toolbar's control height; 0 for natural. */
+    public void setFixedHeight(int height) {
+        fixedHeight = height;
+        revalidate();
+    }
+
+    @Override
+    public Dimension getPreferredSize() {
+        Dimension size = super.getPreferredSize();
+        if (fixedHeight > 0 && !isPreferredSizeSet()) {
+            size.height = fixedHeight;
+        }
+        return size;
     }
 
     public void setText(String text) {
@@ -87,10 +103,8 @@ public class JSplitButton extends JPanel {
     @Override
     protected void paintBorder(Graphics g) {
         int arc = UIManager.getInt("Button.arc");
-        Color borderColor = UIManager.getColor("Component.borderColor");
-        if (borderColor == null) {
-            borderColor = Color.GRAY;
-        }
+        Color themedBorder = UIManager.getColor("Component.borderColor");
+        Color borderColor = themedBorder != null ? themedBorder : Color.GRAY;
         Graphics2D g2 = (Graphics2D) g.create();
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2.setColor(borderColor);

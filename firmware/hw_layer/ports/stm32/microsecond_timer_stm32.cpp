@@ -4,11 +4,11 @@
  * A single upcounting timer (currently TIM5) is used as a single timebase both for time
  * measurement and event scheduling.  This helps reduce jitter by not making another time
  * measurement at the time of scheduling.
- * 
+ *
  * This implementation only works on stm32 because it sets hardware registers directly.
- * ChibiOS doesn't support using timers in output compare mode, only PMW, so we have to 
+ * ChibiOS doesn't support using timers in output compare mode, only PMW, so we have to
  * manually configure the timer in outupt compare mode.
- * 
+ *
  * @date Dec 1, 2020
  * @author Matthew Kennedy, (c) 2012-2020
  */

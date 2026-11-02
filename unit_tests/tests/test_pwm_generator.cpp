@@ -69,7 +69,7 @@ static void testSwitchToNanPeriod() {
 			&executor,
 			&pin,
 			1000 /* frequency */,
-			0.60 /* duty cycle */);
+			0.60f /* duty cycle */);
 
 	expectedTimeOfNextEvent += 600;
 	ASSERT_EQ(expectedTimeOfNextEvent, executor.getForUnitTest(0)->getMomentUs()) << "1@1000/70";
@@ -91,6 +91,23 @@ static void testSwitchToNanPeriod() {
 	assertNextEvent("exec3@NAN", LOW_VALUE, &executor, pin);
 }
 
+// An H-bridge GPIO pin is a regular PWM-capable output. On real hardware startSimplePwm()
+// routes it to the bridge's hardware duty via gpiochip_tryInitPwm() / HbridgeGpio::setPadPWM()
+// (see test_dc_hardware_pool.cpp); the unit-test build has no gpiochip PWM path, so here the
+// generic software PWM must start like it does for any other pin.
+TEST(PWM, HbridgeGpioAcceptsPwm) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	OutputPin pin;
+	SimplePwm pwm;
+	TestExecutor executor;
+
+	pin.initPin("H-bridge GPIO", Gpio::HBRIDGE_1_OUT);
+	startSimplePwm(&pwm, "H-bridge GPIO", &executor, &pin, 100, 0.5f);
+
+	EXPECT_FALSE(hasConfigError());
+	EXPECT_EQ(1, executor.size());
+}
+
 TEST(PWM, testPwmGenerator) {
 	test100dutyCycle();
 	testSwitchToNanPeriod();
@@ -107,7 +124,7 @@ TEST(PWM, testPwmGenerator) {
 			&executor,
 			&pin,
 			1000 /* frequency */,
-			0.80 /* duty cycle */);
+			0.80f /* duty cycle */);
 
 	expectedTimeOfNextEvent += 800;
 	ASSERT_EQ(expectedTimeOfNextEvent, executor.getForUnitTest(0)->getMomentUs()) << "1@1000/80";

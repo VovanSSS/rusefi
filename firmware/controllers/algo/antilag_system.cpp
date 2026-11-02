@@ -29,7 +29,8 @@ bool AntilagSystemBase::isInsideALSSwitchCondition() {
 	} else if (engineConfiguration->antiLagActivationMode == ALWAYS_ON_ANTILAG) {
 		return true;
 	} else {
-	  criticalError("Unexpected antiLagActivationMode");
+		// [tag:user_facing_ini_labels] "Activation Mode" in the AntiLag INI dialog.
+		criticalError("Invalid Activation Mode in AntiLag/Rotational Idle Settings: %d", engineConfiguration->antiLagActivationMode);
 		return false;
 	}
 }
@@ -43,24 +44,29 @@ bool AntilagSystemBase::isALSMaxRPMCondition(float rpm) const {
 }
 
 bool AntilagSystemBase::isALSMinCLTCondition() const {
-	int clt = Sensor::getOrZero(SensorType::Clt);
+	int clt = static_cast<int>(Sensor::getOrZero(SensorType::Clt));
 
 	return engineConfiguration->ALSMinCLT < clt;
 }
 
 bool AntilagSystemBase::isALSMaxCLTCondition() const {
-	int clt = Sensor::getOrZero(SensorType::Clt);
+	int clt = static_cast<int>(Sensor::getOrZero(SensorType::Clt));
 
 	return engineConfiguration->ALSMaxCLT > clt;
 }
 
 bool AntilagSystemBase::isALSMaxThrottleIntentCondition() const {
-	int throttleIntent = Sensor::getOrZero(SensorType::DriverThrottleIntent);
+	auto throttleIntent = Sensor::get(SensorType::DriverThrottleIntent);
 
-	return engineConfiguration->ALSMaxTPS > throttleIntent;
+	return throttleIntent.Valid && engineConfiguration->ALSMaxTPS > static_cast<int>(throttleIntent.Value);
 }
 
 bool AntilagSystemBase::isInsideALSTimerCondition() {
+	// A zero timeout leaves anti-lag duration unrestricted.
+	if (engineConfiguration->ALSMaxDuration <= 0) {
+		return true;
+	}
+
 	auto ALStime = ALStimer.getElapsedSeconds();
 
 	return ALStime < engineConfiguration->ALSMaxDuration;
@@ -75,11 +81,7 @@ bool AntilagSystemBase::isAntilagConditionMet(float rpm) {
 	ALSMaxCLTCondition = isALSMaxCLTCondition();
 	ALSMaxThrottleIntentCondition = isALSMaxThrottleIntentCondition();
 	ALSSwitchCondition = isInsideALSSwitchCondition();
-	ALSTimerCondition = true;
-/*
-todo: looking for a hero to figure out unit test part of this
 	ALSTimerCondition = isInsideALSTimerCondition();
-	*/
 
 	return ALSMinRPMCondition &&
 	    ALSMaxRPMCondition &&

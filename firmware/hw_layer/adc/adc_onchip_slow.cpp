@@ -11,6 +11,8 @@
 #if HAL_USE_ADC
 
 #include "adc_device.h"
+#include "adc_sample_buffer.h"
+#include "adc_onchip.h"
 
 #ifndef SLOW_ADC_CHANNEL_COUNT
 #ifdef ADC_MUX_PIN
@@ -49,6 +51,10 @@ void adcOnchipSlowUpdate(efitick_t nowNt) {
 
 	ScopePerf perf(PE::AdcConversionSlow);
 
+#if EFI_ADC3_SLOW
+	adc3SlowUpdate();
+#endif
+
 	/* drop volatile type qualifier - this is safe */
 	if (!readSlowAnalogInputs((adcsample_t *)slowAdcSamples)) {
 		engine->outputChannels.slowAdcErrorCount++;
@@ -71,9 +77,14 @@ void adcOnchipSlowUpdate(efitick_t nowNt) {
 	mcuVrefVoltage = getMcuVrefVoltage();
 }
 
-adcsample_t adcOnchipSlowGetAvgRaw(adc_channel_e hwChannel)
+int adcOnchipSlowGetAvgRaw(adc_channel_e hwChannel)
 {
-	return slowAdcSamples[hwChannel - EFI_ADC_0];
+#if EFI_ADC3_SLOW
+	if (hwChannel >= EFI_ADC_32 && hwChannel <= EFI_ADC_39) {
+		return adc3SlowRead(hwChannel);
+	}
+#endif
+	return readSlowAdcSample(slowAdcSamples, SLOW_ADC_CHANNEL_COUNT, hwChannel - EFI_ADC_0);
 }
 
 extern void adcPrintChannelReport(const char *prefix, int internalIndex, adc_channel_e hwChannel);

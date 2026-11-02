@@ -29,15 +29,25 @@ public class TsOutput {
     private final boolean isConstantsSection;
     private final StringBuilder tsHeader = new StringBuilder();
     private final TreeSet<String> usedNames;
+    private final int tsPage;
     private boolean directiveSeen = false; // pretty lame hack but acceptable since we are moving away from directive anyway
 
     public TsOutput(boolean longForm) {
-        this(longForm, new TreeSet<>(String.CASE_INSENSITIVE_ORDER));
+        this(longForm, new TreeSet<>(String.CASE_INSENSITIVE_ORDER), 1);
     }
 
     public TsOutput(boolean longForm, TreeSet<String> usedNames) {
+        this(longForm, usedNames, 1);
+    }
+
+    public TsOutput(boolean longForm, TreeSet<String> usedNames, int tsPage) {
         this.isConstantsSection = longForm;
         this.usedNames = usedNames;
+        this.tsPage = tsPage;
+    }
+
+    public static String pageOffsetPrefix(int page) {
+        return "TS_PAGE_" + page + "_OFFSET_";
     }
 
 //    private final String metricUnitsConditionalStart = "#if USE_METRIC_UNITS" + EOL;
@@ -65,6 +75,16 @@ public class TsOutput {
 
     public String getSettingContextHelp() {
         return settingContextHelp.toString();
+    }
+
+    private static boolean isBigEndianBitOrder(ReaderState state) {
+        try {
+            String value = state.getVariableRegistry().applyVariables("@@TS_INI_ENDIANNESS@@");
+            return "big".equals(value.trim());
+        } catch (IllegalStateException e) {
+            // not defined, e.g. live data generation outside rusefi_config.txt: little-endian
+            return false;
+        }
     }
 
     public int run(ReaderState state, ConfigStructure structure, int structureStartingTsPosition, String temporaryLineComment, String variableNamePrefix) {
@@ -187,11 +207,20 @@ public class TsOutput {
                     return writeFields(cs.getTsFields(), prefix + extraPrefix, tsPosition);
                 }
 
+                // [tag:wue_analyzer] Also supplies the offsets used by the WUE analyzer aliases.
+                if (isConstantsSection && !configField.isDirective() && !configField.isUnusedField()
+                        && (!configField.isArray() || configField.getSize(next) != 0)) {
+                    // Template-only byte offsets: aliases can share storage without hard-coded addresses.
+                    // put(), rather than register(), avoids exporting these as C/Java constants.
+                    state.getVariableRegistry().put(pageOffsetPrefix(tsPage) + nameWithPrefix, Integer.toString(tsPosition));
+                }
+
                 if (configField.isBit()) {
                     if (!configField.getName().startsWith(ConfigStructureImpl.UNUSED_BIT_PREFIX)) {
                         tsHeader.append(temporaryLineComment + nameWithPrefix + " = bits, U32,");
                         tsHeader.append(" " + tsPosition + ", [");
-                        tsHeader.append(bitIndex + ":" + bitIndex);
+                        int tsBit = isBigEndianBitOrder(state) ? 31 - bitIndex : bitIndex;
+                        tsHeader.append(tsBit + ":" + tsBit);
                         tsHeader.append("]");
                         if (isConstantsSection)
                             tsHeader.append(", \"" + configField.getFalseName() + "\", \"" + configField.getTrueName() + "\"");
