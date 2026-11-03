@@ -130,6 +130,11 @@ public class EcuHardwareProbes implements SerialPortScanner.HardwareProbes {
     }
 
     @Override
+    public boolean isPcanConnected() {
+        return MaintenanceUtil.detectPcan(UpdateOperationCallbacks.DUMMY);
+    }
+
+    @Override
     public boolean isStLinkConnected() {
         return StLinkFlasher.detectStLink(UpdateOperationCallbacks.DUMMY);
     }

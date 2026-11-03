@@ -67,6 +67,8 @@ public class SerialPortScanner implements PortScanner {
 
         boolean isDfuDeviceConnected();
 
+        boolean isPcanConnected();
+
         boolean isStLinkConnected();
 
         /** Clock used for the device-probe throttle; injectable so tests can script time. */
@@ -285,11 +287,10 @@ public class SerialPortScanner implements PortScanner {
             return;
         }
 
-        List<PortResult> ports = new ArrayList<>();
-        boolean dfuConnected;
-        boolean stLinkConnected;
-        boolean PCANConnected;
-        boolean socketCanAvailable;
+        		List<PortResult> ports = new ArrayList<>();
+        		boolean dfuConnected;
+        		boolean stLinkConnected;
+        		boolean socketCanAvailable;
 
         // ttyS* are legacy motherboard UARTs on Linux — never a rusEFI ECU and they stall
         // the binary protocol handshake for seconds.  Drop them before the scan pipeline.
@@ -410,8 +411,8 @@ public class SerialPortScanner implements PortScanner {
         // Surface the PCAN adapter as a synthetic CAN port so it can be picked from the dropdown.
         // Detection is throttled and last-known values are reused between probes, so the entry just
         // tracks the probe's cached result.
-        if (PCANConnected)
-            ports.add(new PortResult(LinkManager.PCAN, SerialPortType.CAN));
+        		if (lastPcanConnected)
+            			ports.add(new PortResult(LinkManager.PCAN, SerialPortType.CAN));
 /*
         if (SHOW_SOCKETCAN)
             ports.add(new PortResult(LinkManager.SOCKET_CAN, SerialPortType.CAN));
@@ -425,9 +426,8 @@ public class SerialPortScanner implements PortScanner {
         // Sort after every transport and synthetic device has been added.
         boolean isListUpdated;
         AvailableHardware currentHardware;
-        synchronized (lock) {
-            PCANConnected = lastPcanConnected;
-            socketCanAvailable = lastSocketCanAvailable;
+        		synchronized (lock) {
+            			socketCanAvailable = lastSocketCanAvailable;
             if (lastPcanPort != null) {
                 ports.add(lastPcanPort);
             }
@@ -435,8 +435,8 @@ public class SerialPortScanner implements PortScanner {
                 ports.add(lastSocketCanPort);
             }
             ports.sort(Comparator.comparingInt(a -> a.type.sortOrder));
-            currentHardware = new AvailableHardware(
-                ports, dfuConnected, stLinkConnected, PCANConnected, socketCanAvailable);
+            			currentHardware = new AvailableHardware(
+                				ports, dfuConnected, stLinkConnected, lastPcanConnected, socketCanAvailable);
             isListUpdated = !knownHardware.equals(currentHardware);
             knownHardware = currentHardware;
         }
