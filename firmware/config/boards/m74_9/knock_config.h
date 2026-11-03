@@ -15,14 +15,16 @@
  * the chain). ADC3 stays with EFI_ADC3_SLOW (CLT/IAT live on the ADC3-only
  * F-port pins PF5/PF6) and has no other users.
  *
- * Timing: ADCCLK = HCLK/16/adcdiv = 5.94 MHz with adcdiv=1 (mcuconf
- * STM32_ADC_ADCPRE = DIV4, see the mcuconf.h comment). ADC_SAMPLE_56 programs
- * the Artery SPT bits to 24.5 cycles, one conversion = 24.5 + 12.5 = 37
- * cycles. VERIFY the real rate with the 'knocktest' console command and
- * adjust KNOCK_SAMPLE_RATE if it drifts. */
+ * Timing: ADCCLK = HCLK/(adcdiv+2) = 36 MHz with adcdiv=6 (mcuconf
+ * STM32_ADC_ADCPRE = DIV8 under HAL 9.1, which encodes the Artery
+ * ADC_CCTRL_ADCDIV directly - see the official CMSIS at32f435_437cx.h:
+ * ADCDIV_DIV8 = 0x00060000). ADC_SAMPLE_56 programs the Artery SPT bits to
+ * 24.5 cycles, one conversion = 24.5 + 12.5 = 37 cycles. VERIFY the real
+ * rate with the 'knocktest' console command and adjust KNOCK_SAMPLE_RATE
+ * if it drifts. */
 #define KNOCK_ADC ADCD1
 #define KNOCK_ADC_CH1 ADC_CHANNEL_IN0
 #define KNOCK_PIN_CH1 Gpio::A0
 
 #define KNOCK_SAMPLE_TIME ADC_SAMPLE_56
-#define KNOCK_SAMPLE_RATE (5940000 / (24 + 13))
+#define KNOCK_SAMPLE_RATE (36000000 / (24 + 13))
