@@ -303,6 +303,13 @@ static slowAdcState_t slowAdcState = convertPrimary;
  * Must be called with the system locked (ISR context in both users: the batch
  * end callback and the knock resume path). */
 static void slowAdcStartCurrentBatch() {
+	/* If the knock window stole the ADC (shared driver on m74_9), the driver is
+	 * ACTIVE (or COMPLETE) under the knock group, not READY. The slow batch must
+	 * NOT be (re)started here or adcStartConversionI() asserts "not ready"; the
+	 * knock completion callback resumes the slow chain instead. */
+	if ((EFI_SLOW_ADC.state != ADC_READY) && (EFI_SLOW_ADC.state != ADC_ERROR)) {
+		return;
+	}
 	switch (slowAdcState) {
 	case convertPrimary:
 		#ifdef ADC_MUX_PIN
