@@ -150,6 +150,11 @@ else
   USE_CPPOPT += -Werror=class-memaccess
 endif
 
+# The firmware build already disables this (rusefi_rules.mk); Mockable<T> deletes
+# polymorphic modules through a concrete unique_ptr, which is safe but trips the
+# warning on the non-virtual destructor.
+USE_CPPOPT += -Wno-delete-non-abstract-non-virtual-dtor
+
 # Enable address sanitizer for C++ files, but not on Windows since x86_64-w64-mingw32-g++ doesn't support it.
 # only c++ because lua does some things asan doesn't like, but don't actually cause overruns.
 ifeq ($(SANITIZE),yes)

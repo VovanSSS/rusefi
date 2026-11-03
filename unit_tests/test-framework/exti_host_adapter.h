@@ -5,6 +5,11 @@
 #if EFI_UNIT_TEST
 using ioline_t = uint32_t;
 
+// ChibiOS defines this in its PAL LLD headers; the unit-test build compiles
+// the digital_input_exti code without those headers (see the host adapter),
+// so provide the same sentinel value used by the real PAL drivers.
+#define PAL_NOLINE 0U
+
 struct ExtiChannelSnapshotForUnitTest {
 	ExtiCallback callback;
 	void* callbackData;

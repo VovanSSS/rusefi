@@ -29,13 +29,6 @@
 /* for isprint() */
 #include <ctype.h>
 
-#if EFI_PROD_CODE
-/* Defined in controllers/core/error_handling.cpp; set while the HardFault
- * handler is active. efiPrintfInternal must not take the system lock in that
- * context (see the guard below). */
-extern bool isInHardFaultHandler;
-#endif
-
 #if EFI_UNIT_TEST
 #include "mock-mailbox.h"
 #endif
@@ -105,45 +98,6 @@ size_t loggingSendOutputData(TsChannelBase* tsChannel) {
 	tsChannel->writeCrcPacketTail(crc);
 
 	return totalSize;
-}
-
-// Legacy drain kept for the branch-flavored console code: accumulates the queued
-// buffers into one null-terminated static buffer and returns it to the caller,
-// which sends it over the wire exactly like the pre-redesign swapOutputBuffers
-// did. New code should use loggingSendOutputData().
-#ifndef DL_OUTPUT_BUFFER
-// unit-test builds have no board features header: any packet-size buffer works
-#define DL_OUTPUT_BUFFER 6500
-#endif
-const char* swapOutputBuffers(size_t *actualOutputBufferSize) {
-	static char swapScratch[DL_OUTPUT_BUFFER];
-	size_t total = 0;
-
-	while (true) {
-		LogBufferBase *buf;
-		msg_t msg = filledBuffers.fetch(&buf, TIME_IMMEDIATE);
-
-		if (msg != MSG_OK) {
-			break;
-		}
-
-		const size_t used = buf->used();
-		if (used + 1 > efi::size(swapScratch) - total) {
-			// Does not fit in the remainder: put it back at the head of the
-			// queue so the next swap resumes with it (no data is lost).
-			chibios_rt::CriticalSectionLocker csl;
-			filledBuffers.postAheadI(buf);
-			break;
-		}
-
-		memcpy(&swapScratch[total], buf->getBuffer(), used);
-		total += used;
-		buf->free();
-	}
-
-	swapScratch[total] = '\0';
-	*actualOutputBufferSize = total;
-	return swapScratch;
 }
 
 // Despite the historical name there is no logging thread to start anymore:
@@ -221,16 +175,6 @@ void efiPrintfInternal(const char *format, ...) {
 		printf("\r\n");
 	}
 #endif
-#if (EFI_PROD_CODE || EFI_SIMULATOR) && EFI_TEXT_LOGGING
-	/* Never take the system lock inside the fault handler: chSysGetStatusAndLockX
-	 * sees IPSR != 0 there (no OSAL_IRQ_PROLOGUE in fault handlers) and routes
-	 * to chSysLockFromISR, whose SV#6 check trips and reboots the ECU while the
-	 * real fault info is being handled (m74_9, 2026-08-20). The fault marker in
-	 * the backup registers is written before any printf, so nothing is lost. */
-	if (::isInHardFaultHandler) {
-		return;
-	}
-#endif
 #if EFI_TEXT_LOGGING
 	LogLineBuffer* lineBuffer;
 	msg_t msg;
@@ -304,9 +248,5 @@ void loggingPostBuffer(LogBufferBase *buffer) {
 }
 #else
 void loggingPostBuffer(LogBufferBase *) {
-}
-const char* swapOutputBuffers(size_t *actualOutputBufferSize) {
-	*actualOutputBufferSize = 0;
-	return "";
 }
 #endif // EFI_TEXT_LOGGING

@@ -53,7 +53,7 @@ TEST_F(TriggerRpmStartup, PrimaryInputRegistersAndPublishesRpmWithoutSelfStimula
 	// edges gives 120 / 0.080 = 1500 RPM through the hardware-input handler.
 	for (int edge = 0; edge < 4; edge++) {
 		eth.moveTimeForwardAndInvokeEventsUs(40000);
-		hwHandleShaftSignal(0, edge % 2 == 0, getTimeNowNt());
+		hwHandleShaftSignal(0, edge % 2 == 0, getTimeNowNt(), /*acTimestamp*/0);
 	}
 	ASSERT_TRUE(engine->triggerCentral.triggerState.shaft_is_synchronized);
 	EXPECT_EQ(0u, engine->triggerCentral.triggerState.totalTriggerErrorCounter);

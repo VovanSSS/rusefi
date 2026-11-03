@@ -173,7 +173,7 @@ void checkStagedBatchTransition(StagedBatchTransition transition) {
 	// RUNTIME: feed the event a tooth interval containing its opening angle.
 	// The real scheduler opens both stages immediately and retains two closing
 	// callbacks, one per stage, for the end of the 11 ms pulse.
-	event.onTriggerTooth(getTimeNowNt(), 0, 10);
+	event.onTriggerTooth(getTimeNowNt(), 0, 10, 10);
 	ASSERT_EQ(1, eth.executeActions());
 	ASSERT_EQ(2, engine->scheduler.size());
 	ASSERT_TRUE(enginePins.injectorsStage2[0].getLogicValue());
@@ -226,7 +226,7 @@ void checkStagedBatchTransition(StagedBatchTransition transition) {
 	auto& nextEvent = engine->injectionEvents.elements[2];
 	ASSERT_EQ(1u << 3, nextEvent.calculateInjectorOutputMask());
 	nextEvent.injectionStartAngle = 0;
-	nextEvent.onTriggerTooth(getTimeNowNt(), 0, 10);
+	nextEvent.onTriggerTooth(getTimeNowNt(), 0, 10, 10);
 	ASSERT_EQ(1, eth.executeActions());
 	ASSERT_TRUE(enginePins.injectorsStage2[3].getLogicValue());
 	ASSERT_EQ(1, enginePins.injectorsStage2[3].getOverlappingCounter());

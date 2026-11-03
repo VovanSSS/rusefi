@@ -106,7 +106,7 @@ TEST(TriggerScheduler, issue9435OverdwellCancelDuringToothWalk) {
 	// lapsed overdwell action inline (emulated by OverdwellDuringToothWalkExecutor),
 	// so TriggerScheduler::cancel(&sparkB) runs mid-walk. Before the fix this walked
 	// the detached null list head and crashed.
-	ts->scheduleEventsUntilNextTriggerTooth(1000, getTimeNowNt(), 0, 180);
+	ts->scheduleEventsUntilNextTriggerTooth(1000, getTimeNowNt(), 0, 180, 180);
 
 	ASSERT_TRUE(executor.overdwellFired);
 	// sparkA was promoted, exactly once
@@ -115,7 +115,7 @@ TEST(TriggerScheduler, issue9435OverdwellCancelDuringToothWalk) {
 
 	// the mid-walk cancel took effect: sparkB is gone from the tooth list, so the
 	// tooth covering its angle promotes nothing
-	ts->scheduleEventsUntilNextTriggerTooth(1000, getTimeNowNt(), 180, 360);
+	ts->scheduleEventsUntilNextTriggerTooth(1000, getTimeNowNt(), 180, 360, 360);
 	EXPECT_EQ(1u, executor.scheduled.size()) << "canceled sparkB must not fire";
 
 	engine->scheduler.setMockExecutor(nullptr);
@@ -142,7 +142,7 @@ TEST(TriggerScheduler, issue9435CancelOfPendingPromotionDuringToothWalk) {
 	executor.overdwellVictim = &sparkB;
 	executor.promotionMarker = &sparkA.eventScheduling;
 
-	ts->scheduleEventsUntilNextTriggerTooth(1000, getTimeNowNt(), 0, 180);
+	ts->scheduleEventsUntilNextTriggerTooth(1000, getTimeNowNt(), 0, 180, 180);
 
 	ASSERT_TRUE(executor.overdwellFired);
 	// only sparkA reached the time-based scheduler; sparkB was canceled while
@@ -151,7 +151,7 @@ TEST(TriggerScheduler, issue9435CancelOfPendingPromotionDuringToothWalk) {
 	EXPECT_EQ(&sparkA.eventScheduling, executor.scheduled[0]);
 
 	// and it is not lingering in the tooth list either
-	ts->scheduleEventsUntilNextTriggerTooth(1000, getTimeNowNt(), 0, 180);
+	ts->scheduleEventsUntilNextTriggerTooth(1000, getTimeNowNt(), 0, 180, 180);
 	EXPECT_EQ(1u, executor.scheduled.size()) << "canceled sparkB must not fire";
 
 	engine->scheduler.setMockExecutor(nullptr);

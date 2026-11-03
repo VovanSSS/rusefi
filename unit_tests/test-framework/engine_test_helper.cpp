@@ -16,10 +16,6 @@
 #include "logicdata.h"
 #include "unit_test_logger.h"
 #include "hardware.h"
-#include "dc_motors.h"
-#include "idle_hardware.h"
-#include "electronic_throttle.h"
-#include "adc_subscription.h"
 // https://stackoverflow.com/questions/23427804/cant-find-mkdir-function-in-dirent-h-for-windows
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -54,9 +50,9 @@ EngineTestHelperBase::EngineTestHelperBase(Engine * eng, persistent_config_s * p
 	// todo: make this not a global variable, we need currentTimeProvider interface on engine
 	setTimeNowUs(0);
 	ButtonDebounce::resetForUnitTests();
-	AdcSubscription::resetForUnitTest();
-	resetMockAdcVoltages();
 
+	// Reset global error code set so checkEngine bit doesn't leak between tests
+	clearWarnings();
 	EnableToothLogger();
 	if (engine || engineConfiguration || config) {
 		firmwareError(ObdCode::OBD_PCM_Processor_Fault,
@@ -66,17 +62,11 @@ EngineTestHelperBase::EngineTestHelperBase(Engine * eng, persistent_config_s * p
 	engineConfiguration = &pers->engineConfiguration;
 	config = pers;
 
-	// Reset global error code set so checkEngine bit doesn't leak between tests
-	// NOTE: this needs valid engine pointer
-	clearWarnings();
-
 	setup_custom_fw_overrides();
 }
 
 EngineTestHelperBase::~EngineTestHelperBase() {
 	DisableToothLogger();
-	AdcSubscription::resetForUnitTest();
-	resetMockAdcVoltages();
 	engine = nullptr;
 	engineConfiguration = nullptr;
 	config = nullptr;
@@ -154,30 +144,22 @@ EngineTestHelper::EngineTestHelper(engine_type_e engineType, configuration_callb
 	enginePins.reset();
 	enginePins.unregisterPins();
 
-	// DC motor / idle stepper hardware objects are file-scope statics - reset them
-	// so tests do not observe pool slots started by earlier tests
-	resetDcHardwareForUnitTest();
-	resetIdleHardwareForUnitTest();
-
 	resetConfigErrorStateForUnitTest();
 
-	// logging central queues are file-scope statics too: drop lines and the
-	// engine sniffer buffer an earlier test left queued
-	resetLoggingForUnitTest();
 	waveChart.init();
 
 	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, -40, 1.5);
 	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, -30, 1.5);
-	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, -20, 1.42f);
-	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, -10, 1.36f);
-	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 0, 1.28f);
-	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 10, 1.19f);
-	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 20, 1.12f);
-	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 30, 1.10f);
-	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 40, 1.06f);
-	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 50, 1.06f);
-	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 60, 1.03f);
-	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 70, 1.01f);
+	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, -20, 1.42);
+	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, -10, 1.36);
+	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 0, 1.28);
+	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 10, 1.19);
+	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 20, 1.12);
+	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 30, 1.10);
+	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 40, 1.06);
+	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 50, 1.06);
+	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 60, 1.03);
+	setCurveValue(config->cltFuelCorrBins, config->cltFuelCorr, CLT_CURVE_SIZE, 70, 1.01);
 
 	initDataStructures();
 
@@ -265,11 +247,6 @@ EngineTestHelper::~EngineTestHelper() {
   closeUnitTestLog();
 
 	// Cleanup
-#if EFI_ELECTRONIC_THROTTLE_BODY
-	// [tag:etb_test_lifetime] Release static controllers' references before our
-	// persistentConfig is destroyed, even if a test installed mock controllers.
-	resetElectronicThrottleForUnitTest();
-#endif
   	// reset pin config state, will trigger isPinConfigurationChanged
 	enginePins.resetForUnitTest();
 	enginePins.reset();
@@ -303,22 +280,22 @@ void EngineTestHelper::writeEvents2(const char *fileName) {
  * DEPRECATED many usages should be migrated to
  */
 void EngineTestHelper::fireRise(float delayMs) {
-	moveTimeForwardUs(static_cast<int>(MS2US(delayMs)));
+	moveTimeForwardUs(MS2US(delayMs));
 	firePrimaryTriggerRise();
 }
 
 void EngineTestHelper::smartFireRise(float delayMs) {
-	moveTimeForwardAndInvokeEventsUs(static_cast<int>(MS2US(delayMs)));
+	moveTimeForwardAndInvokeEventsUs(MS2US(delayMs));
 	firePrimaryTriggerRise();
 }
 
 void EngineTestHelper::fireFall(float delayMs) {
-	moveTimeForwardUs(static_cast<int>(MS2US(delayMs)));
+	moveTimeForwardUs(MS2US(delayMs));
 	firePrimaryTriggerFall();
 }
 
 void EngineTestHelper::smartFireFall(float delayMs) {
-	moveTimeForwardAndInvokeEventsUs(static_cast<int>(MS2US(delayMs)));
+	moveTimeForwardAndInvokeEventsUs(MS2US(delayMs));
 	firePrimaryTriggerFall();
 }
 
@@ -385,11 +362,11 @@ int EngineTestHelper::executeActions() {
 }
 
 void EngineTestHelper::moveTimeForwardMs(float deltaTimeMs) {
-	moveTimeForwardUs(static_cast<int>(MS2US(deltaTimeMs)));
+	moveTimeForwardUs(MS2US(deltaTimeMs));
 }
 
 void EngineTestHelper::moveTimeForwardSec(float deltaTimeSec) {
-	moveTimeForwardUs(static_cast<int>(MS2US(1000 * deltaTimeSec)));
+	moveTimeForwardUs(MS2US(1000 * deltaTimeSec));
 }
 
 void EngineTestHelper::moveTimeForwardUs(int deltaTimeUs) {
@@ -416,7 +393,7 @@ void EngineTestHelper::moveTimeForwardAndInvokeEventsUs(int deltaTimeUs) {
 void EngineTestHelper::setTimeNtAndInvokeCallBacks(efitick_t nt)
 {
 	// we need to call fast callback every FAST_CALLBACK_PERIOD_MS
-	efitick_t step = static_cast<efitick_t>(MS2US(FAST_CALLBACK_PERIOD_MS) * US_TO_NT_MULTIPLIER);
+	efitick_t step = MS2US(FAST_CALLBACK_PERIOD_MS) * US_TO_NT_MULTIPLIER;
 
 	while (getTimeNowNt() < nt) {
 		// get next FAST_CALLBACK_PERIOD_MS tick time
@@ -462,13 +439,13 @@ void EngineTestHelper::fireTriggerEvents(int count) {
 
 void EngineTestHelper::assertInjectorUpEvent(const char *msg, int eventIndex, efitimeus_t momentUs, long injectorIndex) {
 	InjectionEvent *event = &engine.injectionEvents.elements[injectorIndex];
-	auto const expected_action{ action_s::make<startInjection>(scheduler_arg_t{}) };
+	auto const expected_action{ action_s::make<turnInjectionPinHigh>(uintptr_t{}) };
 	assertEvent(msg, eventIndex, expected_action, momentUs, event);
 }
 
 void EngineTestHelper::assertInjectorDownEvent(const char *msg, int eventIndex, efitimeus_t momentUs, long injectorIndex) {
 	InjectionEvent *event = &engine.injectionEvents.elements[injectorIndex];
-	auto const expected_action{ action_s::make<endInjection>(scheduler_arg_t{}) };
+	auto const expected_action{ action_s::make<turnInjectionPinLow>((InjectionEvent*){}) };
 	assertEvent(msg, eventIndex, expected_action, momentUs, event);
 }
 
@@ -513,8 +490,9 @@ scheduling_s * EngineTestHelper::assertScheduling(const char *msg, int index, sc
 void EngineTestHelper::assertEvent(const char *msg, int index, action_s const& action, efitimeus_t momentUs, InjectionEvent *expectedEvent) {
 	scheduling_s *event = assertEvent5(msg, index, action, momentUs);
 
-	const InjectorContext ctx(event->action.getArgumentRaw());
-	ASSERT_EQ(expectedEvent->getIndex(), ctx.eventIndex()) << msg;
+	auto const actualEvent{ event->action.getArgument<InjectionEvent*>() };
+
+	ASSERT_EQ(expectedEvent->outputs[0], actualEvent->outputs[0]) << msg;
 // but this would not work	assertEqualsLM(msg, expectedPair, (long)eventPair);
 }
 
@@ -535,7 +513,7 @@ bool EngineTestHelper::assertEventExistsAtEnginePhase(const char *msg, action_s 
 
 		if(action_scheduled.getCallback() == action_expected.getCallback()) {
 			efitimeus_t start = getTimeNowUs();
-			efitimeus_t expectedTimestamp = static_cast<efitimeus_t>(angleToTimeUs(expectedEventEnginePhase));
+			efitimeus_t expectedTimestamp = angleToTimeUs(expectedEventEnginePhase);
 			// after #7245 we can increase the resolution of this test for expect 0.5 or less
 			EXPECT_NEAR( expectedTimestamp, event->getMomentUs() - start, angleToTimeUs( 1 ) )
                             << "Expected angle: " << expectedEventEnginePhase << " but got " << (event->getMomentUs() - start) / engine.rpmCalculator.oneDegreeUs << " -- "
@@ -550,7 +528,7 @@ void EngineTestHelper::spin60_2UntilDeg(struct testSpinEngineUntilData& spinInfo
   	volatile float tick_per_deg = 6000 * 60 / 360 / (float)targetRpm;
 	constexpr float tooth_per_deg = 360 / 60;
 
-	size_t targetTooth = static_cast<size_t>((targetDegree - spinInfo.currentDegree) / tooth_per_deg);
+	size_t targetTooth = (targetDegree - spinInfo.currentDegree) / tooth_per_deg;
 
 	for (size_t i = 0; i < targetTooth; i++) {
 		if (spinInfo.currentTooth < 30 || spinInfo.currentTooth > 31) {

@@ -58,8 +58,7 @@ public class PCanIoStream extends AbstractIoStream {
     };
 
     // Flow control handshake state, shared between the reader thread (readOnePacket) and
-    // the writer thread (IsoTpConnector.receiveData() override below)
-    private final Object flowControlMonitor = new Object();
+    // the writer thread (IsoTpConnector.receiveData() override below).
     private boolean flowControlReceived;
 
     private final IsoTpConnector isoTpConnector = new IsoTpConnector(VariableRegistryValues.CAN_ECU_SERIAL_RX_ID) {

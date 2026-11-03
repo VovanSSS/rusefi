@@ -65,7 +65,7 @@ static void checkColdStartDwellTransition(bool reduceDwell, bool missingTeeth = 
 	};
 
 	const int startUs = getTimeNowUs();
-	onTriggerEventSparkLogic(rpm, getTimeNowNt(), 12, 18);
+	onTriggerEventSparkLogic(rpm, getTimeNowNt(), 12, 18, 24);
 	eth.setTimeAndInvokeEventsUs(startUs + 1600);
 	ASSERT_EQ(1, chargeCount);
 	ASSERT_TRUE(enginePins.coils[0].getLogicValue());
@@ -73,8 +73,8 @@ static void checkColdStartDwellTransition(bool reduceDwell, bool missingTeeth = 
 	for (int tooth = 1; tooth <= 2; tooth++) {
 		eth.setTimeAndInvokeEventsUs(startUs + tooth * 2500);
 		const float phase = 12 + tooth * 6;
-		engine->module<TriggerScheduler>()->scheduleEventsUntilNextTriggerTooth(rpm, getTimeNowNt(), phase, phase + 6);
-		onTriggerEventSparkLogic(rpm, getTimeNowNt(), phase, phase + 6);
+		engine->module<TriggerScheduler>()->scheduleEventsUntilNextTriggerTooth(rpm, getTimeNowNt(), phase, phase + 6, phase + 12);
+		onTriggerEventSparkLogic(rpm, getTimeNowNt(), phase, phase + 6, phase + 12);
 	}
 	ASSERT_EQ(0, fireCount);
 	ASSERT_EQ(0, eth.getWarningCounter());
@@ -100,14 +100,14 @@ static void checkColdStartDwellTransition(bool reduceDwell, bool missingTeeth = 
 		EXPECT_TRUE(hasRecentWarningCode(ObdCode::CUSTOM_Ignition_Coil_Overcharge_1));
 	} else {
 		eth.setTimeAndInvokeEventsUs(startUs + 7500);
-		engine->module<TriggerScheduler>()->scheduleEventsUntilNextTriggerTooth(rpm, getTimeNowNt(), 30, 36);
+		engine->module<TriggerScheduler>()->scheduleEventsUntilNextTriggerTooth(rpm, getTimeNowNt(), 30, 36, 42);
 		eth.executeActions();
 	}
 
 	eth.setTimeAndInvokeEventsUs(startUs + 12000);
 	if (missingTeeth) {
 		// Even a late arrival of the missing tooth must not fire the canceled spark.
-		engine->module<TriggerScheduler>()->scheduleEventsUntilNextTriggerTooth(rpm, getTimeNowNt(), 30, 36);
+		engine->module<TriggerScheduler>()->scheduleEventsUntilNextTriggerTooth(rpm, getTimeNowNt(), 30, 36, 42);
 		eth.executeActions();
 	}
 	EXPECT_EQ(1, chargeCount);
@@ -128,8 +128,8 @@ static void checkColdStartDwellTransition(bool reduceDwell, bool missingTeeth = 
 	for (int tooth = 0; tooth <= 3; tooth++) {
 		eth.setTimeAndInvokeEventsUs(startUs + 300000 + tooth * 2500);
 		const float phase = 12 + tooth * 6;
-		engine->module<TriggerScheduler>()->scheduleEventsUntilNextTriggerTooth(rpm, getTimeNowNt(), phase, phase + 6);
-		onTriggerEventSparkLogic(rpm, getTimeNowNt(), phase, phase + 6);
+		engine->module<TriggerScheduler>()->scheduleEventsUntilNextTriggerTooth(rpm, getTimeNowNt(), phase, phase + 6, phase + 12);
+		onTriggerEventSparkLogic(rpm, getTimeNowNt(), phase, phase + 6, phase + 12);
 		eth.executeActions();
 	}
 	eth.setTimeAndInvokeEventsUs(startUs + 312000);
@@ -209,7 +209,7 @@ TEST(ignition, ScheduleRebuildTurnsOffPreviouslyChargedCoil) {
 	// the previously scheduled fire callback is still pending.
 	engineConfiguration->ignitionMode = IM_ONE_COIL;
 	engine->ignitionEvents.isReady = false;
-	onTriggerEventSparkLogic(1500, getTimeNowNt(), 0, 0);
+	onTriggerEventSparkLogic(1500, getTimeNowNt(), 0, 0, 0);
 	ASSERT_EQ(&enginePins.coils[0], event.outputs[0]);
 	ASSERT_TRUE(chargedCoil->getLogicValue());
 

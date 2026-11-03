@@ -7,7 +7,6 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
 #include "generated_lookup_meta.h"
 
 #include "tunerstudio_io.h"
@@ -20,11 +19,6 @@ void startLoggingProcessor();
 // Called from the binary TS thread: sends as many queued buffers as fit in one packet
 // and releases each of them back to its owner
 size_t loggingSendOutputData(TsChannelBase* tsChannel);
-
-// Legacy drain used by the branch-flavored console code: accumulates the queued
-// buffers into one null-terminated static buffer and returns it. Prefer
-// loggingSendOutputData() in new code.
-const char* swapOutputBuffers(size_t *actualOutputBufferSize);
 
 #if EFI_UNIT_TEST
 // Discards all queued buffers and makes every line buffer free again
@@ -81,10 +75,6 @@ struct LogBuffer : public LogBufferBase {
 		return buffer;
 	}
 
-	// Bounded-scan note: master's LogBuffer holds exactly one line per instance
-	// (LogLineBuffer : LogBuffer<128>) with an explicit len counter - the
-	// branch's m_writePtr accumulation (and its clobber-recovery diagnostics)
-	// are not carried over: they no longer apply to this storage design.
 	constexpr size_t size() {
 		return bufSize;
 	}

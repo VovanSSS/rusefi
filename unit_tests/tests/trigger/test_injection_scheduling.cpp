@@ -113,7 +113,7 @@ TEST(injectionScheduling, Stage2CloseAfterOutputChange) {
 	InjectionEvent event;
 	event.setIndex(0);
 	event.injectionStartAngle = 125;
-	event.onTriggerTooth(1000000, 120, 130);
+	event.onTriggerTooth(1000000, 120, 130, 130);
 	ASSERT_EQ(3, engine->scheduler.size());
 
 	auto open = engine->scheduler.getForUnitTest(0)->action;

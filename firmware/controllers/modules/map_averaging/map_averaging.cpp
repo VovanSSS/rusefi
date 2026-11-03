@@ -67,7 +67,7 @@ bool isMapInstantAtArm() {
 		&& get_board_override_result(custom_board_mapInstantAtArm, false);
 }
 
-static size_t currentMapAverager = 0;
+[[maybe_unused]] static size_t currentMapAverager = 0;
 
 SensorResult MapAverager::publishInstant(float volts) {
 	SensorResult result = m_function ? m_function->convert(volts) : unexpected;

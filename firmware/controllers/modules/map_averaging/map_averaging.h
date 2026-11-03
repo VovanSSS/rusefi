@@ -89,6 +89,11 @@ private:
 	size_t m_lastCounter = 0;
 	float m_sum = 0;
 	uint8_t m_cylinderNumber = 0;
+
+	// Set once the MAP sensor has produced at least one successful conversion:
+	// suppresses the one-shot C6899 that the first boot-time samples otherwise
+	// raise before the curve/divider config is applied.
+	bool hasEverDecodedMap = false;
 };
 
 // The ONE window averager: every cylinder phase region feeds this instance
