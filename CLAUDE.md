@@ -317,13 +317,23 @@ With st-flash 1.8.0, `Mass erase completed successfully` followed by `Failed to 
 
 ### ChibiOS ADC linear-callback state
 
-Current ChibiOS invokes a non-circular ADC conversion's completion callback
-after returning the driver to `ADC_READY`. `adcIsBufferComplete()` is meaningful
-only for circular conversions, where it distinguishes full- from half-buffer
-callbacks. A linear callback that chains another conversion must not guard on
-`adcIsBufferComplete()` or manually assign the driver state; call the I-class
-start API directly from the callback (see `slowAdcEndCB()` in
-`firmware/hw_layer/ports/stm32/stm32_adc_v2.cpp`).
+HAL 9.1 changed the non-circular (linear) ADC completion path in
+`_adc_isr_full_code()`: the driver is returned to `ADC_READY` BEFORE `end_cb`
+is invoked. HAL 8.4 set `ADC_COMPLETE` first and expected the callback to flip
+it to `ADC_READY`. `adcIsBufferComplete()` == `(state == ADC_COMPLETE)`, so a
+linear callback written for 8.4 that guards on `adcIsBufferComplete()` silently
+never fires under 9.1.
+
+m74_9 regression (2026-11-03): `slowAdcEndCB()` (slow ADC background chain) and
+`knockCompletionCallback()` both guarded on `adcIsBufferComplete()`, so the slow
+ADC (ADC1: TPS/pedal) did ONE conversion at boot and froze - P2135/P2137
+(inconsistent) + P0643 (analog fault), while the fast ADC (ADC2, circular) and
+ADC3 slow (CLT/IAT, blocking `adcConvert`) kept working. A linear callback that
+chains another conversion must NOT guard on `adcIsBufferComplete()` or manually
+assign the driver state: for a linear group the callback IS the completion
+event, so call the I-class start API directly (see `slowAdcEndCB()` in
+`firmware/hw_layer/ports/stm32/stm32_adc_v2.cpp`). The fast ADC uses
+`adcCallbackShouldProcess(circular, ...)` which is the correct pattern.
 
 ### Simulator build feature flags
 
@@ -1465,7 +1475,7 @@ Root cause chain:
 - With the default table, only channels whose fixed default request matches their peripheral work: ADC1 on DMA1_CH1 works (slow ADC OK), ADC2 on DMA1_CH2 does not -> ADC2 converts but nobody drains the data register -> `ADC_ERR_OVERFLOW` (`lastErr=2`) on every conversion -> MAP (the only fast channel) read 0.
 - Contributing bugs in the fork's Artery headers: `at32_registry.h` lacked `STM32_DMA_HAS_DMAMUXSEL TRUE`, and `DMA_TypeDef.MUXSEL` in `os/common/ext/Artery/AT32F4xx/at32f435xx.h` sat at offset 0x78 instead of 0x100 (the `ch[7]` array stride is 0x10 while the hardware channel stride is 0x14 - only the `DMA1_Channelx` base macros are hardware-correct, never use the struct array).
 
-Fixes (all in the ChibiOS fork AT32 port): `hal_lld.c` enables `rccEnableDMA1/2(false)` before `dmaInit()`; `at32_registry.h` defines `STM32_DMA_HAS_DMAMUXSEL TRUE`; `at32f435xx.h` pads `DMA_TypeDef` so MUXSEL/MUXC/MUXG land at 0x100/0x104/0x120. Also `hw_layer/ports/at32/at32f4/cfg/mcuconf.h`: `STM32_ADC_ADCPRE = ADC_CCR_ADCPRE_DIV6` -> Artery ADCDIV = HCLK/4 = 72 MHz (the old DIV4 value maps to ADCDIV = HCLK/3 = 96 MHz, above the 80 MHz RM maximum).
+Fixes (all in the ChibiOS fork AT32 port): `hal_lld.c` enables `rccEnableDMA1/2(false)` before `dmaInit()`; `at32_registry.h` defines `STM32_DMA_HAS_DMAMUXSEL TRUE`; `at32f435xx.h` pads `DMA_TypeDef` so MUXSEL/MUXC/MUXG land at 0x100/0x104/0x120. ADC clock (`hw_layer/ports/at32/at32f4/cfg/mcuconf.h`): `STM32_ADC_ADCPRE = ADC_CCR_ADCPRE_DIV8`. HAL 9.1 encodes the Artery `ADC_CCTRL_ADCDIV` field directly (divider = value + 2, see the official CMSIS `at32f435_437cx.h`), so DIV8 = 6 -> ADCCLK = HCLK/8 = 36 MHz (the compile-time check forces DIV8: STM32_ADCCLK must be <= 36 MHz, and DIV4 = 72 MHz is rejected). HAL 8.4 used the wrong STM32F4 ADCPRE encoding (DIV4 = 1 -> Artery DIV3 = 96 MHz, above the 80 MHz RM max) - the reason the old bench measured a bogus ~5.94 MHz ADC clock.
 
 Bench verification (m74_9, 2026-08-15): `fast 45692 samples`, `F ch[0] @ PA1` samples valid, `fastadcdiag` shows `MUXSEL=0x00000001`, `fast err` no longer growing (`lastErr=0`). Note: `fastAdcErrorCount` is a uint8 **skip counter**, not a hardware error counter - `AdcDevice::startConversionI()` increments it whenever a TIM6 tick lands while the previous conversion is still ACTIVE (its completion ISR was delayed past the tick by an interrupt-disabled window / long ISR), and it wraps at 255, so it can appear to decrease. `lastErr=0` + growing conversion count = healthy ADC; the same counting happens on all GPT-triggered F4 boards. `fastadcdiag` is a board-local console command in `m74_9/board_configuration.cpp` that dumps TIM6/GPTD6/ADC2/DMA/DMAMUX state - keep it for AT32 bring-up. `m74_9/efifeatures.h` leaves `EFI_USE_FAST_ADC` at the default TRUE; the `!EFI_USE_FAST_ADC` stubs added to `stm32_adc_v2.cpp` (2026-08-15, commit 988b087fd46) remain as a valid slow-ADC-only configuration.
 
