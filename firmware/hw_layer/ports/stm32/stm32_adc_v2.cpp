@@ -328,16 +328,16 @@ static void slowAdcStartCurrentBatch() {
 	}
 }
 
-static void slowAdcEndCB(ADCDriver *adcp) {
-	if (adcIsBufferComplete(adcp)) {
-		chSysLockFromISR();
-		// Switch state to ready to allow starting new conversion from here
-		adcp->state = ADC_READY;
-		// get next state
-		slowAdcState = slowAdcGetNextState(slowAdcState);
-		slowAdcStartCurrentBatch();
-		chSysUnlockFromISR();
-	}
+static void slowAdcEndCB(ADCDriver *) {
+	// Slow ADC groups are linear, so this callback IS the completion event.
+	// HAL 9.1 already sets the driver to ADC_READY before invoking end_cb
+	// (HAL 8.4 set ADC_COMPLETE and expected the callback to flip it), so there
+	// is no adcIsBufferComplete() gate and no manual ADC_READY here.
+	chSysLockFromISR();
+	// get next state
+	slowAdcState = slowAdcGetNextState(slowAdcState);
+	slowAdcStartCurrentBatch();
+	chSysUnlockFromISR();
 }
 #endif
 
@@ -553,20 +553,19 @@ static void slowAdcResumeAfterKnockWindow() {
 }
 #endif // EFI_INTERNAL_SLOW_ADC_BACKGROUND
 
-static void knockCompletionCallback(ADCDriver* adcp) {
-	if (adcIsBufferComplete(adcp)) {
-		onKnockSamplingComplete();
+static void knockCompletionCallback(ADCDriver*) {
+	// Knock conversions are linear, so the callback IS the completion event.
+	onKnockSamplingComplete();
 
 #if (EFI_INTERNAL_SLOW_ADC_BACKGROUND == TRUE)
-		/* If the knock window stole the ADC from the slow background chain
-		 * (shared driver), resume the chain. Runtime pointer compare: boards
-		 * with a dedicated knock ADC (proteus/f407/hellen use ADC3) must not
-		 * touch the slow chain from here. */
-		if (&KNOCK_ADC == &EFI_SLOW_ADC) {
-			slowAdcResumeAfterKnockWindow();
-		}
-#endif // EFI_INTERNAL_SLOW_ADC_BACKGROUND
+	/* If the knock window stole the ADC from the slow background chain
+	 * (shared driver), resume the chain. Runtime pointer compare: boards
+	 * with a dedicated knock ADC (proteus/f407/hellen use ADC3) must not
+	 * touch the slow chain from here. */
+	if (&KNOCK_ADC == &EFI_SLOW_ADC) {
+		slowAdcResumeAfterKnockWindow();
 	}
+#endif // EFI_INTERNAL_SLOW_ADC_BACKGROUND
 
 	assertInterruptPriority(__func__, EFI_IRQ_ADC_PRIORITY);
 }
