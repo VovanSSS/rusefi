@@ -335,6 +335,23 @@ event, so call the I-class start API directly (see `slowAdcEndCB()` in
 `firmware/hw_layer/ports/stm32/stm32_adc_v2.cpp`). The fast ADC uses
 `adcCallbackShouldProcess(circular, ...)` which is the correct pattern.
 
+### m74_9 / AT32: shared ADC1 (slow chain + knock) - "not ready" race
+
+m74_9 software knock runs on ADC1 (`KNOCK_ADC == EFI_SLOW_ADC == ADCD1`): the knock
+input PA0 (ADC1 IN0) is only reachable on ADC1, so the knock window must STEAL the
+driver from the slow background chain (`onStartKnockSampling` does
+`adcStopConversionI` + `adcStartConversionI` when the state is ACTIVE/COMPLETE).
+Upstream master has no such path: its knock boards use a dedicated ADC3 and simply
+cancel the window when the ADC is busy, and master's m74_9 has no software knock at all.
+
+The steal is racy: if the slow chain's completion callback re-triggers
+(`slowAdcStartCurrentBatch`) while the driver is ACTIVE under the knock group,
+`adcStartConversionI` asserts "not ready" and the watchdog resets the ECU (random,
+engine running, no console message before the reset). `slowAdcStartCurrentBatch()`
+therefore guards on `state == READY || ERROR` and skips when the ADC was stolen -
+`knockCompletionCallback` resumes the slow chain when the window ends. m74_9-only;
+master does not need this guard.
+
 ### Simulator build feature flags
 
 The simulator Makefile does not track changes to board-derived
