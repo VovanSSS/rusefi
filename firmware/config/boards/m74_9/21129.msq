@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <msq xmlns="http://www.msefi.com/:msq">
     <page/>
-    <page number="0" size="18500">
+    <page number="0" size="18504">
         <constant name="accelEnrichmentMode">"MS Adder"</constant>
         <constant name="accelerometerCsPin">"NONE"</constant>
         <constant name="accelerometerCsPinMode">"default"</constant>
@@ -2585,20 +2585,20 @@
         <constant digits="1" name="knockFuelTrimAggression" units="%">0.0</constant>
         <constant digits="1" name="knockFuelTrimReapplyRate" units="1%/s">0.0</constant>
         <constant cols="1" digits="0" name="knockGainLoadBins" rows="6" units="">
-         10
          0
          20
          40
          60
          80
+         100
 </constant>
         <constant cols="1" digits="0" name="knockGainRpmBins" rows="6" units="RPM">
-         1000
          700
          800
          2200
          3600
          5000
+         7000
 </constant>
         <constant cols="6" digits="0" name="knockGains10_table" rows="6" units="dB">
          0 0 0 0 0 0
@@ -2625,7 +2625,7 @@
          0 0 0 0 0 0
 </constant>
         <constant cols="6" digits="0" name="knockGains1_table" rows="6" units="dB">
-         70 0 0 0 0 0
+         0 0 0 0 0 0
          0 0 0 0 0 0
          0 0 0 0 0 0
          0 0 0 0 0 0
@@ -2721,6 +2721,7 @@
         <constant digits="1" name="knockSuppressMinTps" units="%">10.0</constant>
         <constant name="l9779_cs">"NONE"</constant>
         <constant name="l9779spiDevice">"Off"</constant>
+        <constant name="ladaCanbusProfile">"Largus"</constant>
         <constant cols="1" digits="0" name="lambdaLoadBins" rows="16" units="{bitStringValue(afrLoadUnitLabels, afrLoadUnitIdx)}">
          20
          30
@@ -5332,7 +5333,7 @@
 </constant>
         <constant name="yesUnderstandLocking">"no"</constant>
     </page>
-    <versionInfo firmwareInfo="20261102" nPages="1" signature="rusEFI maccan-tx-fix.2026.11.02.m74_9.669483117" version="5.0"/>
+    <versionInfo firmwareInfo="20261102" nPages="1" signature="rusEFI maccan-tx-fix.2026.11.02.m74_9.3796215110" version="5.0"/>
     <bibliography author="rusEFI 20261102" writeDate="date"/>
     <settings/>
     <userComments/>
