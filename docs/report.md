@@ -1,5 +1,36 @@
 # Work Report
 
+## 2026-11-03 (2) - ChibiOS HAL 8.4 -> 9.1 + m74_9 ADC fixes - DONE, car running
+
+CHIBIOS FORK (VovanSSS/ChibiOS):
+- New branch m74_9-at32-21.11.x based on rusefi/stable_21.11_2026.06.22.rusefi_clean_history
+  (kernel 7.0.6, HAL conf 9.1 - the newest rusefi clean-history, already carries the
+  newest original stable_21.11.x + the AT32 "LLM" port). Re-applied the 6 m74_9 AT32
+  commits (flash DIVR=/3 + CONTR + NZW_BST off + DMAMUX TBL_SEL + FDCAN RAM + xlock
+  caller). DMA_TypeDef conflict resolved toward the newer RESERVED[62] layout. Pushed.
+
+RUSEFI (maccan-tx-fix):
+- .gitmodules branch -> m74_9-at32-21.11.x; submodule pointer -> 004e88a148.
+- rusefi_halconf.h _CHIBIOS_HAL_CONF_VER_8_4_ -> 9_1_.
+- mcuconf.h STM32_ADC_ADCPRE DIV4 -> DIV8 (HAL 9.1 encodes Artery ADC_CCTRL_ADCDIV
+  directly: divider = value+2, so DIV8 -> HCLK/8 = 36 MHz; the old 8.4 wrote the wrong
+  STM32F4 encoding).
+- knock_config.h KNOCK_SAMPLE_RATE 5940000 -> 36000000 (36 MHz ADC clock).
+- Cleaned stale .dep/build (syscalls.c moved to os/various/newlib_bindings/).
+
+BUGS FIXED (HAL 9.1 migration fallout):
+1. TPS/pedal froze at power-on value (P2135/P2137/P0643). HAL 9.1 _adc_isr_full_code
+   sets the driver to ADC_READY before calling end_cb for LINEAR groups (8.4 set
+   ADC_COMPLETE). adcIsBufferComplete()==(state==ADC_COMPLETE) returned false, so
+   slowAdcEndCB/knockCompletionCallback never re-triggered. Dropped the gate.
+2. Random watchdog reset ("not ready" assert in adcStartConversionI). Race between
+   the slow background chain and the knock window stealing the shared ADC1. Guarded
+   slowAdcStartCurrentBatch() on the driver being READY/ERROR.
+
+VALIDATION: m74_9 three-stage image builds; car runs, TPS/pedal live, no resets.
+
+OPEN: bench re-verify knock sample rate (~972 kHz) and slow-ADC (CLT/IAT) accuracy at 36 MHz.
+
 ## 2026-11-03 - merge upstream master (84b57a3670) into maccan-tx-fix - DONE, m74_9 builds
 
 Policy (user directive): master is the baseline; keep branch features that have no
