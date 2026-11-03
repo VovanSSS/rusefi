@@ -1,7 +1,7 @@
 [submodule "firmware/ChibiOS"]
 	path = firmware/ChibiOS
-	url = https://github.com/rusefi/ChibiOS.git
-	branch = stable_21.11_2026.06.22.rusefi_clean_history
+	url = https://github.com/VovanSSS/ChibiOS.git
+	branch = m74_9-at32
 [submodule "firmware/ChibiOS-Contrib"]
 	path = firmware/ChibiOS-Contrib
 	url = https://github.com/rusefi/ChibiOS-Contrib.git
@@ -33,8 +33,8 @@
 	branch = rusefi_prod_2021_11_12
 [submodule "firmware/ext/openblt"]
 	path = firmware/ext/openblt
-	url = https://github.com/rusefi/openblt
-	branch = rusefi_prod
+	url = https://github.com/VovanSSS/openblt
+	branch = m74_9
 [submodule "misc/hex2dfu"]
 	path = misc/hex2dfu
 	url = https://github.com/rusefi/hex2dfu
@@ -45,7 +45,8 @@
 	branch = prod
 [submodule "firmware/libfirmware"]
 	path = firmware/libfirmware
-	url = https://github.com/rusefi/libfirmware.git
+	url = https://github.com/VovanSSS/libfirmware.git
+	branch = m74_9
 [submodule "java_console/peak-can-basic"]
 	path = java_console/peak-can-basic
 	url = https://github.com/rusefi/peak-can-basic
