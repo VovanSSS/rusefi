@@ -1,5 +1,21 @@
 # Work Report
 
+## 2026-11-03 (3) - libfirmware: rebase .fast_text Timer fix onto current upstream - DONE, m74_9 builds
+
+LIBFIRMWARE (VovanSSS/libfirmware):
+- The single m74_9 fix (a7ccb41 "Timer: place hot methods in TRIGGER_RAM_CODE") was
+  based on an older upstream (b08a561); the fork's m74_9 branch had merged upstream
+  77d4b70, one commit behind current master 05551f3.
+- New branch m74_9-fast_text = upstream/master (05551f3) + a7ccb41 (cherry-pick,
+  clean). Pushed to VovanSSS/libfirmware.
+
+RUSEFI (maccan-tx-fix):
+- .gitmodules branch m74_9 -> m74_9-fast_text; submodule pointer 3ed7694a -> c94a940e.
+
+VALIDATION: m74_9 three-stage image builds (ZW-COVERAGE OK, no errors). Timer hot
+methods now resolve in the .fast_text RAM copy (0x20051xxx): getElapsedUs/
+hasElapsedUs/getElapsedSeconds/reset run from zero-wait SRAM.
+
 ## 2026-11-03 (2) - ChibiOS HAL 8.4 -> 9.1 + m74_9 ADC fixes - DONE, car running
 
 CHIBIOS FORK (VovanSSS/ChibiOS):
