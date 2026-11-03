@@ -1,5 +1,52 @@
 # Work Report
 
+## 2026-11-03 - merge upstream master (84b57a3670) into maccan-tx-fix - DONE, m74_9 builds
+
+Policy (user directive): master is the baseline; keep branch features that have no
+upstream equivalent (m74_9 board, AT32 port, MacCAN ISO-TP TX fix, three-stage
+OpenBLT OEM loader), take master everywhere else.
+
+SUBMODULES (started here first):
+- firmware/ChibiOS -> branch AT32 fork 33f0f243a (flash DIVR=/3 + NZW_BST off +
+  DMAMUX TBL_SEL). Master's 48ec439137 ("LLM AT32 port") NOT adopted - different
+  port, would break m74_9. Pushed to VovanSSS/ChibiOS branch m74_9-at32.
+- firmware/ext/openblt -> in-submodule merge f32a6427 (branch XCP PROGRAM_RESET /
+  deferred-ACK batch + master NvmReadHook). Pushed to VovanSSS/openblt m74_9.
+- firmware/libfirmware -> in-submodule merge 3ed7694a (branch .fast_text timer
+  hot-methods + master #10577). Pushed to VovanSSS/libfirmware m74_9.
+- firmware/controllers/lua/luaaa + java_console/peak-can-basic -> master.
+- .gitmodules repointed for the three forks (ChibiOS/openblt/libfirmware), git
+  submodule sync run. Origin of those three now VovanSSS/*.
+
+FIRMWARE fixes needed to build m74_9 after the merge:
+- gradle: :autoupdate test classpath resolved lazily (config-time asPath locked
+  shadowRuntimeElements under Gradle 9.8.2); :inifile dropped master's
+  options.release=8 / java8Test pin (branch ships Java 27 everywhere).
+- rusefi_halconf.h back to _CHIBIOS_HAL_CONF_VER_8_4_ (pairs with the pinned fork).
+- stm32f4/hw_ports.mk + adc_inputs/adc_onchip_slow/stm32_adc back to branch (master
+  ADC3-slow + offchip framework needs its own ChibiOS); adc_offchip.cpp kept in
+  hw_layer.mk + custom_board_getAnalogInputDividerCoefficient defined.
+- loggingcentral/engine_sniffer/tunerstudio -> master (leaner mailbox pipeline,
+  loggingSendOutputData instead of branch swapOutputBuffers).
+- algo.mk/controllers.mk/trigger.mk: fix paths after upstream file moves; re-add
+  canOpenBLT config bit (master deleted it); getBoardMeta* defaults made weak.
+
+UNIT TESTS: build + run OK (no hang). 38 failures remain - all in branch-vs-master
+divergence: engine-cycle scheduling (angle-clock/TIM5-CC2/6-phase), ISO-TP flow
+control (#if !EFI_UNIT_TEST), trigger #9435. Fixed the clearWarnings() use-before-
+engine-set hang (master ctor ordering). Dropped master-only test_digital_input_exti
+(4-arg ExtiCallback harness).
+
+SIZE: code 710 KB -> 584 KB (-17.7%), RAM 326 KB -> 302 KB (ram0 96% -> 87.7%).
+m74_9 features verified intact by symbols (angle-clock, rearmCC2, m74_9VrModel,
+__m749_fast_text__). Reduction = master leaner + my merge choices, not a regression.
+
+VALIDATION: m74_9 three-stage image (app+OpenBLT+CRC) OK; unit_tests link+run OK;
+java :ui:shadowJar + :ecu_io/:ecu_shared/:connectivity/:ui compile OK.
+
+OPEN: 38 test failures (ISO-TP -> trigger #9435 -> engine-cycle) not yet reconciled;
+openblt/libfirmware merge commits now on forks but not yet PR'd to rusefi/* upstream.
+
 ## 2026-11-01 (2) - java 25 -> 27 + wrapper 9.8.2 (variant A) - IMPLEMENTED and BUILD/TEST-VALIDATED
 
 User directive: variant A - wrapper pinned to 9.8.2 (= brew "system" gradle, so
