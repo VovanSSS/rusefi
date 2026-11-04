@@ -18,20 +18,20 @@
 #include "common_headers.h"
 
 /**
- * AT32 trigger fast path: place the per-tooth ISR code (trigger decode +
- * event scheduling) into the .fast_text section, which the AT32 linker
- * script loads to flash and the board copies to zero-wait SRAM at boot.
- * The AT32F435 NZW flash area is too slow for the 60-2 path at high rpm
- * (~25 cycles per 7-instruction iteration measured at 288 MHz); SRAM is
- * zero-wait. Enabled per board via EFI_TRIGGER_IN_RAM in efifeatures.h
- * (included via common_headers.h above, so the macro is usable by
- * single_timer_executor.h/scheduler.h below).
+ * Hot per-tooth ISR path (trigger decode + event scheduling). Keep these
+ * functions out-of-line (noinline) so they stay distinct symbols that the
+ * board linker can place in a fast region by name. On AT32 with
+ * EFI_TRIGGER_IN_RAM the section goes to .fast_text (copied to zero-wait
+ * SRAM at boot); otherwise the .m749_fast_text linker globs place them in
+ * the zero-wait ZW flash window. noinline is required in BOTH cases: LTO
+ * would otherwise inline these bodies into their callers and neither the
+ * section attribute nor the name glob could be applied to them.
  */
 #ifndef TRIGGER_RAM_CODE
 #if EFI_TRIGGER_IN_RAM
 #define TRIGGER_RAM_CODE __attribute__((section(".fast_text"), noinline))
 #else
-#define TRIGGER_RAM_CODE
+#define TRIGGER_RAM_CODE __attribute__((noinline))
 #endif
 #endif
 

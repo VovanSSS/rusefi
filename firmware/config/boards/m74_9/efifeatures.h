@@ -18,11 +18,12 @@
  * stm32f4ems include - that header defaults the flag to FALSE. */
 #define EFI_USE_OPENBLT TRUE
 
-/* AT32F435 NZW flash is too slow for the per-tooth trigger path at high rpm
- * (~25 cycles per 7-instruction iteration at 288 MHz). Run the trigger decode
- * and event scheduling from zero-wait SRAM: the .fast_text linker section is
- * copied from flash at boot (see AT32F435ZMxx.ld and board.c __early_init). */
-#define EFI_TRIGGER_IN_RAM TRUE
+/* The .fast_text -> SRAM copy is DISABLED (2026-11-04): the hot path runs
+ * from the zero-wait ZW flash window via the .m749_fast_text linker section
+ * instead. ZW and SRAM are both 0-WS, so this is speed-neutral; the trade-off
+ * is that ZW flash fetch stalls during any MFS write/erase (no RWW on AT32),
+ * which m74_9 already avoids by deferring storage writes to engine-off. */
+#define EFI_TRIGGER_IN_RAM FALSE
 
 /* Runtime trigger-config re-read in the handoff (checkIfTriggerConfigChanged
  * on the sync tooth -> schedule rebuild + periodicFastCallback) is compiled
@@ -82,7 +83,11 @@
  * that is merely late. The per-tooth basis and its clamp are gone. With
  * the flag FALSE the early windows compile out and ignition/fuel return
  * to the proven time-based paths. */
-#define EFI_ANGLE_CLOCK TRUE
+/* DISABLED 2026-11-04: back to the standard time-based TIM5 executor path.
+ * The three-timer angle clock (TMR2/TMR3/TMR4) and its .fast_text RAM code
+ * are compiled out; ignition/fuel scheduling runs on TIM5 as in the stock
+ * rusEFI build. ZW placement (.m749_fast_text) is kept for hot code. */
+#define EFI_ANGLE_CLOCK FALSE
 
 /* Console log buffer (double-buffered, 2x this, static). The stm32f4ems
  * default of 6500 truncates the 'pins' output mid-line: the pin report +
