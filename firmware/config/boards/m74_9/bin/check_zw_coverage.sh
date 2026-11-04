@@ -36,10 +36,8 @@ check() {
   escaped=$(printf '%s' "$sym" | sed 's/[][().*+?^${\\|}]/\\&/g')
   line=$("$NM" -C "$ELF" | grep -E "[[:space:]]${escaped}($|[^[:alnum:]_])" | head -1)
   if [ -z "$line" ]; then
-    # LTO inlined the function into its caller (which is itself placed in ZW by
-    # the .m749_fast_text globs) - the code is still zero-wait, it just has no
-    # standalone symbol to check. Not a coverage failure.
-    echo "ZW-COVERAGE: symbol '$sym' inlined (no standalone symbol; code lives in its ZW caller)" >&2
+    echo "ZW-COVERAGE: symbol '$sym' not found in the ELF" >&2
+    fail=1
     return
   fi
   addr=$((16#$(echo "$line" | awk '{print $1}')))
@@ -64,7 +62,7 @@ check 'getTimeNowNt'
 check 'handleExtiIsr'
 check 'hwTimerCallback'
 check 'InjectionEvent::onTriggerTooth'
-check 'turnInjectionPinHigh'
+check 'startInjection'
 check 'turnSparkPinHighStartCharging'
 check 'SingleTimerExecutor::scheduleTimerCallback'
 check 'SingleTimerExecutor::executeAllPendingActions'

@@ -348,7 +348,7 @@ static bool startDwellByTurningSparkPinHigh(IgnitionEvent *event, IgnitionOutput
 	return false;
 }
 
-void turnSparkPinHighStartCharging(IgnitionEvent *event) {
+TRIGGER_RAM_CODE void turnSparkPinHighStartCharging(IgnitionEvent *event) {
 	efitick_t nowNt = getTimeNowNt();
 
 	event->actualDwellTimer.reset(nowNt);
