@@ -25,7 +25,30 @@ registers are `PSR`, `CONTR`, `DIVR`.
 | 2 | **NZW_BST is a frequency trade-off, not a broken feature** | Enabling NZW_BST caps HCLK: 192 MHz @1.3 V / 160 @1.2 V / 136 @1.1 V / 108 @1.0 V; disabling it allows 288 / 240 / 192 / 144 MHz. m74_9 runs 288 MHz → NZW_BST **must** stay off. | `hal_lld.h` HCLK_MAX table; datasheet AHB freq table |
 | 3 | **RAM code and ZW placement are the same speed** | `.fast_text` RAM copy (22.8 KB) and `.m749_fast_text` ZW placement (130 KB) both 0 WS → equal execution speed. RAM copy is the early workaround for code that sat in NZW; ZW placement is the clean route. Standard rusEFI needs no RAM copy (STM32 ART ≈ RAM). | `efifeatures.h`, `m749.ld` |
 | 4 | **The "NZW_BST hang" is out-of-spec 288 MHz, not a hardware bug** | The 2026-08-21 "hangs the flash read path" observation (commit `004e88a148`) is NZW_BST=1 at HCLK=288 MHz, which exceeds the 192 MHz boost-mode limit. The correct enable sequence programs DIVR/NZW_BST while HCLK is still HICK, before the PLL switch (see `at32_clock_init`). | `hal_lld.c` comment + sequence; commit `004e88a148` |
-| 5 | **No further flash lever is left on the table** | Only PSR/CONTR/DIVR exist — no separate prefetch bit to enable. continue-read is on, DIVR=/3 is set, ZW is used. The only knob left is the ZW/NZW/SRAM reconfig (EOPB0), bounded by the board's SRAM need. FPU/DSP/hardware divide are already enabled via `-mcpu=cortex-m4` + `USE_FPU=hard`. | CMSIS FLASH_TypeDef; `stm32f4/hw_ports.mk` |
+| 5 | **The only remaining knob is the ZW/NZW/SRAM reconfig — and it is zero-sum** | Only PSR/CONTR/DIVR exist (no separate prefetch bit); continue-read is on, DIVR=/3 is set, ZW is used. The last lever is EOPB0 re-partitioning, which shifts a **fixed 640 KB fast pool** between ZW and SRAM (see below) — it cannot add fast memory. FPU/DSP/hardware divide are already enabled via `-mcpu=cortex-m4` + `USE_FPU=hard`. | CMSIS FLASH_TypeDef; datasheet §2.2.1; `stm32f4/hw_ports.mk` |
+
+## Fast-memory pool: ZW + SRAM = 640 KB (zero-sum)
+
+The datasheet's flash/SRAM options (every 64 KB step) show ZW and SRAM draw
+from the **same fixed 640 KB pool**; NZW is always the rest of the flash
+(NZW = total flash − ZW). Re-partitioning moves the boundary, it does not add
+fast memory.
+
+| Device | ZW | NZW | SRAM | ZW + SRAM |
+|---|---|---|---|---|
+| 256 KB | 256 | 0 | 384 | **640** |
+| 256 KB | 192 | 64 | 448 | **640** |
+| 256 KB | 128 | 128 | 512 | **640** |
+| 1024 KB | 512 | 512 | 128 | **640** |
+| 1024 KB (m74_9) | 256 | 768 | 384 | **640** |
+| 1024 KB | 128 | 896 | 512 | **640** |
+
+Practical read: m74_9 already uses the full pool (256 ZW + 384 SRAM = 640 KB),
+and `.m749_fast_text` occupies only 130 KB of the 256 KB ZW window → ~126 KB
+of ZW is still free. Growing ZW is only worth it if hot code exceeds 256 KB
+**and** the board can give up SRAM. Because ZW and SRAM are both 0-WS, the
+RAM-copy (`.fast_text`) vs ZW-placement (`.m749_fast_text`) choice is a pool
+allocation decision, not a speed decision.
 
 ## Bottom line
 
