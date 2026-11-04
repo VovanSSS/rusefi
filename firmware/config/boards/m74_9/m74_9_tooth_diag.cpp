@@ -294,7 +294,7 @@ static size_t rawEdgeCount = 0;
 
 #endif // M74_9_RAWTRG_ENABLED
 
-TRIGGER_RAM_CODE void boardRawTriggerEdge(int signalIndex, bool isRising, efitick_t timestamp) {
+void boardRawTriggerEdge(int signalIndex, bool isRising, efitick_t timestamp) {
 #if M74_9_RAWTRG_ENABLED
 	if (signalIndex != 0) {
 		return; // primary crank input only
@@ -432,7 +432,7 @@ static SyncTraceEvent syncTraceRing[SyncTraceRingSize];
 static size_t syncTraceHead = 0;
 static size_t syncTraceTotal = 0;
 
-TRIGGER_RAM_CODE void boardTriggerSyncEvent(char kind, int countersError, float gap0, float gap1) {
+void boardTriggerSyncEvent(char kind, int countersError, float gap0, float gap1) {
 	int8_t clampedError = (int8_t)(countersError < -127 ? -127 : (countersError > 127 ? 127 : countersError));
 
 	/* The ChibiOS system tick (1 kHz) is the reliable clock for diagnostics:
@@ -484,7 +484,7 @@ void m74_9TimeCheck() {
 }
 
 // Called from the trigger decoder for every synchronized primary tooth.
-TRIGGER_RAM_CODE void boardTriggerCallback(efitick_t timestamp, float) {
+void boardTriggerCallback(efitick_t timestamp, float) {
 #if M74_9_TOOTH_PROFILE_LEARNER
 	// Authoritative tooth position comes from the decoder index (0 = the sync
 	// tooth, 2 index units per tooth for RiseOnly wheels), NOT from the engine
@@ -563,7 +563,7 @@ void m74_9ToothDump() {
 // recharge jerks at constant rpm, recovering on the next revolution.
 // The decoder now compares RAW durations on this board; the learner keeps
 // running to feed the toothdump/rawtrg diagnostics only.
-TRIGGER_RAM_CODE float triggerGetToothProfileFactor(int toothIndex) {
+float triggerGetToothProfileFactor(int toothIndex) {
 	(void)toothIndex;
 	return 1.0f;
 }

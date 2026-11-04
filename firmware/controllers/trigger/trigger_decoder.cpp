@@ -50,7 +50,7 @@ bool TriggerDecoderBase::getShaftSynchronized() const {
 	return shaft_is_synchronized;
 }
 
-TRIGGER_RAM_CODE void TriggerDecoderBase::setShaftSynchronized(bool value) {
+void TriggerDecoderBase::setShaftSynchronized(bool value) {
 #if EFI_TOOTH_LOGGER
 	if (value != shaft_is_synchronized) {
 		LogTriggerSync(getTimeNowNt(), value);
@@ -515,7 +515,7 @@ void TriggerDecoderBase::printGaps(const char * prefix,
  * @param signal type of event which just happened
  * @param nowNt current time
  */
-TRIGGER_RAM_CODE expected<TriggerDecodeResult> TriggerDecoderBase::decodeTriggerEvent(
+expected<TriggerDecodeResult> TriggerDecoderBase::decodeTriggerEvent(
 		const char *msg,
 		const TriggerWaveform& triggerShape,
 		TriggerStateListener* triggerStateListener,

@@ -19,10 +19,6 @@
 
 #include "boards.h"
 
-// Host build (simulator): there is no .fast_text linker section, so the
-// trigger fast-path placement attribute is a no-op.
-#define TRIGGER_RAM_CODE
-
 #ifdef __cplusplus
 #include "chprintf.h"
 #include "cli_registry.h"

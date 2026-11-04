@@ -150,7 +150,7 @@ float limitRateOfChange(float newValue, float oldValue, float incrLimitPerSec, f
 	return (decrLimitPerSec <= 0.0f) ? newValue : oldValue - std::min(oldValue - newValue, decrLimitPerSec * secsPassed);
 }
 
-TRIGGER_RAM_CODE bool isPhaseInRange(float test, float current, float next) {
+bool isPhaseInRange(float test, float current, float next) {
 	bool afterCurrent = test >= current;
 	bool beforeNext = test < next;
 

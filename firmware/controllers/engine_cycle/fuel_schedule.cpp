@@ -6,7 +6,7 @@
 
 #include "pch.h"
 
-TRIGGER_RAM_CODE void startInjection(scheduler_arg_t arg) {
+void startInjection(scheduler_arg_t arg) {
 	const InjectorContext ctx(arg);
 	const auto nowNt = getTimeNowNt();
 	CylinderMask mask = ctx.outputsMask();

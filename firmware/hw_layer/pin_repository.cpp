@@ -22,7 +22,7 @@ const char* & getBrainUsedPin(size_t index) {
 }
 
 /* Common for firmware and unit tests */
-TRIGGER_RAM_CODE bool isBrainPinValid(brain_pin_e brainPin) {
+bool isBrainPinValid(brain_pin_e brainPin) {
 	if ((brainPin == Gpio::Unassigned) || (brainPin == Gpio::Invalid))
 		return false;
 

@@ -156,9 +156,9 @@ public:
 	}
 
 		// Out-of-line in trigger_central.cpp: LTO clones of inline methods ignore
-		// the TRIGGER_RAM_CODE section attribute, so this per-edge check must not
+		// the section attribute, so this per-edge check must not
 		// stay inline or it runs from the slow flash NZW area.
-		TRIGGER_RAM_CODE bool engineMovedRecently(efitick_t nowNt) const;
+		bool engineMovedRecently(efitick_t nowNt) const;
 
 	bool engineMovedRecently() const {
 		return engineMovedRecently(getTimeNowNt());

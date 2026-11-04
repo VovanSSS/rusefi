@@ -12,7 +12,7 @@ InjectorOutputPin::InjectorOutputPin() : NamedOutputPin() {
 	injectorIndex = -1;
 }
 
-TRIGGER_RAM_CODE void InjectorOutputPin::open(efitick_t nowNt) {
+void InjectorOutputPin::open(efitick_t nowNt) {
 	// per-output counter for error detection
 	overlappingCounter++;
 	// global counter for logging
@@ -42,7 +42,7 @@ TRIGGER_RAM_CODE void InjectorOutputPin::open(efitick_t nowNt) {
 	}
 }
 
-TRIGGER_RAM_CODE void InjectorOutputPin::close(efitick_t nowNt) {
+void InjectorOutputPin::close(efitick_t nowNt) {
 #if FUEL_MATH_EXTREME_LOGGING
 	if (printFuelDebug) {
 		printf("InjectorOutputPin::close %s %d %d\r\n", getName(), overlappingCounter, time2print(getTimeNowUs()));
@@ -69,7 +69,7 @@ TRIGGER_RAM_CODE void InjectorOutputPin::close(efitick_t nowNt) {
 	}
 }
 
-TRIGGER_RAM_CODE void InjectorOutputPin::setHigh() {
+void InjectorOutputPin::setHigh() {
     NamedOutputPin::setHigh();
     output_channels_s *state = getTunerStudioOutputChannels();
 	// this is NASTY but what's the better option? bytes? At cost of 22 extra bytes in output status packet?
@@ -95,7 +95,7 @@ TRIGGER_RAM_CODE void InjectorOutputPin::setHigh() {
 	}
 }
 
-TRIGGER_RAM_CODE void InjectorOutputPin::setLow() {
+void InjectorOutputPin::setLow() {
     NamedOutputPin::setLow();
     output_channels_s *state = getTunerStudioOutputChannels();
 	// this is NASTY but what's the better option? bytes? At cost of 22 extra bytes in output status packet?

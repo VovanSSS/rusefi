@@ -96,7 +96,7 @@ bool TriggerCentral::isVvtPositionFresh(uint8_t bankIndex, uint8_t camIndex) con
 /**
  * @return angle since trigger synchronization point, NOT angle since TDC.
  */
-TRIGGER_RAM_CODE bool TriggerCentral::engineMovedRecently(efitick_t nowNt) const {
+bool TriggerCentral::engineMovedRecently(efitick_t nowNt) const {
 	// todo: this user-defined property is a quick solution, proper fix https://github.com/rusefi/rusefi/issues/6593 is needed
 	if (engineConfiguration->triggerEventsTimeoutMs != 0 && m_lastEventTimer.hasElapsedMs(engineConfiguration->triggerEventsTimeoutMs)) {
 		return false;
@@ -114,7 +114,7 @@ TRIGGER_RAM_CODE bool TriggerCentral::engineMovedRecently(efitick_t nowNt) const
 	return (getSecondsSinceTriggerEvent(nowNt) < maxAllowedGap) || directSelfStimulation;
 }
 
-TRIGGER_RAM_CODE expected<float> TriggerCentral::getCurrentEnginePhase(efitick_t nowNt) const {
+expected<float> TriggerCentral::getCurrentEnginePhase(efitick_t nowNt) const {
 	floatus_t oneDegreeUs = engine->rpmCalculator.oneDegreeUs;
 
 	if (std::isnan(oneDegreeUs)) {
@@ -138,7 +138,7 @@ TRIGGER_RAM_CODE expected<float> TriggerCentral::getCurrentEnginePhase(efitick_t
 /**
  * todo: why is this method NOT reciprocal to getRpmMultiplier?!
  */
-TRIGGER_RAM_CODE int getCrankDivider(operation_mode_e operationMode) {
+int getCrankDivider(operation_mode_e operationMode) {
 	switch (operationMode) {
 	case FOUR_STROKE_CRANK_SENSOR:
 		return 2;
@@ -323,7 +323,7 @@ static void logVvtFront(bool useOnlyRise, bool isImportantFront, TriggerValue fr
 #endif /* EFI_TOOTH_LOGGER */
 }
 
-TRIGGER_RAM_CODE static bool tooSoonToHandleSignal() {
+static bool tooSoonToHandleSignal() {
 #if EFI_PROD_CODE
 extern bool main_loop_started;
 	if (!main_loop_started) {
@@ -561,7 +561,7 @@ uint32_t triggerMaxDuration = 0;
  *  - Hardware triggers
  *  - Trigger replay from CSV (unit tests)
  */
-TRIGGER_RAM_CODE void hwHandleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp) {
+__attribute__((noinline)) void hwHandleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp) {
   // Raw board-level edge capture BEFORE any filtering: boards diagnose the
   // input noise with this (m74_9 'rawtrg' console command).
   boardRawTriggerEdge(signalIndex, isRising, timestamp);
@@ -649,7 +649,7 @@ static void handleKickStart(trigger_event_e signal, efitick_t timestamp) {
 #endif // EFI_ENGINE_CONTROL
 
 // Handle all shaft signals - hardware or emulated both
-TRIGGER_RAM_CODE void handleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp) {
+void handleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp) {
 	bool isPrimary = signalIndex == 0;
 	if (!isPrimary && !TRIGGER_WAVEFORM(needSecondTriggerInput)) {
 		return;
@@ -722,7 +722,7 @@ void TriggerCentral::resetCounters() {
 
 static const int wheelIndeces[4] = { 0, 0, 1, 1};
 
-TRIGGER_RAM_CODE static void reportEventToWaveChart(trigger_event_e ckpSignalType, int triggerEventIndex, bool addOppositeEvent) {
+static void reportEventToWaveChart(trigger_event_e ckpSignalType, int triggerEventIndex, bool addOppositeEvent) {
 	if (!getTriggerCentral()->isEngineSnifferEnabled) { // this is here just as a shortcut so that we avoid engine sniffer as soon as possible
 		return; // engineSnifferRpmThreshold is accounted for inside getTriggerCentral()->isEngineSnifferEnabled
 	}
@@ -847,7 +847,7 @@ float mapAtAngle[200];
 
 #endif
 
-TRIGGER_RAM_CODE void TriggerCentral::decodeMapCam(int toothIndexForListeners, efitick_t timestamp, float currentPhase) {
+void TriggerCentral::decodeMapCam(int toothIndexForListeners, efitick_t timestamp, float currentPhase) {
 	UNUSED(toothIndexForListeners);
 
     isDecodingMapCam = engineConfiguration->vvtMode[0] == VVT_MAP_V_TWIN &&
@@ -880,7 +880,7 @@ TRIGGER_RAM_CODE void TriggerCentral::decodeMapCam(int toothIndexForListeners, e
 	}
 }
 
-TRIGGER_RAM_CODE bool TriggerCentral::isToothExpectedNow(efitick_t timestamp) {
+bool TriggerCentral::isToothExpectedNow(efitick_t timestamp) {
 	// Check that the expected next phase (from the last tooth) is close to the actual current phase:
 	// basically, check that the tooth width is correct
 	auto estimatedCurrentPhase = getCurrentEnginePhase(timestamp);
@@ -952,7 +952,7 @@ bool boardAllowTriggerActions() {
 	return get_board_override_result(custom_board_boardAllowTriggerActions, true);
 }
 
-TRIGGER_RAM_CODE angle_t TriggerCentral::findNextTriggerToothAngle(int p_currentToothIndex) {
+angle_t TriggerCentral::findNextTriggerToothAngle(int p_currentToothIndex) {
 	int currentToothIndex = p_currentToothIndex % engineCycleEventCount;
 	// The angle we are advancing FROM (raw eventAngles value, no tdc/wrap):
 	// useOnlyRisingEdges wheels store the falling edge at the preceding rise's
@@ -986,7 +986,7 @@ TRIGGER_RAM_CODE angle_t TriggerCentral::findNextTriggerToothAngle(int p_current
 /**
  * This method is NOT invoked for VR falls.
  */
-TRIGGER_RAM_CODE void TriggerCentral::handleShaftSignal(trigger_event_e signal, efitick_t timestamp) {
+__attribute__((noinline)) void TriggerCentral::handleShaftSignal(trigger_event_e signal, efitick_t timestamp) {
 	uint32_t t0 = getTimeNowLowerNt();
 	// Board opt-in input debounce (m74_9): VR comparator ringing and starter
 	// noise arrive as edge bursts far below the real tooth period. Dropping

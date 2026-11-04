@@ -139,7 +139,7 @@ private:
 	// Wraps the original function for unified signature
 	// Applies correct cast to argument before dispatching to Func
 	template<auto Func, typename Arg>
-	static TRIGGER_RAM_CODE constexpr void trampoline(scheduler_arg_t raw) noexcept {
+	static constexpr void trampoline(scheduler_arg_t raw) noexcept {
 		static_assert(std::is_pointer_v<Arg> || std::is_integral_v<Arg>, "Unsupported type");
 		#if EFI_UNIT_TEST_VERBOSE_ACTION
 			std::cout << "action_s::trampoline: " << __PRETTY_FUNCTION__ << "(" << reinterpret_cast<scheduler_arg_t>(Func) << ") "
@@ -154,7 +154,7 @@ private:
 
 	// Wrapper for zero arg callbacks
 	template<auto Func>
-	static TRIGGER_RAM_CODE constexpr void trampoline_no_arg(scheduler_arg_t) noexcept {
+	static constexpr void trampoline_no_arg(scheduler_arg_t) noexcept {
 		#if EFI_UNIT_TEST_VERBOSE_ACTION
 			std::cout << "action_s::trampoline_no_arg: " << __PRETTY_FUNCTION__ << "(" << reinterpret_cast<scheduler_arg_t>(Func) << ") with no arg" << std::endl;
 		#endif

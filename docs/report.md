@@ -1,5 +1,28 @@
 # Work Report
 
+## 2026-11-04 (3) - m74_9: drop TRIGGER_RAM_CODE, keep ZW placement via plain noinline
+
+The TRIGGER_RAM_CODE macro (global.h) and all its markers were removed: the
+macro's RAM-copy half (EFI_TRIGGER_IN_RAM / .fast_text) had been dead since
+a360ba2106, and the noinline half is now spelled directly. Files whose only
+diff vs master was the marker were reset to master; m74_9 files (trigger_central,
+trigger_decoder, tooth_diag, AT32, tooth_logger, limp_manager, isr_duration_histogram,
+etc.) keep their content with the markers stripped. sensor.cpp/sensor.h back to
+master (getOrZero inline again). unit_tests/simulator global.h no longer define the
+macro. libfirmware submodule + .gitmodules libfirmware entry reverted to master
+(the fork's only change was the Timer TRIGGER_RAM_CODE commit).
+
+Without noinline, LTO inlined 6 hot functions and check_zw_coverage.sh failed
+with 'symbol not found' (the code stayed in ZW inside handleShaftSignal/
+shaft_callback/trampoline, but was unverifiable by name). Fix: plain
+__attribute__((noinline)) on exactly those 6 - hwHandleShaftSignal,
+TriggerCentral::handleShaftSignal, mainTriggerCallback, InjectionEvent::onTriggerTooth,
+turnSparkPinHighStartCharging, TriggerScheduler::scheduleEventsUntilNextTriggerTooth.
+Master itself has none of this machinery (no fast_text/noinline/check) - the ZW
+window + globs + check are an m74_9-only feature.
+
+VALIDATION: m74_9 three-stage image builds, ZW-COVERAGE: OK.
+
 ## 2026-11-04 (2) - m74_9: align branch to master (code + tests), keep m74_9 features
 
 Following up on the incomplete 460fb51cbf revert (it promised to strip the angle

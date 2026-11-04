@@ -21,9 +21,9 @@ struct IsrDurationHistogram {
 	uint32_t sumUs = 0;
 
 	// Out-of-line in isr_duration_histogram.cpp: LTO clones of inline methods
-	// ignore the TRIGGER_RAM_CODE section attribute, so this per-ISR method
+	// ignore the section attribute, so this per-ISR method
 	// must not stay inline or it runs from the slow flash NZW area.
-	TRIGGER_RAM_CODE void add(uint32_t ticks);
+	void add(uint32_t ticks);
 
 	void reset() {
 		for (size_t i = 0; i < Buckets; i++) {

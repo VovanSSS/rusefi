@@ -21,7 +21,7 @@
 	#error "PAL_USE_CALLBACKS should be enabled to use HAL_TRIGGER_USE_PAL"
 #endif
 
-TRIGGER_RAM_CODE static void shaft_callback(void *arg, efitick_t stamp, bool level) {
+static void shaft_callback(void *arg, efitick_t stamp, bool level) {
 	// do the time sensitive things as early as possible!
 	int index = (int)arg;
 	// The pin level was captured in the EXTI fast IRQ (~us after the edge) and

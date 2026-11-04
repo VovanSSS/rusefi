@@ -253,7 +253,7 @@ angle_t getInjectionOffset(float rpm, float load) {
  * Number of injections using each injector per engine cycle
  * @see getNumberOfSparks
  */
-TRIGGER_RAM_CODE int getNumberOfInjections(injection_mode_e mode) {
+int getNumberOfInjections(injection_mode_e mode) {
 	switch (mode) {
 	case IM_SIMULTANEOUS:
 	case IM_SINGLE_POINT:

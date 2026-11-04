@@ -109,7 +109,7 @@ void TriggerScheduler::cancel(AngleBasedEvent* event) {
 	event->nextToothEvent = nullptr;
 }
 
-TRIGGER_RAM_CODE void TriggerScheduler::scheduleEventsUntilNextTriggerTooth(float rpm,
+__attribute__((noinline)) void TriggerScheduler::scheduleEventsUntilNextTriggerTooth(float rpm,
 							   efitick_t edgeTimestamp, float currentPhase, float nextPhase) {
 
 	if (rpm == 0) {

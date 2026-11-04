@@ -478,11 +478,11 @@ const char *NamedOutputPin::getShortName() const {
 extern bool verboseMode;
 #endif // EFI_UNIT_TEST
 
-TRIGGER_RAM_CODE void NamedOutputPin::setHigh() {
+void NamedOutputPin::setHigh() {
     setHigh(nullptr);
 }
 
-TRIGGER_RAM_CODE void NamedOutputPin::setHigh(const char *msg) {
+void NamedOutputPin::setHigh(const char *msg) {
 #if EFI_UNIT_TEST
 	if (verboseMode) {
 		efiPrintf("pin %s goes high", name);
@@ -500,11 +500,11 @@ TRIGGER_RAM_CODE void NamedOutputPin::setHigh(const char *msg) {
 #endif /* EFI_ENGINE_SNIFFER */
 }
 
-TRIGGER_RAM_CODE void NamedOutputPin::setLow() {
+void NamedOutputPin::setLow() {
     setLow(nullptr);
 }
 
-TRIGGER_RAM_CODE void NamedOutputPin::setLow(const char *msg) {
+void NamedOutputPin::setLow(const char *msg) {
 #if EFI_UNIT_TEST
 	if (verboseMode) {
 		efiPrintf("pin %s goes low", name);
@@ -530,7 +530,7 @@ bool NamedOutputPin::stop() {
 	return false;
 }
 
-TRIGGER_RAM_CODE void InjectorOutputPin::reset() {
+void InjectorOutputPin::reset() {
 	// If this injector was open, close it and reset state
 	if (overlappingCounter != 0) {
 		overlappingCounter = 0;
@@ -600,7 +600,7 @@ void IgnitionOutputPin::reset() {
 	currentLogicValue = INITIAL_PIN_STATE;
 }
 
-TRIGGER_RAM_CODE bool OutputPin::isInitialized() const {
+bool OutputPin::isInitialized() const {
 #if EFI_GPIO_HARDWARE && EFI_PROD_CODE
 #if (BOARD_EXT_GPIOCHIPS > 0)
 	if (ext)
@@ -634,7 +634,7 @@ void OutputPin::setOnchipValue(int electricalValue) {
 }
 #endif // EFI_PROD_CODE
 
-TRIGGER_RAM_CODE void OutputPin::setValue(int logicValue, bool isForce) {
+void OutputPin::setValue(int logicValue, bool isForce) {
     setValue(nullptr, logicValue, isForce);
 }
 
@@ -645,7 +645,7 @@ void OutputPin::resetToggleStats() {
 }
 #endif // EFI_SIMULATOR
 
-TRIGGER_RAM_CODE void OutputPin::setValue(const char *msg, int logicValue, bool isForce) {
+void OutputPin::setValue(const char *msg, int logicValue, bool isForce) {
     UNUSED(msg);
     if ((isHwQcMode() || getOutputOnTheBenchTest() == this) && !isForce) {
         return;

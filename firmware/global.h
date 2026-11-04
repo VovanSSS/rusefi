@@ -17,24 +17,6 @@
 // *** https://github.com/rusefi/rusefi/issues/1007 ***
 #include "common_headers.h"
 
-/**
- * Hot per-tooth ISR path (trigger decode + event scheduling). Keep these
- * functions out-of-line (noinline) so they stay distinct symbols that the
- * board linker can place in a fast region by name. On AT32 with
- * EFI_TRIGGER_IN_RAM the section goes to .fast_text (copied to zero-wait
- * SRAM at boot); otherwise the .m749_fast_text linker globs place them in
- * the zero-wait ZW flash window. noinline is required in BOTH cases: LTO
- * would otherwise inline these bodies into their callers and neither the
- * section attribute nor the name glob could be applied to them.
- */
-#ifndef TRIGGER_RAM_CODE
-#if EFI_TRIGGER_IN_RAM
-#define TRIGGER_RAM_CODE __attribute__((section(".fast_text"), noinline))
-#else
-#define TRIGGER_RAM_CODE __attribute__((noinline))
-#endif
-#endif
-
 #include "single_timer_executor.h"
 
 // for US_TO_NT_MULTIPLIER

@@ -123,7 +123,7 @@ void resetGpioPwmForUnitTest() {
 /**
  * @return pointer to GPIO device for specified pin
  */
-TRIGGER_RAM_CODE static gpiochip *gpiochip_find(brain_pin_e pin)
+static gpiochip *gpiochip_find(brain_pin_e pin)
 {
 	for (int i = 0; i < BOARD_EXT_GPIOCHIPS; i++) {
 		gpiochip *chip = &chips[i];
@@ -363,7 +363,7 @@ int gpiochips_setPadMode(brain_pin_e pin, iomode_t mode)
  * else return value from gpiochip driver;
  */
 
-TRIGGER_RAM_CODE int gpiochips_writePad(brain_pin_e pin, int value) {
+int gpiochips_writePad(brain_pin_e pin, int value) {
 #if EFI_PROD_CODE
 extern bool isInHardFaultHandler;
   // todo: technical debt, how do we turn off smart GPIO?!

@@ -178,7 +178,7 @@ void Sensor::unregister() {
 /**
  * @returns NotNull: sensor result or UnexpectedCode::Configuration if sensor is not registered
  */
-/*static*/ TRIGGER_RAM_CODE SensorResult Sensor::get(SensorType type) {
+/*static*/ SensorResult Sensor::get(SensorType type) {
 	const auto entry = getEntryForType(type);
 
 	// Check if this is a valid sensor entry
@@ -187,10 +187,6 @@ void Sensor::unregister() {
 	}
 
 	return entry->get();
-}
-
-/*static*/ TRIGGER_RAM_CODE float Sensor::getOrZero(SensorType type) {
-	return Sensor::get(type).value_or(0);
 }
 
 /*static*/ float Sensor::getRaw(SensorType type) {

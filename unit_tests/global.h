@@ -12,12 +12,6 @@
 #include <stdio.h>
 #include <time.h>
 
-// Host build (unit tests): there is no .fast_text linker section, so the
-// trigger fast-path placement attribute is a no-op. Defined BEFORE
-// test_executor.h (which pulls in single_timer_executor.h -> scheduler.h,
-// whose trampolines use the macro).
-#define TRIGGER_RAM_CODE
-
 #include "common_headers.h"
 #include "test_executor.h"
 
