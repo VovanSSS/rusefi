@@ -13,10 +13,6 @@
 #include "exti_host_adapter.h"
 #endif
 
-#if EFI_ANGLE_CLOCK
-#include "angle_clock.h"
-#endif
-
 /**
  * EXTI is a funny thing: you can only use same pin on one port. For example, you can use
  * PA0 PB5 PE2 PD7
@@ -184,13 +180,6 @@ static inline void triggerInterrupt() {
 
 struct ExtiQueueEntry {
 	efitick_t Timestamp;
-	// TMR2-domain edge timestamp captured in the same fast-IRQ pass as the NT
-	// timestamp (EFI_ANGLE_CLOCK builds only; 0 otherwise). The angle clock is
-	// its own time base: this is the ONLY place the TMR2-domain edge time can
-	// be captured with "this edge" semantics (the handoff runs up to ~1 ms
-	// late). Capturing it here removes the NT->TMR2 offset conversion from the
-	// whole arming path - the arms add tick delays directly to this value.
-	uint32_t AcTimestamp;
 	uint8_t Channel;
 	// Pin level captured in the fast IRQ, ~2-3 us after the edge - the only
 	// place where it is still guaranteed to describe THIS edge. The L9779
@@ -267,7 +256,7 @@ CH_IRQ_HANDLER(STM32_I2C1_EVENT_HANDLER) {
 			auto& channel = channels[entry.Channel];
 
 			if (channel.Callback) {
-				channel.Callback(channel.CallbackData, timestamp, entry.AcTimestamp, entry.Level);
+				channel.Callback(channel.CallbackData, timestamp, entry.Level);
 			}
 		} else {
 			overflowCounter++;
@@ -296,15 +285,7 @@ void handleExtiIsr(uint8_t index) {
 		// level belongs to a later edge at running rpm - a wrong-direction
 		// event that the decoder sees as a phantom eaten/extra tooth.
 		bool level = palReadLine(channels[index].Line);
-#if EFI_ANGLE_CLOCK
-		// Same fast-IRQ capture for the angle clock's OWN time base: TMR2->CNT
-		// read back-to-back with the NT timestamp (~100 ns of fast-IRQ budget).
-		// This pair is the whole interface between the two time domains - the
-		// angle clock never reads TIM5 again after init.
-		queue.push({getTimeNowNt(), angleClockNow(), index, level});
-#else
-		queue.push({getTimeNowNt(), 0, index, level});
-#endif
+		queue.push({getTimeNowNt(), index, level});
 
 		triggerInterrupt();
 	}

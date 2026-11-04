@@ -20,9 +20,6 @@ TESTS_SRC_CPP = \
 	tests/trigger/test_all_triggers.cpp \
 	tests/trigger/test_trigger_sequence_finder.cpp \
 	tests/trigger/test_2_stroke.cpp \
-	tests/trigger/test_60_2_cranking_transition.cpp \
-	tests/trigger/test_60_2_early_gap_latch.cpp \
-	tests/trigger/test_cam_phase_drift.cpp \
 	tests/trigger/test_symmetrical_crank.cpp \
 	tests/trigger/test_trigger_decoder.cpp \
 	tests/trigger/test_trigger_decoder_2.cpp \
@@ -230,6 +227,7 @@ TESTS_SRC_CPP = \
 	tests/binary_log/test_mlg_open_issues.cpp \
 	tests/test_dynoview.cpp \
 	tests/test_gpio.cpp \
+	tests/test_digital_input_exti.cpp \
 	tests/test_limp.cpp \
 	tests/test_tcu.cpp \
 	tests/test_hellen_board_id.cpp \

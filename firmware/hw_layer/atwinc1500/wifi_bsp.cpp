@@ -21,8 +21,7 @@ void nm_bsp_sleep(uint32 u32TimeMsec) {
 
 static tpfNmBspIsr gpfIsr = nullptr;
 
-static void isrAdapter(void*, efitick_t, uint32_t acTimestamp, bool) {
-	UNUSED(acTimestamp);
+static void isrAdapter(void*, efitick_t, bool) {
 	if (gpfIsr) {
 		gpfIsr();
 	}

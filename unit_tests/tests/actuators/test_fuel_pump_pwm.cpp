@@ -43,7 +43,7 @@ protected:
 	}
 
 	void running() {
-		engine->triggerCentral.handleShaftSignal(SHAFT_PRIMARY_FALLING, getTimeNowNt(), /*acTimestamp*/0);
+		engine->triggerCentral.handleShaftSignal(SHAFT_PRIMARY_FALLING, getTimeNowNt());
 		pump.onSlowCallback();
 		ASSERT_TRUE(pump.isFuelPumpOn);
 		ASSERT_FALSE(pump.isPrime);

@@ -21,7 +21,7 @@
 	#error "PAL_USE_CALLBACKS should be enabled to use HAL_TRIGGER_USE_PAL"
 #endif
 
-TRIGGER_RAM_CODE static void shaft_callback(void *arg, efitick_t stamp, uint32_t acTimestamp, bool level) {
+TRIGGER_RAM_CODE static void shaft_callback(void *arg, efitick_t stamp, bool level) {
 	// do the time sensitive things as early as possible!
 	int index = (int)arg;
 	// The pin level was captured in the EXTI fast IRQ (~us after the edge) and
@@ -33,11 +33,10 @@ TRIGGER_RAM_CODE static void shaft_callback(void *arg, efitick_t stamp, uint32_t
 	// todo: support for 3rd trigger input channel
 	// todo: start using real event time from HW event, not just software timer?
 
-	hwHandleShaftSignal(index, rise, stamp, acTimestamp);
+	hwHandleShaftSignal(index, rise, stamp);
 }
 
-static void cam_callback(void *arg, efitick_t stamp, uint32_t acTimestamp, bool level) {
-	UNUSED(acTimestamp);
+static void cam_callback(void *arg, efitick_t stamp, bool level) {
 	int index = (int)arg;
 
 	hwHandleVvtCamSignal(level, stamp, index);

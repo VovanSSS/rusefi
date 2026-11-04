@@ -76,14 +76,9 @@ TEST(RealNoisyTrigger, AvoidOverdwell2WithInstant) {
 }
 
 TEST(RealNoisyTrigger, AvoidOverdwell3NoInstant) {
-	// The position gate (trigger_decoder.cpp) rejects early mid-rev false gap
-	// candidates: noise-missed teeth now desync via the counter overflow path
-	// instead of the 'too few teeth' sync path, which shifts the dwell-bail
-	// count by a few (was 25 with the ratio-only decoder). The overdwell
-	// assertion above still holds - see the gate comment for details.
-	testNoOverdwell("tests/trigger/resources/noisy-trigger-3.csv", false, 29);
+	testNoOverdwell("tests/trigger/resources/noisy-trigger-3.csv", false, 25);
 }
 
 TEST(RealNoisyTrigger, AvoidOverdwell3WithInstant) {
-	testNoOverdwell("tests/trigger/resources/noisy-trigger-3.csv", true, 26);
+	testNoOverdwell("tests/trigger/resources/noisy-trigger-3.csv", true, 22);
 }

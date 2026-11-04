@@ -53,13 +53,13 @@ static void comp_shaft_callback(COMPDriver *comp) {
 	int isPrimary = (comp == EFI_COMP_PRIMARY_DEVICE);
 
 	if (status & COMP_IRQ_RISING) {
-		hwHandleShaftSignal(isPrimary ? 0 : 1, true, stamp, 0);
+		hwHandleShaftSignal(isPrimary ? 0 : 1, true, stamp);
 		// shift the threshold down a little bit to avoid false-triggering (threshold hysteresis)
 		setHysteresis(comp, -1);
 	}
 
 	if (status & COMP_IRQ_FALLING) {
-		hwHandleShaftSignal(isPrimary ? 0 : 1, false, stamp, 0);
+		hwHandleShaftSignal(isPrimary ? 0 : 1, false, stamp);
 		// shift the threshold up a little bit to avoid false-triggering (threshold hysteresis)
 		setHysteresis(comp, 1);
 	}

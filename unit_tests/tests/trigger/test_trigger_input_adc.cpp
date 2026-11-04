@@ -41,7 +41,7 @@ void onTriggerChanged(efitick_t stamp, bool isPrimary, bool isRising) {
 	else
 		triggerChangedFallingCnt++;
 
-	hwHandleShaftSignal(isPrimary ? 0 : 1, isRising, stamp, /*acTimestamp*/0);
+	hwHandleShaftSignal(isPrimary ? 0 : 1, isRising, stamp);
 }
 
 static void simulateTrigger(EngineTestHelper &eth, TriggerAdcDetector &detector, CsvReader &reader, float voltageDiv, float adcMaxVoltage) {

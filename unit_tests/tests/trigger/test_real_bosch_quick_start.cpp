@@ -41,10 +41,10 @@ TEST(realBQS, readAsPrimarySensor) {
 TEST(realBQS, readAsCam) {
 	EngineTestHelper eth(engine_type_e::ET_TEST_WITH_BOSCH_QUICK_START);
 
-	hwHandleShaftSignal(0, true,  0, /*acTimestamp*/0);
-	hwHandleShaftSignal(0, false, 1000000, /*acTimestamp*/0);
-	hwHandleShaftSignal(0, true, 2000000, /*acTimestamp*/0);
-	hwHandleShaftSignal(0, false, 3000000, /*acTimestamp*/0);
+	hwHandleShaftSignal(0, true,  0);
+	hwHandleShaftSignal(0, false, 1000000);
+	hwHandleShaftSignal(0, true, 2000000);
+	hwHandleShaftSignal(0, false, 3000000);
 	ASSERT_EQ(3000, Sensor::getOrZero(SensorType::Rpm));
 
 	  CsvReader reader(/*triggerCount*/0, /* vvtCount */ 1);

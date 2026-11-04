@@ -79,8 +79,7 @@ void setTriggerAdcMode(triggerAdcMode_t adcMode) {
 		(adcMode == TRIGGER_ADC_ADC) ? PAL_MODE_INPUT_ANALOG : PAL_MODE_EXTINT);
 }
 
-static void shaft_callback(void *arg, efitick_t stamp, uint32_t acTimestamp, bool level) {
-	UNUSED(acTimestamp);
+static void shaft_callback(void *arg, efitick_t stamp, bool level) {
 	// do the time sensitive things as early as possible!
 	// The pin level was captured in the EXTI fast IRQ and travelled through
 	// the queue - do not re-read it here (late read = wrong edge direction).
@@ -89,9 +88,8 @@ static void shaft_callback(void *arg, efitick_t stamp, uint32_t acTimestamp, boo
 	trigAdcState.digitalCallback(stamp, true, rise);
 }
 
-static void cam_callback(void *, efitick_t stamp, uint32_t acTimestamp, bool /*level*/) {
+static void cam_callback(void *, efitick_t stamp, bool /*level*/) {
 	UNUSED(stamp);
-	UNUSED(acTimestamp);
 	// TODO: implement...
 }
 
@@ -180,7 +178,7 @@ void onTriggerChanged(efitick_t stamp, bool isPrimary, bool isRising) {
 	// call the main trigger handler. The TMR2-domain edge tick is synthesized
 	// (this path is never used on the angle-clock build - HAL_TRIGGER_USE_ADC
 	// is FALSE there - but a real tick keeps it correct if that ever changes).
-	hwHandleShaftSignal(isPrimary ? 0 : 1, isRising, stamp, 0);
+	hwHandleShaftSignal(isPrimary ? 0 : 1, isRising, stamp);
 #endif // 1
 }
 

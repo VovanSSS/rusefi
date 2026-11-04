@@ -133,17 +133,6 @@ void EngineState::periodicFastCallback() {
 		engine->engineState.stftCorrection[bankIndex] = clResult.banks[bankIndex];
 	}
 
-	// Reference MAP used by getInjectionMass() above (via SensorType::Map -> MapFast:
-	// the freshest closed window in variant A, the previous tick's instant
-	// fast-ADC conversion in variant B - the 200 Hz tick reads what the PREVIOUS
-	// tick published, so mass and referenceMap always share one value)
-	const float mapReference = Sensor::getOrZero(SensorType::Map);
-
-	// Variant A (2026-09-23): remember the MAP the mass pipeline was computed
-	// against - the denominator basis of the per-cylinder refresh at injection
-	// scheduling time (see refreshInjectionMassForCylinder).
-	engine->engineState.referenceMap = mapReference;
-
 	// Now apply that to per-cylinder fueling and timing
 	for (size_t cylinderIndex = 0; cylinderIndex < engineConfiguration->cylindersCount; cylinderIndex++) {
 		uint8_t bankIndex = engineConfiguration->cylinderBankSelect[cylinderIndex];
@@ -151,23 +140,14 @@ void EngineState::periodicFastCallback() {
 		/* TODO: add LTFT trims when ready */
 		auto bankTrim = clResult.banks[bankIndex] *
 #if EFI_LTFT_CONTROL
-				ltftResult.banks[bankIndex] *
+			ltftResult.banks[bankIndex] *
 #endif
-					1.0;
+			1.0f;
 		auto cylinderTrim = getCylinderFuelTrim(cylinderIndex, rpm, fuelLoad);
 		auto knockTrim = engine->module<KnockController>()->getFuelTrimMultiplier();
 
-		// Variant A (2026-09-23): the stored mass is REFERENCE-based - uniform for
-		// all cylinders. Per-cylinder MAP correction moved to the single-window
-		// pipeline: endAveraging rescales the firing-order successor by the
-		// just-closed window (the previous cylinder's average), and
-		// InjectionEvent::onTriggerTooth applies the final single multiply
-		// (MapFast / injectionMassMapBasis) at scheduling time.
-		float massForCyl = untrimmedInjectionMass;
-		engine->engineState.injectionMassMapBasis[cylinderIndex] = mapReference;
-
 		// Apply both per-bank and per-cylinder trims
-		engine->engineState.injectionMass[cylinderIndex] = massForCyl * bankTrim * cylinderTrim * knockTrim;
+		engine->engineState.injectionMass[cylinderIndex] = untrimmedInjectionMass * bankTrim * cylinderTrim * knockTrim;
 
 		angle_t cylinderIgnitionAdvance = correctedIgnitionAdvance
 									+ getCylinderIgnitionTrim(cylinderIndex, rpm, l_ignitionLoad)

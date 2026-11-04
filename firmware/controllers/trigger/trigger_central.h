@@ -55,7 +55,7 @@ public:
 	 * not to be confused with a totally different trigger _wheel_ sync which could be either crank wheel sync or cam wheel sync
 	 */
 	angle_t syncEnginePhaseAndReport(int divider, int remainder);
-	void handleShaftSignal(trigger_event_e signal, efitick_t timestamp, uint32_t acTimestamp);
+	void handleShaftSignal(trigger_event_e signal, efitick_t timestamp);
 	int getHwEventCounter(int index) const;
 	void resetCounters();
 	void validateCamVvtCounters();
@@ -265,8 +265,8 @@ void boardRawTriggerEdge(int signalIndex, bool isRising, efitick_t timestamp);
 void resetTriggerIsrHistogram();
 void printTriggerIsrHistogram();
 
-void hwHandleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp, uint32_t acTimestamp);
-void handleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp, uint32_t acTimestamp);
+void hwHandleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp);
+void handleShaftSignal(int signalIndex, bool isRising, efitick_t timestamp);
 void hwHandleVvtCamSignal(TriggerValue front, efitick_t timestamp, int index);
 void hwHandleVvtCamSignal(bool isRising, efitick_t timestamp, int index);
 void handleVvtCamSignal(TriggerValue front, efitick_t timestamp, int index);

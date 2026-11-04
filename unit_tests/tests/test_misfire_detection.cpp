@@ -3,21 +3,22 @@
 #include "idle_thread.h"
 #include "malfunction_central.h"
 
-#include <cmath>
+// Drives synthetic primary-trigger teeth into MisfireController::onEnginePhase, optionally
+// inflating the expansion-stroke segment of one cylinder to simulate a misfire.
 
-// 2026-09-23: the detector moved out of the handoff. The per-cycle planner
-// scheduleNextCycleSegments() schedules 2N executor events (segment start/end per
-// cylinder); each end event evaluates the segment of the cylinder that already
-// fired. Planning/event-structure is exercised through the real scheduler, the
-// detection math through direct boundary-callback feeds.
+static constexpr float kCycle      = 720.0f; // four-stroke engine cycle, degrees
+static constexpr float kToothDeg   = 6.0f;   // fine synthetic tooth spacing
+static constexpr float kUsPerDeg   = 100.0f; // healthy idle pace (~1666 rpm equiv, value irrelevant)
 
 static MisfireController& getMc() {
 	return engine->module<MisfireController>().unmock();
 }
 
 static void setupMisfireConfig(EngineTestHelper& eth) {
-	// The planner's sub-tooth guard reads the *configured* trigger: give it a
-	// fine wheel so the configured tooth pitch allows realistic windows.
+	// The tests feed synthetic kToothDeg teeth straight into onEnginePhase, but the misfire
+	// guard reads the *configured* trigger to reject sub-tooth windows. Give it a fine wheel so
+	// the configured tooth pitch matches the synthetic feed (otherwise the coarse default
+	// TEST_ENGINE trigger makes the guard refuse every realistic window).
 	engineConfiguration->trigger.customTotalToothCount = 60;
 	engineConfiguration->trigger.customSkippedToothCount = 2;
 	eth.setTriggerType(trigger_type_e::TT_TOOTHED_WHEEL);
@@ -30,29 +31,49 @@ static void setupMisfireConfig(EngineTestHelper& eth) {
 	engineConfiguration->misfireCountThreshold   = 4;    // small so the test latches quickly
 	engineConfiguration->misfireWindowStart      = 20;
 	engineConfiguration->misfireWindowEnd        = 120;
+}
 
-	// The planner anchors on the TDC hook phase: reference it to 0.
-	getTriggerCentral()->triggerShape.tdcPosition = 0;
-	engineConfiguration->globalTriggerAngleOffset = 0;
-	engine->rpmCalculator.setRpmValue(1500);
+static float normAngle(float a) {
+	a = fmodf(a, kCycle);
+	if (a < 0) {
+		a += kCycle;
+	}
+	return a;
+}
+
+// Is `phase` inside the forward arc [start, end) (mod cycle)?
+static bool phaseInArc(float start, float end, float phase) {
+	start = normAngle(start);
+	end = normAngle(end);
+	phase = normAngle(phase);
+	if (start <= end) {
+		return phase >= start && phase < end;
+	}
+	return phase >= start || phase < end;
 }
 
 namespace {
-// Drives synthetic segments straight into the boundary callbacks (the same math
-// the executor events trigger), optionally inflating one cylinder's segment.
-struct SegmentDriver {
+struct ToothDriver {
 	efitick_t now = 0;
 
-	void feedSegment(uint8_t cyl, float factor) {
-		float segUs = 20000.0f; // arbitrary healthy idle baseline
-		getMc().captureSegmentStart(cyl, now);
-		now += US2NT((efitick_t)(segUs * factor));
-		getMc().finishSegment(cyl, now);
-	}
-
+	// Feed one full engine cycle of teeth. If targetCyl >= 0, multiply the per-tooth
+	// duration by `factor` for teeth inside that cylinder's detection window.
 	void feedCycle(int targetCyl, float factor) {
-		for (uint8_t i = 0; i < engineConfiguration->cylindersCount; i++) {
-			feedSegment(i, (targetCyl >= 0 && i == targetCyl) ? factor : 1.0f);
+		float winStart = 0, winEnd = 0;
+		if (targetCyl >= 0) {
+			angle_t tdc = engine->cylinders[targetCyl].getAngleOffset();
+			winStart = tdc + engineConfiguration->misfireWindowStart;
+			winEnd = tdc + engineConfiguration->misfireWindowEnd;
+		}
+
+		for (float phase = 0; phase < kCycle; phase += kToothDeg) {
+			float nextPhase = phase + kToothDeg;
+			float dtUs = kUsPerDeg * kToothDeg;
+			if (targetCyl >= 0 && phaseInArc(winStart, winEnd, phase + kToothDeg * 0.5f)) {
+				dtUs *= factor;
+			}
+			now += US2NT((efitick_t)dtUs);
+			getMc().onEnginePhase(1500.0f, now, phase, nextPhase);
 		}
 	}
 
@@ -67,83 +88,17 @@ TEST(MisfireDetection, disabledByDefault) {
 
 	ASSERT_FALSE(engineConfiguration->misfireDetectionEnabled);
 
-	// Even forcing idle, the planner must schedule nothing while disabled.
+	// Even forcing idle, nothing should be monitored or counted while disabled.
 	engine->module<IdleController>().unmock().isIdling = true;
 
-	engine->module<MisfireController>()->scheduleNextCycleSegments();
+	ToothDriver d;
+	for (int i = 0; i < 6; i++) {
+		d.feedCycle(0, 2.0f); // big slowdowns, but feature is off
+	}
 
-	EXPECT_EQ(0, engine->scheduler.size());
 	EXPECT_FALSE(getMc().misfireDetectionActive);
 	EXPECT_EQ(0, getMc().misfireTotalCount);
 	EXPECT_FALSE(getMc().misfireLatched);
-}
-
-// ---- Planner structure: 2 events per cylinder per cycle ----
-
-TEST(MisfireDetection, plannerSchedulesTwoEventsPerCylinder) {
-	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
-	setupMisfireConfig(eth);
-	engine->module<IdleController>().unmock().isIdling = true;
-
-	engine->module<MisfireController>()->scheduleNextCycleSegments();
-
-	EXPECT_EQ(engineConfiguration->cylindersCount * 2, engine->scheduler.size());
-}
-
-// ---- Planner anchor regression (the 2026-09-24 double subtraction) ----
-
-TEST(MisfireDetection, plannerSegmentOffsetsIgnoreTdcPosition) {
-	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
-	setupMisfireConfig(eth);
-	engine->module<IdleController>().unmock().isIdling = true;
-
-	// Nonzero tunable offset (m74_9 runs 112): the TDC hook fires at engine
-	// phase 0, so segment offsets are the absolute window angles - NOT
-	// windowStart - tdcPosition() (see docs/bug_map_planner_tdc_offset.md).
-	engineConfiguration->globalTriggerAngleOffset = 112;
-
-	engine->module<MisfireController>()->scheduleNextCycleSegments();
-	EXPECT_EQ(engineConfiguration->cylindersCount * 2, engine->scheduler.size());
-
-	// cylinder 0's segment must start TDC(0) + misfireWindowStart(20) = 20 deg
-	// after the plan; before the fix it wrapped 20 - 112 -> 628 deg.
-	auto const segStartAction{ action_s::make<misfireSegmentStartAction>(uint8_t{0}) };
-	float usPerDeg = engine->rpmCalculator.oneDegreeUs;
-	bool foundStartAt20 = false;
-	for (int i = 0; i < engine->scheduler.size(); i++) {
-		auto event = engine->scheduler.getForUnitTest(i);
-		if (event->action.getCallback() == segStartAction.getCallback()) {
-			float offsetDeg = (event->getMomentUs() - getTimeNowUs()) / usPerDeg;
-			if (std::abs(offsetDeg - 20.0f) < 1.0f) {
-				foundStartAt20 = true;
-			}
-		}
-	}
-	EXPECT_TRUE(foundStartAt20);
-}
-
-// ---- Executor-driven segments seed the baseline and arm detection ----
-
-TEST(MisfireDetection, plannerSegmentsSeedBaseline) {
-	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
-	setupMisfireConfig(eth);
-	engine->module<IdleController>().unmock().isIdling = true;
-
-	// One planned cycle; step the mock clock so the boundary events fire at
-	// different instants (the real executor fires them in separate batches as
-	// the clock advances - one frozen 'now' would collapse every segment to 0).
-	engine->module<MisfireController>()->scheduleNextCycleSegments();
-	for (int i = 0; i < 100; i++) {
-		eth.moveTimeForwardMs(1);
-		eth.executeActions();
-	}
-
-	// The completed segments seeded the shared baseline...
-	EXPECT_GT(getMc().misfireLastSegUs, 0.0f);
-
-	// ...and the next planner pass arms detection with the seeded baseline.
-	engine->module<MisfireController>()->scheduleNextCycleSegments();
-	EXPECT_TRUE(getMc().misfireDetectionActive);
 }
 
 // ---- Healthy idle produces no misfires ----
@@ -153,18 +108,11 @@ TEST(MisfireDetection, healthyIdleNoMisfire) {
 	setupMisfireConfig(eth);
 	engine->module<IdleController>().unmock().isIdling = true;
 
+	ToothDriver d;
 	for (int i = 0; i < 20; i++) {
-		engine->module<MisfireController>()->scheduleNextCycleSegments();
-		// one full engine cycle at 1500 rpm = 80 ms; step the clock so each of the
-		// 8 events fires at its own instant - all fire before the next re-plan
-		// (max offset ~660 deg = ~73 ms) so no segment gets cancelled mid-flight
-		for (int step = 0; step < 90; step++) {
-			eth.moveTimeForwardMs(1);
-			eth.executeActions();
-		}
+		d.feedHealthyCycle();
 	}
 
-	// last planner pass armed detection on the seeded baseline
 	EXPECT_TRUE(getMc().misfireDetectionActive);
 	EXPECT_EQ(0, getMc().misfireTotalCount);
 	EXPECT_FALSE(getMc().misfireLatched);
@@ -177,16 +125,16 @@ TEST(MisfireDetection, repeatedMisfireLatchesMil) {
 	setupMisfireConfig(eth);
 	engine->module<IdleController>().unmock().isIdling = true;
 
-	SegmentDriver d;
+	ToothDriver d;
 	// Seed the shared engine-wide baseline with healthy cycles first.
 	for (int i = 0; i < 5; i++) {
 		d.feedHealthyCycle();
 	}
 	ASSERT_EQ(0, getMc().misfireTotalCount);
 
-	// Misfire cylinder 0 every cycle (1.6x slower segment). A single dead cylinder
-	// puts >=2 flagged firings in the 16-firing window, so the engine-wide rate
-	// test counts it and the MIL latches.
+	// Now misfire cylinder 0 every cycle (1.6x slower segment >> 1.15 ratio). Even though the
+	// other cylinders fire cleanly in between, a single dead cylinder puts >=2 flagged firings
+	// in the 16-firing window, so the engine-wide rate test counts it and the MIL latches.
 	for (int i = 0; i < 12; i++) {
 		d.feedCycle(0, 1.6f);
 	}
@@ -213,7 +161,7 @@ TEST(MisfireDetection, thresholdZeroMonitorOnly) {
 	engineConfiguration->misfireCountThreshold = 0; // monitor-only
 	engine->module<IdleController>().unmock().isIdling = true;
 
-	SegmentDriver d;
+	ToothDriver d;
 	for (int i = 0; i < 5; i++) {
 		d.feedHealthyCycle();
 	}
@@ -233,20 +181,18 @@ TEST(MisfireDetection, leavingIdleStopsMonitoring) {
 	auto& idleCtrl = engine->module<IdleController>().unmock();
 	idleCtrl.isIdling = true;
 
-	engine->module<MisfireController>()->scheduleNextCycleSegments();
-	for (int i = 0; i < 90; i++) {
-		eth.moveTimeForwardMs(1);
-		eth.executeActions();
-	}
-	// the next planner pass arms detection on the seeded baseline
-	engine->module<MisfireController>()->scheduleNextCycleSegments();
+	ToothDriver d;
+	d.feedHealthyCycle();
 	EXPECT_TRUE(getMc().misfireDetectionActive);
 
-	// Drop out of idle - the planner must stop scheduling and reset the gate.
+	// Drop out of idle — detector must go inactive and not count.
 	idleCtrl.isIdling = false;
-	engine->module<MisfireController>()->scheduleNextCycleSegments();
+	for (int i = 0; i < 6; i++) {
+		d.feedCycle(0, 2.0f);
+	}
+
 	EXPECT_FALSE(getMc().misfireDetectionActive);
-	EXPECT_EQ(0, engine->scheduler.size());
+	EXPECT_EQ(0, getMc().misfireTotalCount);
 }
 
 // ---- Window narrower than one trigger tooth: refuse + configError, never freeze ----
@@ -256,24 +202,32 @@ TEST(MisfireDetection, narrowWindowBelowToothSpacingRefuses) {
 	setupMisfireConfig(eth);
 	engine->module<IdleController>().unmock().isIdling = true;
 
-	// A sub-tooth window: both ends fall inside one trigger interval, so the timed
-	// segment would collapse to zero and every live-data field would silently
-	// freeze. The planner must refuse to schedule and raise a configError.
+	// A sub-tooth window: both ends fall inside one trigger interval, so the timed segment
+	// would collapse to zero and every live-data field would silently freeze. The guard must
+	// refuse to run and raise a configError instead of measuring degenerate segments.
 	clearConfigErrorMessage();
 	engineConfiguration->misfireWindowStart = 20;
 	engineConfiguration->misfireWindowEnd   = 21; // 1 deg wide, far below any real tooth pitch
 
-	engine->module<MisfireController>()->scheduleNextCycleSegments();
+	ToothDriver d;
+	for (int i = 0; i < 6; i++) {
+		d.feedCycle(0, 1.6f); // even with big slowdowns, nothing should be measured
+	}
 
 	EXPECT_FALSE(getMc().misfireDetectionActive);
-	EXPECT_EQ(0, engine->scheduler.size());
+	EXPECT_EQ(0, getMc().misfireTotalCount);
+	EXPECT_FALSE(getMc().misfireLatched);
 	EXPECT_TRUE(hasConfigError());
 
-	// Widening back to a valid window must clear the refusal and resume scheduling.
+	// Widening back to a valid window must clear the refusal and resume detection — and the
+	// guard must not keep re-raising the configError once the window is large enough.
 	clearConfigErrorMessage();
-	engineConfiguration->misfireWindowEnd = 120;
-	engine->module<MisfireController>()->scheduleNextCycleSegments();
+	engineConfiguration->misfireWindowStart = 20;
+	engineConfiguration->misfireWindowEnd   = 120;
+	for (int i = 0; i < 3; i++) {
+		d.feedHealthyCycle();
+	}
 
+	EXPECT_TRUE(getMc().misfireDetectionActive);
 	EXPECT_FALSE(hasConfigError());
-	EXPECT_EQ(engineConfiguration->cylindersCount * 2, engine->scheduler.size());
 }

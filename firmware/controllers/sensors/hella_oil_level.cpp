@@ -6,8 +6,7 @@
 
 #include "digital_input_exti.h"
 
-static void hellaSensorExtiCallback(void* arg, efitick_t nowNt, uint32_t acTimestamp, bool /*level*/) {
-	UNUSED(acTimestamp);
+static void hellaSensorExtiCallback(void* arg, efitick_t nowNt, bool /*level*/) {
 	reinterpret_cast<HellaOilLevelSensor*>(arg)->onEdge(nowNt);
 }
 
