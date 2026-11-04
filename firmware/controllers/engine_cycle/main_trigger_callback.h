@@ -11,6 +11,4 @@
 
 #include "event_registry.h"
 
-void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edgeTimestamp, uint32_t edgeAcTimestamp, angle_t currentPhase, angle_t nextPhase, angle_t nextNextPhase);
-
-void turnInjectionPinLow(InjectionEvent *event);
+void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edgeTimestamp, angle_t currentPhase, angle_t nextPhase);

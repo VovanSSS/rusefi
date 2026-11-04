@@ -39,9 +39,6 @@
 #include "local_version_holder.h"
 #include "event_queue.h"
 #include "injector_model.h"
-#include "injection_gpio.h"
-#include "angle_clock.h"
-#include "map_averaging.h"
 
 #if EFI_LAUNCH_CONTROL
 #include "launch_control.h"
@@ -49,118 +46,11 @@
 
 #include "backup_ram.h"
 
-// Runtime trigger-config re-read in the handoff (see mainTriggerCallback
-// below): on the sync tooth the handoff used to check whether the trigger
-// configuration changed (checkIfTriggerConfigChanged) and, if so, force
-// schedule rebuilds + periodicFastCallback. That check is legacy - the
-// trigger geometry is already re-read synchronously at burn time
-// (onConfigurationChangeTriggerCallback -> updateTriggerConfiguration ->
-// prepareOutputSignals, which also invalidates the fuel schedule), the
-// ignition schedule is rebuilt after every engine stop
-// (Engine::onEngineHasStopped), and periodicFastCallback runs at 200 Hz.
-// Boards where a configuration burn cannot happen while the engine runs
-// (m74_9: custom_board_allowTsBurn gates on isStopped) compile the check out
-// so the per-tooth handoff path never touches the configuration at runtime.
-#ifndef EFI_TRIGGER_CONFIG_RUNTIME_RELOAD
-#define EFI_TRIGGER_CONFIG_RUNTIME_RELOAD TRUE
-#endif
-
-TRIGGER_RAM_CODE void turnInjectionPinLow(InjectionEvent *event) {
-	efitick_t nowNt = getTimeNowNt();
-
-	for (size_t i = 0; i < efi::size(event->outputs); i++) {
-		InjectorOutputPin *output = event->outputs[i];
-		if (output) {
-			output->close(nowNt);
-		}
-	}
-	event->update();
-}
-
-static void turnInjectionPinLowStage2(InjectionEvent* event) {
-	efitick_t nowNt = getTimeNowNt();
-
-	for (size_t i = 0; i < efi::size(event->outputsStage2); i++) {
-		InjectorOutputPin *output = event->outputsStage2[i];
-		if (output) {
-			output->close(nowNt);
-		}
-	}
-}
-
-TRIGGER_RAM_CODE void InjectionEvent::onTriggerTooth(efitick_t nowNt, float currentPhase, float nextPhase, float nextNextPhase) {
-#if !EFI_ANGLE_CLOCK
-	UNUSED(nextNextPhase);
-#endif // !EFI_ANGLE_CLOCK
+void InjectionEvent::onTriggerTooth(efitick_t nowNt, float currentPhase, float nextPhase) {
 	auto eventAngle = injectionStartAngle;
 
-	// A previous arm whose target is still in the future covers this window
-	// (the one-tooth-ahead arm of the previous tooth, or the time-based arm
-	// of the same cycle): do not schedule twice. Once the armed target has
-	// passed, the arm has fired (or was lost) and a window match is the NEXT
-	// cycle's scheduling - at high duty the next window can arrive before
-	// the injection end recomputes the angle, and the pre-existing behavior
-	// schedules with the stale angle.
-	if (injectionStartArmed) {
-#if EFI_ANGLE_CLOCK
-		// The arm is a REFRESHED angle-domain CCR, not a fixed time: the
-		// per-tooth angleClockRefresh re-anchors CC3 as the basis wobbles (idle
-		// oscillation, accel/decel), so the stale arm-time prediction
-		// (injectionStartArmedAt) is already in the past while the compare is
-		// still genuinely armed. Guarding on that time opened early and the
-		// LOOKAHEAD overlap tooth re-armed the SAME injection: angleClockArmInjection
-		// saw CC3 busy -> TIM5 fallback -> two opens + close-busy (the ser storm,
-		// which also fires at steady idle). The channel's own pending state is
-		// the truth; the time test is kept only for the TIM5-fallback arm, where
-		// CC3 was never armed.
-		if (angleClockIsArmed(ANGLE_CLOCK_CH_OPEN) ||
-				(injectionStartArmedAt - nowNt) > 0) {
-			return;
-		}
-#else
-		if ((injectionStartArmedAt - nowNt) > 0) {
-			return;
-		}
-#endif // EFI_ANGLE_CLOCK
-		// Fell through the guard with the previous arm already fired: this
-		// window match is a RE-ARM before the close of the SAME injection (a
-		// phase re-anchor moved the current window onto the fixed start angle
-		// right after the open) - the double-open. Its close lands in the
-		// TIM5 CC2 mini-queue slot of the same cylinder as an overlap
-		// (pendingCount++), not as a lost close. The normal next-cycle
-		// schedule cannot land here: InjectionEvent::update() runs at the
-		// close and clears injectionStartArmed first.
-	}
-
-	// The injection start is scheduled one tooth ahead: the early window
-	// [nextPhase, nextNextPhase) gives the handoff a full tooth of slack
-	// instead of the old 0-1 tooth lead. The current-tooth window is kept for
-	// the first cycle after a (re)sync, when the start angle can already be
-	// inside the current tooth.
-#if EFI_ANGLE_CLOCK
-	// The early window is only meaningful with a distinct next-next tooth:
-	// useOnlyRisingEdges wheels store the falling edge at the preceding
-	// rise's angle, so nextNextPhase == nextPhase and isPhaseInRange would
-	// match every angle (the arm would refuse every tooth). Fall back to the
-	// current-tooth window, as the fire arm's guard already does.
-	//
-	// LOOKAHEAD (2026-09-26): the upper bound is extended past nextNextPhase
-	// by ANGLE_CLOCK_LOOKAHEAD_DEG so a start angle that sits AT the next
-	// next-tooth boundary (m74_9 START angles do by construction) is armed one
-	// full tooth early at T-1 instead of falling to the current-window arm at
-	// rem ~ 0, where any handoff latency makes it past-due at refresh
-	// (immediate). Guard flags block double arming; refresh keeps the CCR
-	// accurate.
-	bool scheduleEarly = nextNextPhase != nextPhase && isPhaseInRange(eventAngle, nextPhase, nextNextPhase + ANGLE_CLOCK_LOOKAHEAD_DEG);
-	if (scheduleEarly) {
-		angleClockNoteLookaheadOpen(eventAngle, nextNextPhase);
-	}
-#else
-	bool scheduleEarly = false;
-#endif // EFI_ANGLE_CLOCK
-	bool scheduleNow = isPhaseInRange(eventAngle, currentPhase, nextPhase);
-
-	if (!scheduleEarly && !scheduleNow) {
+	// Determine whether our angle is going to happen before (or near) the next tooth
+	if (!isPhaseInRange(eventAngle, currentPhase, nextPhase)) {
 		return;
 	}
 
@@ -172,18 +62,6 @@ TRIGGER_RAM_CODE void InjectionEvent::onTriggerTooth(efitick_t nowNt, float curr
 
 	// Select fuel mass from the correct cylinder
 	auto injectionMassGrams = getEngineState()->injectionMass[this->cylinderNumber];
-
-#if EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
-	// Per-cylinder MAP refresh at arm time - ONE multiply, ~100-200 ns.
-	// Variant A (windows, 2026-09-23): mass *= MapFast / injectionMassMapBasis[cyl]
-	// with the freshest closed window; composable with the 200 Hz tick via the
-	// basis bookkeeping.
-	// Variant B (instant-at-arm, 2026-09-29, shared-plenum boards like m74_9):
-	// mass *= convert(rawMapFast) / referenceMap - the instant raw-latch
-	// conversion at THIS cylinder's phase (arm time ~ its intake phase), no
-	// window, no phase wandering.
-	injectionMassGrams = refreshInjectionMassForCylinder(this->cylinderNumber, injectionMassGrams);
-#endif // EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
 
 	// Perform wall wetting adjustment on fuel mass, not duration, so that
 	// it's correct during fuel pressure (injector flow) or battery voltage (deadtime) transients
@@ -279,80 +157,23 @@ TRIGGER_RAM_CODE void InjectionEvent::onTriggerTooth(efitick_t nowNt, float curr
 	}
 #endif /*EFI_PRINTF_FUEL_DETAILS */
 
-	action_s startAction, endActionStage1, endActionStage2;
-	// We use different callbacks based on whether we're running sequential mode or not - everything else is the same
-	if (isSimultaneous) {
-		// Simultaneous mode was moved onto master's InjectorContext path: the
-		// shared injection_gpio.cpp no longer defines startSimultaneousInjection /
-		// endSimultaneousInjectionOnlyTogglePins, so the equivalent mask-based
-		// helpers carry the same open/close (all cylinders + elements[] refresh).
-		startAction = action_s::make<startInjection>(ctx.raw);
-		endActionStage1 = action_s::make<endInjection>(ctx.raw);
-		endActionStage2 = action_s::make<endInjectionStage2>(ctx.raw);
-	} else {
-		auto const taggedPointer{TaggedPointer<decltype(this)>::make(this, hasStage2Injection)};
-
-		// sequential or batch
-		startAction = action_s::make<turnInjectionPinHigh>( taggedPointer.getRaw() );
-		endActionStage1 = action_s::make<turnInjectionPinLow>( this );
-		endActionStage2 = action_s::make<turnInjectionPinLowStage2>( this );
-	}
-
 	// Correctly wrap injection start angle
 	float angleFromNow = eventAngle - currentPhase;
 	if (angleFromNow < 0) {
 		angleFromNow += getEngineState()->engineCycle;
 	}
 
-	// Schedule opening (stage 1 + stage 2 open together). The delay is
-	// computed from THIS edge; with the one-tooth-ahead window it covers
-	// 1-2 teeth. Try the hardware angle clock first (armed in the angle
-	// domain, per-tooth refresh keeps it accurate at any rpm), fall back
-	// to the time-based executor.
-	float delayUs = engine->rpmCalculator.oneDegreeUs * angleFromNow;
-	efitick_t startTime = sumTickAndFloat(nowNt, USF2NT(delayUs));
+	// Schedule opening (stage 1 + stage 2 open together)
+	efitick_t startTime = scheduleByAngle(nullptr, nowNt, angleFromNow, action_s::make<startInjection>(ctx.raw));
 
-#if EFI_ANGLE_CLOCK
-	if (angleClockArmInjection(eventAngle, startAction, currentPhase, nextPhase)) {
-		// armed on TMR2 CC3 (injection-open channel) - the close follows from
-		// turnInjectionPinHigh at the actual open moment.
-	} else
-#endif // EFI_ANGLE_CLOCK
-	{
-		getScheduler()->schedule("inj", nullptr, startTime, startAction);
-	}
-
-	injectionStartArmed = true;
-	injectionStartArmedAt = startTime;
-
-#if EFI_ANGLE_CLOCK
-	// Spark schedule ring ('sparkring'): the injection-open entries interleave
-	// with the dwell entries on the same teeth, showing the open compression
-	// that produces the close-busy class during the C9009 storm.
-	recordInjectionSchedule((uint8_t)ownIndex, eventAngle,
-		scheduleEarly, currentPhase, nextPhase, angleFromNow,
-		injectionDurationStage1);
-#endif // EFI_ANGLE_CLOCK
-
-	// Store PW for turnInjectionPinHigh which arms the close on TIM5 CC2
-	// at the ACTUAL open moment (not the nominal startTime).
-	// Simultaneous mode uses the mask-based InjectorContext helpers, which
-	// never call turnInjectionPinHigh, so it still uses the TIM5 fallback below.
-	const uint32_t endDelayNt = US2NT((int)durationUsStage1);
-	efitick_t turnOffTimeStage1 = startTime + endDelayNt;
-	if (!isSimultaneous) {
-		injectionEndDelayNt = endDelayNt;
-		// CC2 close is armed by turnInjectionPinHigh at the actual open moment.
-		// No TIM5 pre-schedule here: avoids the race where TIM5 END fires before
-		// TMR3 START on past-due injections (double open-close = double injection).
-	} else {
-		getScheduler()->schedule("inj", nullptr, turnOffTimeStage1, endActionStage1);
-	}
+	// Schedule closing stage 1
+	efitick_t turnOffTimeStage1 = startTime + US2NT((int)durationUsStage1);
+	getScheduler()->schedule("inj", nullptr, turnOffTimeStage1, action_s::make<endInjection>(ctx.raw));
 
 	// Schedule closing stage 2 (if applicable)
 	if (hasStage2Injection) {
 		efitick_t turnOffTimeStage2 = startTime + US2NT((int)durationUsStage2);
-		getScheduler()->schedule("inj stage 2", nullptr, turnOffTimeStage2, endActionStage2);
+		getScheduler()->schedule("inj stage 2", nullptr, turnOffTimeStage2, action_s::make<endInjectionStage2>(ctx.raw));
 	}
 
 #if EFI_DETAILED_LOGGING
@@ -368,7 +189,7 @@ TRIGGER_RAM_CODE void InjectionEvent::onTriggerTooth(efitick_t nowNt, float curr
 #endif /* EFI_DETAILED_LOGGING */
 }
 
-TRIGGER_RAM_CODE static void handleFuel(efitick_t nowNt, float currentPhase, float nextPhase, float nextNextPhase) {
+static void handleFuel(efitick_t nowNt, float currentPhase, float nextPhase) {
 	ScopePerf perf(PE::HandleFuel);
 
 	efiAssertVoid(ObdCode::CUSTOM_STACK_6627, hasLotsOfRemainingStack(), "lowstck#3");
@@ -395,113 +216,31 @@ TRIGGER_RAM_CODE static void handleFuel(efitick_t nowNt, float currentPhase, flo
 	}
 #endif /* FUEL_MATH_EXTREME_LOGGING */
 
-	fs->onTriggerTooth(nowNt, currentPhase, nextPhase, nextNextPhase);
+	fs->onTriggerTooth(nowNt, currentPhase, nextPhase);
 }
 
 /**
  * This is the main trigger event handler.
  * Both injection and ignition are controlled from this method.
  */
-TRIGGER_RAM_CODE void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edgeTimestamp, uint32_t edgeAcTimestamp, angle_t currentPhase, angle_t nextPhase, angle_t nextNextPhase) {
+void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edgeTimestamp, angle_t currentPhase, angle_t nextPhase) {
 	ScopePerf perf(PE::MainTriggerCallback);
 
 	if (hasFirmwareError()) {
 		/**
 		 * In case on a major error we should not process any more events.
-		 * Armed angle-clock events are deliberately left armed: they fire at
-		 * their bounded ticks exactly like the time-based events of the FALSE
-		 * build, and the charge-anchored overdwell rescue remains the coil
-		 * safety net. Engine safety after a fatal error comes from
-		 * limpManager's cut, not from cancelling already-scheduled events.
 		 */
 		return;
 	}
 
-#if EFI_ANGLE_CLOCK
-	{
-		// Angle->time basis for this tooth's arming and the per-tooth
-		// refresh: the 90-degree-window rpm average (oneDegreeUs) - the SAME
-		// basis the proven time-based path converts angles with. During
-		// spin-up oneDegreeUs is the InstantRpmCalculator's ~90-degree tooth
-		// window (calculateInstantRpm hunts the tooth ~90 deg back), when
-		// running it is the full-cycle average - both smooth. The per-tooth
-		// basis (toothDurations[0]) was tried and rejected: at cranking the
-		// compression oscillation makes a single tooth a 2-3x-stretched
-		// predictor (see angle_clock.h).
-		//
-		// BOTH angleClockOnTooth AND scheduleDwellEarlyIfDue (below) run
-		// BEFORE THE rpm==0 GATE: during the catch trigger storm the rpm
-		// sensor flaps 0/nonzero at ~1 kHz and the gate returns early, so
-		// anything gated behind it never runs on the flap teeth.
-		//   - angleClockOnTooth: the armed events kept their PRE-CATCH ticks
-		//     while the engine accelerated, fires landed ms-late, rescues
-		//     discharged (overdwell n~50, C935x). The basis must update on
-		//     EVERY tooth; angleClockOnTooth keeps the last good basis when
-		//     the flap makes oneDegreeUs NaN.
-		//   - scheduleDwellEarlyIfDue: on storm-flap teeth (rpm==0) the early
-		//     arm at tooth T-1 was skipped, so the next tooth saw the dwell in
-		//     [currentPhase, nextPhase) = 0-6 deg remaining. onTriggerEvent-
-		//     SparkLogic ran at ~150-250 µs elapsed and the tick had already
-		//     passed -> lateArm -> TIM5 fallback. This caused 59% dwell lateArm
-		//     on the 2026-09-03 drive. Under EFI_ANGLE_CLOCK, scheduleSparkEvent
-		//     has UNUSED(rpm) and UNUSED(dwellMs), so passing rpm==0 is safe.
-		// Angle->time basis for this tooth's arming and the per-tooth refresh.
-		// Always the 90-deg rpm average (oneDegreeUs) - see the rationale above.
-		// (Option B 2026-09-25 - feeding the fresh last-tooth basis
-		// lastToothTicksPerDegree above cranking rpm - was reverted 2026-09-26:
-		// the 90-degree basis is back everywhere, the per-tooth refresh still
-		// re-anchors each armed channel from it every tooth, so the prediction
-		// error stays bounded to one tooth of acceleration.)
-		// Angle->time basis: the InstantRpmCalculator's ~90-degree tooth window
-		// (instantRpm), NOT the full-cycle average (oneDegreeUs) which lags by up
-		// to a full 720 deg cycle. instantRpm is sticky below RPM_LOW_THRESHOLD
-		// (calculateInstantRpm returns the last good value), so it does not flap to
-		// 0 like SensorType::Rpm does on a trigger desync; the stopped case
-		// (instantRpm <= 0) feeds NAN and angleClockOnTooth keeps the last good
-		// basis.
-		const float instantRpm = engine->triggerCentral.instantRpm.getInstantRpm();
-		angleClockOnTooth(edgeAcTimestamp, currentPhase, engine->engineState.engineCycle,
-		                  US2NT(instantRpm > 0 ? getOneDegreeTimeUs(instantRpm) : NAN));
-	}
-	// Dwell arm runs on ALL teeth including rpm==0 storm-flap teeth (see above).
-	scheduleDwellEarlyIfDue(engine->rpmCalculator.getCachedRpm(),
-		edgeTimestamp, currentPhase, nextPhase, nextNextPhase);
-#endif // EFI_ANGLE_CLOCK
-
 	float rpm = engine->rpmCalculator.getCachedRpm();
 	if (rpm == 0) {
-		// this happens while we just start cranking - and on EVERY flap of the
-		// catch trigger storm, where the rpm sensor flaps 0/nonzero at ~1 kHz.
-		// Armed angle-clock events are NOT cancelled here: cancelling them
-		// turned every storm flap into a lost fire (the C935x rescue cluster
-		// on the car) and a fire on a never-charged coil (C9012). The armed
-		// ticks are bounded (angle-domain arming + per-tooth refresh) and the
-		// charge-anchored overdwell rescue bounds any charge, so they fire
-		// exactly like the time-based events of the FALSE build - which fire
-		// by time regardless of the rpm flap. The refresh still runs on this
-		// tooth (below) so the armed events keep tracking the true speed
-		// through the storm.
-#if EFI_ANGLE_CLOCK
-		angleClockRefresh();
-#endif // EFI_ANGLE_CLOCK
+		// this happens while we just start cranking
 
 		// todo: check for 'trigger->is_synchnonized?'
 		return;
 	}
 
-	// Priority order for minimal elapsed time at each arm:
-	//
-	//  1. Angle queue flush (spark arms, ~8 µs elapsed):
-	//     Threshold at 7000 rpm: remaining > 0.5°. Queue populated by previous teeth;
-	//     no dependency on engineModules or fuel.
-	engine->module<TriggerScheduler>()->scheduleEventsUntilNextTriggerTooth(
-		rpm, edgeTimestamp, currentPhase, nextPhase, nextNextPhase);
-
-	//  2. Injection arms (~13 µs elapsed).
-	handleFuel(edgeTimestamp, currentPhase, nextPhase, nextNextPhase);
-	//  Dwell arm ran before the rpm==0 gate above (~5 µs elapsed, EFI_ANGLE_CLOCK).
-
-#if EFI_TRIGGER_CONFIG_RUNTIME_RELOAD
 	if (trgEventIndex == 0) {
 
 		if (getTriggerCentral()->checkIfTriggerConfigChanged()) {
@@ -514,31 +253,24 @@ TRIGGER_RAM_CODE void mainTriggerCallback(uint32_t trgEventIndex, efitick_t edge
 			engine->periodicFastCallback();
 		}
 	}
-#else
-	// EFI_TRIGGER_CONFIG_RUNTIME_RELOAD=FALSE (m74_9): the trigger configuration
-	// is never re-read on a tooth - the handoff stays pure scheduling.
-	UNUSED(trgEventIndex);
-#endif
 
-	// engineModules.apply_all call REMOVED (2026-09-23): the MAP averaging window
-	// scan and the misfire segment tracking - the only real onEnginePhase users -
-	// now run from the once-per-engine-cycle TDC executor hook (onTdcCallback ->
-	// MapAveragingModule::scheduleNextCycleWindows / MisfireController::
-	// scheduleNextCycleSegments). No engine module does per-tooth work here anymore.
+	engine->engineModules.apply_all([=](auto & m) {
+		m.onEnginePhase(rpm, edgeTimestamp, currentPhase, nextPhase);
+	});
 
 	/**
-	 * For spark we schedule both start of coil charge and actual spark based on trigger angle.
-	 * handleFuel (injection) was moved earlier (see above) to minimize arm elapsed time.
+	 * For fuel we schedule start of injection based on trigger angle, and then inject for
+	 * specified duration of time
 	 */
-	onTriggerEventSparkLogic(rpm, edgeTimestamp, currentPhase, nextPhase, nextNextPhase);
+	handleFuel(edgeTimestamp, currentPhase, nextPhase);
 
-#if EFI_ANGLE_CLOCK
-	// Re-anchor every armed channel from this tooth's freshest basis and apply
-	// the stale-event policy: an event whose angle has arrived fires NOW (both
-	// kinds - the time-based build fires a due dwell/injection too), a stale
-	// phase basis (desync) leaves the channel armed to fire by time.
-	angleClockRefresh();
-#endif // EFI_ANGLE_CLOCK
+	engine->module<TriggerScheduler>()->scheduleEventsUntilNextTriggerTooth(
+		rpm, edgeTimestamp, currentPhase, nextPhase);
+
+	/**
+	 * For spark we schedule both start of coil charge and actual spark based on trigger angle
+	 */
+	onTriggerEventSparkLogic(rpm, edgeTimestamp, currentPhase, nextPhase);
 }
 
 #endif /* EFI_ENGINE_CONTROL */

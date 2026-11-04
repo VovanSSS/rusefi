@@ -1145,21 +1145,7 @@ TRIGGER_RAM_CODE void TriggerCentral::handleShaftSignal(trigger_event_e signal, 
 				float anchorCorrection = gapAnchorCorrectionDeg;
 				angle_t correctedPhase = wrapAngleMethod(currentEngineDecodedPhase - anchorCorrection, "anchorCorrPhase", ObdCode::CUSTOM_ERR_6555);
 				angle_t correctedNextPhase = wrapAngleMethod(nextPhase - anchorCorrection, "anchorCorrNext", ObdCode::CUSTOM_ERR_6555);
-#if EFI_ANGLE_CLOCK
-				// Phase of the tooth AFTER the next one - the upper bound of the
-				// one-tooth-ahead arming window of the angle clock. Same anchor
-				// correction as the pair above so the window stays consistent.
-				// +2 (not +1): useOnlyRisingEdges wheels store the falling edge
-				// at the preceding rise's angle, so +1 lands on the current
-				// tooth's duplicate and collapses nextNextPhase onto nextPhase.
-				// findNextTriggerToothAngle now skips consecutive duplicates, so
-				// +2 starts at the NEXT tooth and returns the one after it.
-				angle_t nextNextPhase = findNextTriggerToothAngle(triggerIndexForListeners + 2);
-				angle_t correctedNextNextPhase = wrapAngleMethod(nextNextPhase - anchorCorrection, "anchorCorrNextNext", ObdCode::CUSTOM_ERR_6555);
-#else
-				angle_t correctedNextNextPhase = correctedNextPhase;
-#endif // EFI_ANGLE_CLOCK
-				mainTriggerCallback(triggerIndexForListeners, timestamp, acTimestamp, correctedPhase, correctedNextPhase, correctedNextNextPhase);
+				mainTriggerCallback(triggerIndexForListeners, timestamp, correctedPhase, correctedNextPhase);
 			}
 #endif // EFI_ENGINE_CONTROL
 

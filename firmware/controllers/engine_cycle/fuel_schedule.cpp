@@ -50,47 +50,6 @@ void endInjectionStage2(scheduler_arg_t arg) {
 	}
 }
 
-#if EFI_PROD_CODE && HAL_USE_PWM
-#include "injection_close_hw.h"
-#endif
-
-TRIGGER_RAM_CODE void turnInjectionPinHigh(scheduler_arg_t const arg) {
-	auto const nowNt{ getTimeNowNt() };
-
-	auto const taggedPointer{ TaggedPointer<InjectionEvent>::fromRaw(arg) };
-	auto const event{ taggedPointer.getOriginalPointer() };
-	auto const hasStage2Injection{ taggedPointer.getFlag() };
-
-	for (auto const& output: event->outputs) {
-		if (output) {
-			output->open(nowNt);
-		}
-	}
-
-	if (hasStage2Injection) {
-		for (auto const& output: event->outputsStage2) {
-			if (output) {
-				output->open(nowNt);
-			}
-		}
-	}
-
-#if EFI_PROD_CODE && HAL_USE_PWM
-	// Arm injection close at nowNt + PW. This is anchored to the ACTUAL open
-	// moment, not the nominal startTime, so PW is always measured from real
-	// physical injector opening.
-	// TIM5 CC2 32-bit mini-queue (see injection_close_hw.h): 4 slots, one per
-	// cylinder - overlapping closes (duty overlap of adjacent cylinders, or a
-	// double-open re-arm) just occupy their own slot instead of colliding on
-	// a single channel.
-	if (event->injectionEndDelayNt > 0) {
-		scheduleInjectionCloseHW(
-			event->getCylinderNumber(), nowNt, event->injectionEndDelayNt,
-			action_s::make<turnInjectionPinLow>(event));
-	}
-#endif // EFI_PROD_CODE && HAL_USE_PWM
-}
-
 #if EFI_ENGINE_CONTROL
 
 CylinderMask InjectionEvent::calculateInjectorOutputMask() const {
@@ -194,7 +153,7 @@ expected<float> InjectionEvent::computeInjectionAngle() const {
 	return openingAngle;
 }
 
-TRIGGER_RAM_CODE bool InjectionEvent::updateInjectionAngle() {
+bool InjectionEvent::updateInjectionAngle() {
 	auto result = computeInjectionAngle();
 
 	if (result) {
@@ -213,19 +172,12 @@ TRIGGER_RAM_CODE bool InjectionEvent::updateInjectionAngle() {
 /**
  * @returns false in case of error, true if success
  */
-TRIGGER_RAM_CODE bool InjectionEvent::update() {
+bool InjectionEvent::update() {
 	bool updatedAngle = updateInjectionAngle();
 
 	if (!updatedAngle) {
 		return false;
 	}
-
-	// The angles for the next injection are being (re)computed: a new
-	// schedule cycle begins, the previous arm is obsolete. Note this runs at
-	// the END of the current injection - the high-duty overlap (next window
-	// before the end) is handled by the armedAt-in-the-future check in
-	// onTriggerTooth, not by this flag.
-	injectionStartArmed = false;
 
 	injection_mode_e mode = getCurrentInjectionMode();
 	engine->outputChannels.currentInjectionMode = static_cast<uint8_t>(mode);
@@ -242,36 +194,11 @@ TRIGGER_RAM_CODE bool InjectionEvent::update() {
 		injectorIndex = 0;
 	}
 
-	InjectorOutputPin *secondOutput;
-	InjectorOutputPin* secondOutputStage2;
-
-	if (mode == IM_BATCH) {
-		/**
-		 * also fire the 2nd half of the injectors so that we can implement a batch mode on individual wires
-		 */
-		// Compute the position of this cylinder's twin in the firing order
-		// Each injector gets fired as a primary (the same as sequential), but also
-		// fires the injector 360 degrees later in the firing order.
-		int secondOrder = (ownIndex + (engineConfiguration->cylindersCount / 2)) % engineConfiguration->cylindersCount;
-		int secondIndex = getCylinderNumberAtIndex(secondOrder);
-		secondOutput = &enginePins.injectors[secondIndex];
-		secondOutputStage2 = &enginePins.injectorsStage2[secondIndex];
-	} else {
-		secondOutput = nullptr;
-		secondOutputStage2 = nullptr;
-	}
-
 	InjectorOutputPin *output = &enginePins.injectors[injectorIndex];
-
-	outputs[0] = output;
-	outputs[1] = secondOutput;
 	isSimultaneous = mode == IM_SIMULTANEOUS;
 	m_injectionMode = mode;
 	// Stash the cylinder number so we can select the correct fueling bank later
 	cylinderNumber = injectorIndex;
-
-	outputsStage2[0] = &enginePins.injectorsStage2[injectorIndex];
-	outputsStage2[1] = secondOutputStage2;
 
 	if (!isSimultaneous && !output->isInitialized()) {
 		// todo: extract method for this index math
@@ -295,14 +222,14 @@ void FuelSchedule::addFuelEvents() {
 	isReady = true;
 }
 
-void FuelSchedule::onTriggerTooth(efitick_t nowNt, float currentPhase, float nextPhase, float nextNextPhase) {
+void FuelSchedule::onTriggerTooth(efitick_t nowNt, float currentPhase, float nextPhase) {
 	// Wait for schedule to be built - this happens the first time we get RPM
 	if (!isReady) {
 		return;
 	}
 
 	for (size_t i = 0; i < engineConfiguration->cylindersCount; i++) {
-		elements[i].onTriggerTooth(nowNt, currentPhase, nextPhase, nextNextPhase);
+		elements[i].onTriggerTooth(nowNt, currentPhase, nextPhase);
 	}
 }
 

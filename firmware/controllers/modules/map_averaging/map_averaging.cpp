@@ -32,8 +32,6 @@
 
 #include "map_averaging.h"
 #include "trigger_central.h"
-#include "engine_math.h"
-#include "board_overrides.h"
 
 
 /**
@@ -49,36 +47,11 @@ static NamedOutputPin mapAveragingPin("map");
 static float averagedMapRunningBuffer[MAX_MAP_BUFFER_LENGTH];
 static int mapMinBufferLength = 0;
 static int averagedMapBufIdx = 0;
-// True once the MAP sensor converted a sample successfully: gates the
-// C6899 warning so the startup init race does not alarm (see
-// mapAveragingAdcCallback).
-#if HAL_USE_ADC
-static bool hasEverDecodedMap = false;
-#endif // HAL_USE_ADC
 
 
 static void endAveraging(MapAverager* arg);
 
-// Variant B (instant-at-arm): the tune gate AND the board hook both hold.
-// m74_9 opts in (shared plenum: all four windows measure the same global
-// pressure); ITB boards keep the angle windows.
-bool isMapInstantAtArm() {
-	return engineConfiguration->isMapAveragingEnabled
-		&& get_board_override_result(custom_board_mapInstantAtArm, false);
-}
-
-[[maybe_unused]] static size_t currentMapAverager = 0;
-
-SensorResult MapAverager::publishInstant(float volts) {
-	SensorResult result = m_function ? m_function->convert(volts) : unexpected;
-
-	if (result) {
-		setValidValue(result.Value, getTimeNowNt());
-	}
-
-	return result;
-}
-
+static size_t currentMapAverager = 0;
 
 void startAveraging(mapSampler* s) {
     if (engine->engineState.mapAveragingDuration == 0) {
@@ -87,11 +60,8 @@ void startAveraging(mapSampler* s) {
     }
 	efiAssertVoid(ObdCode::CUSTOM_ERR_6649, hasLotsOfRemainingStack(), "lowstck#9");
 
-	// Variant A single window: every cylinder phase region feeds ONE averager.
-	// The window is attributed to the cylinder whose region it samples - the
-	// PREVIOUS cylinder, relative to the next injection - and its close feeds
-	// the firing-order successor's mass (see endAveraging).
-	auto& averager = getMapAvg(0);
+	// TODO: set currentMapAverager based on cylinder bank
+	auto& averager = getMapAvg(currentMapAverager);
 	averager.start(s->cylinderNumber);
 
 	mapAveragingPin.setHigh();
@@ -131,7 +101,7 @@ float filterMapValue(float value) {
   return expAverage.initOrAverage(value);
 }
 
-float MapAverager::stop() {
+void MapAverager::stop() {
 	chibios_rt::CriticalSectionLocker csl;
 
 	m_isAveraging = false;
@@ -151,17 +121,13 @@ float MapAverager::stop() {
 				minPressure = averagedMapRunningBuffer[i];
 		}
 
-		engine->outputChannels.mapPerCylinder[m_cylinderNumber] = static_cast<uint8_t>(minPressure);
+    engine->outputChannels.mapPerCylinder[m_cylinderNumber] = static_cast<uint8_t>(minPressure);
 		setValidValue(filterMapValue(minPressure), getTimeNowNt());
-
-		return minPressure;
 	} else {
 #if EFI_PROD_CODE
 		warning(ObdCode::CUSTOM_UNEXPECTED_MAP_VALUE, "No MAP values to average");
 #endif
 	}
-
-	return 0;
 }
 
 /**
@@ -185,20 +151,10 @@ void MapAverager::onAdcSample(float instantVoltage, bool channelReady) {
 	SensorResult mapResult = submit(instantVoltage);
 
 	if (!mapResult) {
-		// The very first fast-ADC samples can arrive before the MAP sensor
-		// configuration (curve points, divider) is applied at boot, so their
-		// conversion fails and would raise a misleading one-shot C6899 right
-		// after power-on. Suppress the warning until the sensor has proven it
-		// can convert at least once - a genuinely broken sensor still gets
-		// reported on every sample after that first success (and by the
-		// sensor checker).
-		if (hasEverDecodedMap) {
-			// hopefully this warning is not too much CPU consumption for fast ADC callback
-			warning(ObdCode::CUSTOM_INSTANT_MAP_DECODING, "Invalid MAP at %f", instantVoltage);
-		}
+		// hopefully this warning is not too much CPU consumption for fast ADC callback
+		warning(ObdCode::CUSTOM_INSTANT_MAP_DECODING, "Invalid MAP at %f", instantVoltage);
 		engine->outputChannels.isMapValid = false;
 	} else {
-		hasEverDecodedMap = true;
 		engine->outputChannels.isMapValid = true;
 	}
 
@@ -210,122 +166,15 @@ void MapAverager::onAdcSample(float instantVoltage, bool channelReady) {
 
 #if HAL_USE_ADC
 void mapAveragingAdcCallback(float instantVoltage, bool channelReady) {
-	if (isMapInstantAtArm()) {
-		// Variant B (m74_9): the raw latch (rawMapFast) is already written by
-		// the fast-ADC ISR; the conversion moves out of this 6 kHz hot path
-		// into the 200 Hz tick (onFastCallback) and the per-cylinder injection
-		// arm (refreshInjectionMassForCylinder). Nothing to do here.
-		return;
-	}
-
 	getMapAvg(currentMapAverager).onAdcSample(instantVoltage, channelReady);
 }
 #endif
 
-// Scale the stored injectionMass of one cylinder against a fresh MAP window
-// value, relative to the basis the stored mass was last based on. The basis
-// bookkeeping keeps this composable with the 200 Hz pipeline (which rewrites
-// injectionMass[c] in reference units every tick): any interleaving of
-// ticks and window closes applies each window value exactly once - MAP can
-// never enter the mass twice (the otherwise-systematic double-application of
-// the single shared window).
-static void rescaleInjectionMass(uint8_t cylinderNumber, float freshMap) {
-	if (engineConfiguration->fuelAlgorithm != engine_load_mode_e::LM_SPEED_DENSITY) {
-		return;
-	}
-
-	if (freshMap <= 0) {
-		return;
-	}
-
-	float basis = engine->engineState.injectionMassMapBasis[cylinderNumber];
-	if (basis <= 0) {
-		return;
-	}
-
-	engine->engineState.injectionMass[cylinderNumber] *= freshMap / basis;
-	engine->engineState.injectionMassMapBasis[cylinderNumber] = freshMap;
-}
-
 static void endAveraging(MapAverager* arg) {
-	float freshWindowMap = arg->stop();
-
-	// Variant A: the just-closed window fixed the freshest pressure. The window
-	// belongs to the previous cylinder (arg->getCylinderNumber()); recompute the
-	// mass of the FIRING-ORDER SUCCESSOR - the next cylinder whose injection is
-	// armed - from it. Runs on the TIM5 executor (prio 5): zero handoff cost.
-	// The chain is continuous across the cycle boundary: the last window of a
-	// cycle feeds the first cylinder of the next one.
-	rescaleInjectionMass(MapAveragingModule::firingOrderSuccessor(arg->getCylinderNumber()), freshWindowMap);
+	arg->stop();
 
 	engine->outputChannels.isMapAveraging = false;
 	mapAveragingPin.setLow();
-}
-
-float refreshInjectionMassForCylinder(uint8_t cylinderNumber, float mass) {
-	if (engineConfiguration->fuelAlgorithm != engine_load_mode_e::LM_SPEED_DENSITY) {
-		return mass;
-	}
-
-	if (isMapInstantAtArm()) {
-		// Variant B: the instant MAP at THIS cylinder's arm moment, relative to
-		// the reference the 200 Hz pipeline computed the stored mass against.
-		// The raw latch (not the MapFast registry) is converted here - the
-		// handoff never publishes into sensors. One converter call + one
-		// multiply (~100-200 ns on the hard FPU).
-		const float reference = engine->engineState.referenceMap;
-		const float instant = getMapAvg(0).convertRaw(engine->outputChannels.rawMapFast).value_or(0);
-
-		if (instant > 0 && reference > 0) {
-			mass *= instant / reference;
-		}
-
-		return mass;
-	}
-
-	// Variant A, the ONE window: MapFast holds the freshest closed window
-	// value (the previous cylinder's average per the 180-degree update chain)
-	// and injectionMassMapBasis[cyl] is the MAP value the stored mass was last
-	// based on - referenceMap after the 200 Hz refresh, the just-closed window
-	// value after endAveraging rescaled this cylinder.
-	const float freshMap = Sensor::getOrZero(SensorType::MapFast);
-	const float basis = engine->engineState.injectionMassMapBasis[cylinderNumber];
-
-	if (freshMap > 0 && basis > 0) {
-		mass *= freshMap / basis;
-	}
-
-	return mass;
-}
-
-uint8_t MapAveragingModule::firingOrderSuccessor(uint8_t cylinderNumber) {
-	size_t count = engineConfiguration->cylindersCount;
-	if (count <= 1) {
-		return cylinderNumber;
-	}
-
-	angle_t tdc = engine->cylinders[cylinderNumber].getAngleOffset();
-
-	uint8_t best = cylinderNumber;
-	float bestDelta = 720.0f + 1.0f;
-
-	for (size_t i = 0; i < count; i++) {
-		if (i == cylinderNumber) {
-			continue;
-		}
-
-		float delta = engine->cylinders[i].getAngleOffset() - tdc;
-		if (delta <= 0) {
-			delta += 720.0f;
-		}
-
-		if (delta < bestDelta) {
-			bestDelta = delta;
-			best = i;
-		}
-	}
-
-	return best;
 }
 
 static void applyMapMinBufferLength() {
@@ -340,40 +189,6 @@ static void applyMapMinBufferLength() {
 }
 
 void MapAveragingModule::onFastCallback() {
-	if (isMapInstantAtArm()) {
-		// Variant B: no angle windows - publish the instant conversion of the
-		// raw fast-ADC latch once per 200 Hz tick. engineState.periodicFastCallback
-		// (engine2.cpp) runs BEFORE this within the tick and reads the
-		// PREVIOUS tick's publish as its referenceMap - so mass and referenceMap
-		// share one value, and the arm-time refresh rescales to the arm instant
-		// (staleness cancels: at most one tick of MAP age enters the mass, and
-		// it is corrected by the same instant value at arm time).
-		// Runs regardless of rpm: this is the only MapFast publisher.
-		const SensorResult r = getMapAvg(0).publishInstant(engine->outputChannels.rawMapFast);
-
-#if HAL_USE_ADC
-		if (r) {
-			hasEverDecodedMap = true;
-		} else if (hasEverDecodedMap) {
-			// the startup init race suppression, as in the A-path fast-ADC
-			// callback: no C6899 until the sensor has converted once
-			warning(ObdCode::CUSTOM_INSTANT_MAP_DECODING, "Invalid MAP at %f", engine->outputChannels.rawMapFast);
-		}
-#endif // HAL_USE_ADC
-
-		engine->outputChannels.isMapValid = r.Valid;
-#if EFI_TUNER_STUDIO
-		engine->outputChannels.instantMAPValue = r.value_or(0);
-#endif // EFI_TUNER_STUDIO
-		if (r) {
-			for (size_t i = 0; i < MAX_CYLINDER_COUNT; i++) {
-				engine->outputChannels.mapPerCylinder[i] = r.Value;
-			}
-		}
-
-		return;
-	}
-
 	float rpm = Sensor::getOrZero(SensorType::Rpm);
     MAP_sensor_config_s * c = &engineConfiguration->map;
     angle_t start = interpolate2d(rpm, c->samplingAngleBins, c->samplingAngle);
@@ -393,41 +208,34 @@ void MapAveragingModule::onFastCallback() {
     engine->engineState.mapAveragingDuration = clampF(10, duration, cylinderPeriod - 10);
 }
 
-void MapAveragingModule::scheduleNextCycleWindows() {
-	if (!engineConfiguration->isMapAveragingEnabled || isMapInstantAtArm()) {
+// Callback to schedule the start of map averaging for each cylinder
+void MapAveragingModule::onEnginePhase(float /*rpm*/,
+						efitick_t edgeTimestamp,
+						float currentPhase,
+						float nextPhase) {
+	if (!engineConfiguration->isMapAveragingEnabled) {
 		return;
 	}
 
-	float rpm = Sensor::getOrZero(SensorType::Rpm);
-	if (rpm == 0) {
-		return;
-	}
-
-	// Runs from the TDC executor hook once per engine cycle. The hook fires at
-	// ENGINE PHASE 0 (TDC1): tdcMarkCallback schedules it tdcPosition() crank
-	// degrees after the sync point, where E = wrap(phaseFromSync -
-	// tdcPosition()) = 0. mapAveragingStart[] is already an engine-phase angle,
-	// so the window offset IS that absolute angle - subtracting tdcPosition()
-	// again fired every window that many degrees early (the 2026-09-24 bug:
-	// endAveraging 3/cyc while samplingAngle < tdcPosition, see
-	// docs/bug_map_planner_tdc_offset.md). The angle->time conversion happens
-	// up to a full cycle ahead with the current oneDegreeUs - the documented
-	// option-B accel-drift tradeoff - and the events execute on the TIM5
-	// executor. Zero per-tooth handoff work (this is what replaced the
-	// per-tooth onEnginePhase window scan).
-	efitick_t nowNt = getTimeNowNt();
+	ScopePerf perf(PE::MapAveragingTriggerCallback);
 
 	int samplingCount = engineConfiguration->measureMapOnlyInOneCylinder ? 1 : engineConfiguration->cylindersCount;
 
 	for (int i = 0; i < samplingCount; i++) {
-		angle_t windowOffset = engine->engineState.mapAveragingStart[i];
-		wrapAngle(windowOffset, "mapWindowOffset", ObdCode::CUSTOM_ERR_6562);
+		angle_t samplingStart = engine->engineState.mapAveragingStart[i];
 
-		// Re-planning (a new cycle) can overtake events still pending from the
-		// previous plan under hard acceleration: cancel before re-arming the slot.
-		engine->scheduler.cancel(&samplers[i].timer);
+		if (!isPhaseInRange(samplingStart, currentPhase, nextPhase)) {
+			continue;
+		}
 
-		scheduleByAngle(&samplers[i].timer, nowNt, windowOffset, action_s::make<startAveraging>(&samplers[i]));
+		float angleOffset = samplingStart - currentPhase;
+		if (angleOffset < 0) {
+			angleOffset += engine->engineState.engineCycle;
+		}
+
+		auto& s = samplers[i];
+
+		scheduleByAngle(&s.timer, edgeTimestamp, angleOffset, action_s::make<startAveraging>(&s));
 	}
 }
 
@@ -443,11 +251,7 @@ void MapAveragingModule::init() {
 	  }
 
 	if (engineConfiguration->isMapAveragingEnabled) {
-		if (isMapInstantAtArm()) {
-			efiPrintf("initMapAveraging... mode=instant-at-arm (variant B)");
-		} else {
-			efiPrintf("initMapAveraging... mode=windows (variant A)");
-		}
+		efiPrintf("initMapAveraging...");
 		applyMapMinBufferLength();
 	} else {
 		efiPrintf("Running without MapAveraging...");
@@ -458,6 +262,5 @@ void MapAveragingModule::init() {
 void MapAveragingModule::onFastCallback(){}
 void MapAveragingModule::onConfigurationChange(engine_configuration_s const *){}
 void MapAveragingModule::init() {}
-void MapAveragingModule::scheduleNextCycleWindows() {}
-uint8_t MapAveragingModule::firingOrderSuccessor(uint8_t cylinderNumber) { return cylinderNumber; }
+void MapAveragingModule::onEnginePhase(float, efitick_t, float, float){}
 #endif /* EFI_MAP_AVERAGING */

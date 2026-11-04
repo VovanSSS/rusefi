@@ -26,15 +26,6 @@
 #include "single_timer_executor.h"
 #include "efitime.h"
 
-// Command-class attribution for the dispatch-lateness telemetry: the
-// callbacks of the four engine-timing commands are compared by trampoline
-// pointer (action_s::make instantiates one trampoline per function/arg pair,
-// so the pointer identifies the command class without touching the
-// scheduling call sites).
-#include "spark_logic.h"
-#include "main_trigger_callback.h"
-#include "fuel_schedule.h"
-
 #if EFI_SIGNAL_EXECUTOR_ONE_TIMER
 
 #include "microsecond_timer.h"
@@ -48,39 +39,13 @@ void globalTimerCallback() {
 	___engine.scheduler.onTimerCallback();
 }
 
-namespace {
-
-ExecEventKind classifyAction(const action_s& action) {
-	auto cb = action.getCallback();
-
-	if (cb == action_s::make<turnSparkPinHighStartCharging>(static_cast<IgnitionEvent*>(nullptr)).getCallback()) {
-		return ExecEventKind::Dwell;
-	}
-	if (cb == action_s::make<fireSparkAndPrepareNextSchedule>(static_cast<IgnitionEvent*>(nullptr)).getCallback()) {
-		return ExecEventKind::Spark;
-	}
-	if (cb == action_s::make<overFireSparkAndPrepareNextSchedule>(static_cast<IgnitionEvent*>(nullptr)).getCallback()) {
-		return ExecEventKind::Overdwell;
-	}
-	if (cb == action_s::make<turnInjectionPinHigh>(scheduler_arg_t(0)).getCallback()) {
-		return ExecEventKind::Fuel;
-	}
-	if (cb == action_s::make<turnInjectionPinLow>(static_cast<InjectionEvent*>(nullptr)).getCallback()) {
-		return ExecEventKind::Fuel;
-	}
-
-	return ExecEventKind::Other;
-}
-
-} // namespace
-
 SingleTimerExecutor::SingleTimerExecutor()
 	// 8us is roughly the cost of the interrupt + overhead of a single timer event
 	: queue(US2NT(8))
 {
 }
 
-TRIGGER_RAM_CODE void SingleTimerExecutor::schedule(const char *msg, scheduling_s* scheduling, efitick_t nt, action_s const& action) {
+void SingleTimerExecutor::schedule(const char *msg, scheduling_s* scheduling, efitick_t nt, action_s const& action) {
 	ScopePerf perf(PE::SingleTimerExecutorScheduleByTimestamp);
 
 #if EFI_ENABLE_ASSERTS
@@ -96,44 +61,19 @@ TRIGGER_RAM_CODE void SingleTimerExecutor::schedule(const char *msg, scheduling_
 
 	scheduleCounter++;
 
-	// Lock for queue insertion only. The critical section deliberately does
-	// NOT extend over the executeAllPendingActions/scheduleTimerCallback calls
-	// below (2026-09-29 "fire mask" fix): the prio-3 angle-clock fires must not
-	// be masked by a prio-5 or thread-context batch. The queue edits themselves
-	// stay atomic - both sides (insert here, pop in the executor) take their
-	// own short critical sections.
-	bool needToResetTimer;
-	{
-		chibios_rt::CriticalSectionLocker csl;
-		needToResetTimer = queue.insertTask(scheduling, nt, action);
-	}
+	// Lock for queue insertion - we may already be locked, but that's ok
+	chibios_rt::CriticalSectionLocker csl;
+
+	bool needToResetTimer = queue.insertTask(scheduling, nt, action);
 	if (!reentrantFlag) {
-#if EFI_PROD_CODE
-		// In interrupt context (trigger handoff / angle-clock ISRs) do NOT run
-		// due events inline. Since 2026-09-28 the ladder is TMR fires
-		// (TMR2/3/4, prio 3) > handoff (prio 4) > executor (TIM5 CC1, prio 5):
-		// with the queue empty the CC1 fire itself re-arms and dispatches in its
-		// own ISR instead of preempting the handoff; the handoff then completes
-		// without running executor callbacks. Inline execution here would
-		// batch callbacks + busy-wait spins into the handoff and make its
-		// duration variable - the tick-past arm-failure class (boundary START
-		// targets at rem~0) that a lengthened handoff feeds.
-		bool executeInline = !port_is_isr_context();
-#else
-		// Unit tests and the simulator execute events inline from thread
-		// context - keep that behavior.
-		bool executeInline = true;
-#endif
-		if (executeInline) {
-			executeAllPendingActions();
-		}
+		executeAllPendingActions();
 		if (needToResetTimer) {
 			scheduleTimerCallback();
 		}
 	}
 }
 
-TRIGGER_RAM_CODE void SingleTimerExecutor::cancel(scheduling_s* scheduling) {
+void SingleTimerExecutor::cancel(scheduling_s* scheduling) {
 	// Lock for queue removal - we may already be locked, but that's ok
 	chibios_rt::CriticalSectionLocker csl;
 
@@ -143,24 +83,14 @@ TRIGGER_RAM_CODE void SingleTimerExecutor::cancel(scheduling_s* scheduling) {
 void SingleTimerExecutor::onTimerCallback() {
 	timerCallbackCounter++;
 
-	// 2026-09-29 "fire mask" fix: the executor no longer holds the kernel
-	// critical section across the whole batch. The queue edits (pop in
-	// executeAllPendingActions, the re-arm in scheduleTimerCallback) each take
-	// their own SHORT critical section; callback bodies run with the lock
-	// RELEASED, so the prio-3 angle-clock fires (dwell/spark/open/close) and
-	// the prio-4 trigger handoff are no longer masked by this prio-5 batch
-	// (measured 60-70 us mask before this change - the documented
-	// `angclk maxLateUs` class).
+	chibios_rt::CriticalSectionLocker csl;
+
 	executeAllPendingActions();
 	scheduleTimerCallback();
 }
 
 /*
- * this private method executes callback bodies OUTSIDE any lock; only the
- * queue unlink runs under a short critical section (see popDue in
- * event_queue.cpp). The 'stolen lock' check of the old batch-under-CS design
- * is gone with it: nothing is held across a callback, so there is nothing to
- * steal - the lock discipline is the scoped lockers themselves.
+ * this private method is executed under lock
  */
 void SingleTimerExecutor::executeAllPendingActions() {
 	ScopePerf perf(PE::SingleTimerExecutorDoExecute);
@@ -185,35 +115,7 @@ void SingleTimerExecutor::executeAllPendingActions() {
 	bool didExecute;
 	do {
 		efitick_t nowNt = getTimeNowNt();
-		efitick_t momentNt = 0;
-		efitick_t executedAtNt = 0;
-		efitick_t cbDurationNt = 0;
-
-		// Pop the due head under a SHORT critical section: the unlink must be
-		// atomic against schedule()/cancel() from higher-priority contexts
-		// (the prio-3 angle-clock ISRs, the prio-4 handoff). The action is
-		// classified here because popDue unlinks it. The callback body below
-		// executes OUTSIDE the lock - the unmasking is the whole point.
-		uint8_t kind = (uint8_t)ExecEventKind::Other;
-		uint32_t cbAddr = 0;
-		action_s action;
-		{
-			chibios_rt::CriticalSectionLocker csl;
-			didExecute = queue.popDue(nowNt, action, &momentNt, &executedAtNt);
-			if (didExecute) {
-				kind = (uint8_t)classifyAction(action);
-				cbAddr = (uint32_t)(uintptr_t)action.getCallback();
-			}
-		}
-
-		if (didExecute) {
-			efitick_t cbStart = getTimeNowLowerNt();
-			action.execute();
-			cbDurationNt = getTimeNowLowerNt() - cbStart;
-
-			// Dispatch lateness telemetry: how late the command went out.
-			recordExecutionLateness(kind, cbAddr, executedAtNt - momentNt, cbDurationNt);
-		}
+		didExecute = queue.executeOne(nowNt);
 
 		// if we're stuck in a loop executing lots of events, panic!
 		if (executeCounter++ == 500) {
@@ -223,20 +125,19 @@ void SingleTimerExecutor::executeAllPendingActions() {
 	} while (didExecute);
 
 	maxExecuteCounter = maxI(maxExecuteCounter, executeCounter);
+
+	if (!isLocked()) {
+		firmwareError(ObdCode::CUSTOM_ERR_LOCK_ISSUE, "Someone has stolen my lock");
+		return;
+	}
 	reentrantFlag = false;
 }
 
 /**
- * This method takes its own short critical section: reading the queue head and
- * re-arming the hardware compare must be atomic against a concurrent
- * insertTask from a higher-priority context, otherwise an earlier event
- * inserted mid-arm would wait for the later compare (bounded extra latency,
- * self-healed by the next re-arm, but avoided for free by the lock).
+ * This method is always invoked under a lock
  */
-TRIGGER_RAM_CODE void SingleTimerExecutor::scheduleTimerCallback() {
+void SingleTimerExecutor::scheduleTimerCallback() {
 	ScopePerf perf(PE::SingleTimerExecutorScheduleTimerCallback);
-
-	chibios_rt::CriticalSectionLocker csl;
 
 	/**
 	 * Let's grab fresh time value
@@ -255,104 +156,6 @@ TRIGGER_RAM_CODE void SingleTimerExecutor::scheduleTimerCallback() {
 
 void initSingleTimerExecutorHardware() {
 	initMicrosecondTimer();
-}
-
-void SingleTimerExecutor::recordExecutionLateness(uint8_t kind, uint32_t cbAddr, efitick_t late, efitick_t cbDurationNt) {
-	executedEventCount++;
-	if (late > maxLateNt) {
-		maxLateNt = late;
-	}
-	if (late >= US2NT(10)) {
-		lateEventCount++;
-	}
-	uint32_t lateUs = (uint32_t)(late / (NT_PER_SECOND / 1000000));
-	if (lateUs < 1) {
-		lateHistogram[0]++;
-	} else if (lateUs < 4) {
-		lateHistogram[1]++;
-	} else if (lateUs < 16) {
-		lateHistogram[2]++;
-	} else if (lateUs < 64) {
-		lateHistogram[3]++;
-	} else if (lateUs < 256) {
-		lateHistogram[4]++;
-	} else if (lateUs < 1024) {
-		lateHistogram[5]++;
-	} else {
-		lateHistogram[6]++;
-	}
-
-	// Per-command-class stats: proves WHICH commands float (dwell/spark/
-	// overdwell/fuel/other) - printed by the m74_9 lockstats command.
-	if (kind < (uint8_t)ExecEventKind::Count) {
-		ExecLatenessStats& k = kindStats[kind];
-		k.executedEventCount++;
-		if (late > k.maxLateNt) {
-			k.maxLateNt = late;
-		}
-		if (late >= US2NT(10)) {
-			k.lateEventCount++;
-		}
-		if (cbDurationNt > maxCbDurationNt[kind]) {
-			maxCbDurationNt[kind] = cbDurationNt;
-		}
-	}
-
-	if (kind == (uint8_t)ExecEventKind::Other) {
-		recordOtherCbStat(cbAddr, late, cbDurationNt);
-	}
-}
-
-void SingleTimerExecutor::recordOtherCbStat(uint32_t cbAddr, efitick_t late, efitick_t durationNt) {
-	if (cbAddr == 0) {
-		return;
-	}
-
-	for (auto& s : otherCbStats) {
-		if (s.cbAddr == cbAddr) {
-			s.count++;
-			if (late >= US2NT(10)) {
-				s.lateCount++;
-			}
-			if (late > s.maxLateNt) {
-				s.maxLateNt = late;
-			}
-			if (durationNt > s.maxDurationNt) {
-				s.maxDurationNt = durationNt;
-			}
-			return;
-		}
-	}
-
-	for (auto& s : otherCbStats) {
-		if (s.cbAddr == 0) {
-			s.cbAddr = cbAddr;
-			s.count = 1;
-			s.lateCount = late >= US2NT(10) ? 1 : 0;
-			s.maxLateNt = late;
-			s.maxDurationNt = durationNt;
-			return;
-		}
-	}
-
-	// table full - drop (the top few distinct callbacks are enough to
-	// identify the offender; the table resets with lockstats)
-}
-
-void SingleTimerExecutor::resetExecutionLatenessStats() {
-	maxLateNt = 0;
-	executedEventCount = 0;
-	lateEventCount = 0;
-	for (size_t i = 0; i < efi::size(lateHistogram); i++) {
-		lateHistogram[i] = 0;
-	}
-	for (size_t i = 0; i < efi::size(kindStats); i++) {
-		kindStats[i] = {};
-		maxCbDurationNt[i] = 0;
-	}
-	for (size_t i = 0; i < efi::size(otherCbStats); i++) {
-		otherCbStats[i] = {};
-	}
 }
 
 void executorStatistics() {

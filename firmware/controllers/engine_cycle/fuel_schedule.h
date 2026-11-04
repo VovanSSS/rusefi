@@ -11,8 +11,6 @@
 #include "trigger_structure.h"
 #include "wall_fuel.h"
 
-#define MAX_WIRES_COUNT 2
-
 class InjectionEvent {
 public:
 	InjectionEvent() = default;
@@ -20,7 +18,7 @@ public:
 	bool update();
 
 	// Call this every decoded trigger tooth.  It will schedule any relevant events for this injector.
-	void onTriggerTooth(efitick_t nowNt, float currentPhase, float nextPhase, float nextNextPhase);
+	void onTriggerTooth(efitick_t nowNt, float currentPhase, float nextPhase);
 
 	// [tag:wall_fuel_telemetry] SD log field addresses must be constant expressions in production.
 	constexpr WallFuel& getWallFuel() {
@@ -50,45 +48,11 @@ private:
 	uint8_t cylinderNumber = 0;
 	injection_mode_e m_injectionMode = IM_SEQUENTIAL;
 
-public:
-	uint8_t getCylinderNumber() const { return cylinderNumber; }
-private:
-
 	WallFuel wallFuel{};
 
 public:
-	// TODO: this should be private
-	InjectorOutputPin *outputs[MAX_WIRES_COUNT]{};
-	InjectorOutputPin *outputsStage2[MAX_WIRES_COUNT]{};
 	float injectionStartAngle = 0;
-
-	// True once this cycle's injection start has been scheduled, together
-	// with the absolute time it was armed for. A window match is suppressed
-	// only while the armed target is still in the future (the one-tooth-ahead
-	// arm covering the following tooth's window); once the target has passed,
-	// a window match is the NEXT cycle's scheduling - at high duty the next
-	// window can arrive before the injection end recomputes the angle, and
-	// the pre-existing behavior schedules with the stale angle.
-	bool injectionStartArmed = false;
-	efitick_t injectionStartArmedAt = 0;
-
-	// Injection close delay in NT ticks (= US2NT(durationUsStage1)), stored
-	// by onTriggerTooth for use in turnInjectionPinHigh which arms the close
-	// at the ACTUAL open moment: on the TMR2 angle clock CC4 (EFI_ANGLE_CLOCK,
-	// 32-bit hardware compare) or the TIM5 CC2 mini-queue (time-based builds).
-	uint32_t injectionEndDelayNt = 0;
 };
-
-#if !EFI_ANGLE_CLOCK
-// Schedule injection close on TIM5 CC2 mini-queue (time-based builds only;
-// the angle-clock build arms the close on TMR2 CC4).
-// Called from turnInjectionPinHigh after output->open(). cyl = cylinder 0..3.
-void scheduleInjectionCloseHW(int cyl, efitick_t nowNt, uint32_t delayNt, action_s action);
-void cancelInjectionCloseHW(int cyl);
-#endif // !EFI_ANGLE_CLOCK
-
-void turnInjectionPinHigh(scheduler_arg_t arg);
-void turnInjectionPinLow(InjectionEvent *event);
 
 // [tag:injection_action_snapshot] Every action carries the output selection made
 // when the pulse was scheduled. A mode change can rebuild InjectionEvent before
@@ -130,7 +94,7 @@ public:
 	void invalidate();
 
 	// Call this every trigger tooth.  It will schedule all required injector events.
-	void onTriggerTooth(efitick_t nowNt, float currentPhase, float nextPhase, float nextNextPhase);
+	void onTriggerTooth(efitick_t nowNt, float currentPhase, float nextPhase);
 
 	/**
 	 * this method schedules all fuel events for an engine cycle

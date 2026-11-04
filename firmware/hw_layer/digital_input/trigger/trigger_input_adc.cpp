@@ -11,7 +11,6 @@
 
 #include "pch.h"
 #include "trigger_input_adc.h"
-#include "angle_clock.h"
 
 
 /*static*/ TriggerAdcDetector trigAdcState;
@@ -181,7 +180,7 @@ void onTriggerChanged(efitick_t stamp, bool isPrimary, bool isRising) {
 	// call the main trigger handler. The TMR2-domain edge tick is synthesized
 	// (this path is never used on the angle-clock build - HAL_TRIGGER_USE_ADC
 	// is FALSE there - but a real tick keeps it correct if that ever changes).
-	hwHandleShaftSignal(isPrimary ? 0 : 1, isRising, stamp, angleClockSyntheticEdgeTick());
+	hwHandleShaftSignal(isPrimary ? 0 : 1, isRising, stamp, 0);
 #endif // 1
 }
 

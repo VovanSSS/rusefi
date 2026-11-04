@@ -18,8 +18,6 @@
 #include "trigger_central.h"
 
 #include "engine_sniffer.h"
-#include "map_averaging.h"
-#include "misfire_detection.h"
 
 // See RpmCalculator::checkIfSpinning()
 #ifndef NO_RPM_EVENTS_TIMEOUT_SECS
@@ -35,7 +33,7 @@ bool RpmCalculator::isStopped() const {
 	return state == STOPPED || (state == SPINNING_UP && cachedRpmValue == 0);
 }
 
-TRIGGER_RAM_CODE bool RpmCalculator::isCranking() const {
+bool RpmCalculator::isCranking() const {
 	// Spinning-up with non-zero RPM is suitable for all engine math, as good as cranking
 	return state == CRANKING || (state == SPINNING_UP && cachedRpmValue > 0);
 }
@@ -149,7 +147,7 @@ bool RpmCalculator::checkIfSpinning(efitick_t nowNt) const {
 	return true;
 }
 
-TRIGGER_RAM_CODE void RpmCalculator::assignRpmValue(float floatRpmValue) {
+void RpmCalculator::assignRpmValue(float floatRpmValue) {
 	previousRpmValue = cachedRpmValue;
 
 	cachedRpmValue = floatRpmValue;
@@ -170,7 +168,7 @@ TRIGGER_RAM_CODE void RpmCalculator::assignRpmValue(float floatRpmValue) {
 	}
 }
 
-TRIGGER_RAM_CODE void RpmCalculator::setRpmValue(float value) {
+void RpmCalculator::setRpmValue(float value) {
 	if (value > MAX_ALLOWED_RPM) {
 		value = 0;
 	}
@@ -259,8 +257,6 @@ void RpmCalculator::onSlowCallback() {
 void RpmCalculator::setStopSpinning() {
 	isSpinning = false;
 	revolutionCounterSinceStart = 0;
-	lastCountedRevolutionNt = 0;
-	hasCountedRevolution = false;
 	rpmRate = 0;
 	m_cyclePeriodDisturbed = false;
 
@@ -301,7 +297,7 @@ void RpmCalculator::setSpinningUp(efitick_t nowNt) {
  * updated here.
  * This callback is invoked on interrupt thread.
  */
-TRIGGER_RAM_CODE void rpmShaftPositionCallback(trigger_event_e ckpSignalType,
+void rpmShaftPositionCallback(trigger_event_e ckpSignalType,
 		uint32_t trgEventIndex, efitick_t nowNt) {
 
 	bool alwaysInstantRpm = engineConfiguration->alwaysInstantRpm;
@@ -352,51 +348,7 @@ TRIGGER_RAM_CODE void rpmShaftPositionCallback(trigger_event_e ckpSignalType,
 			engine->triggerCentral.instantRpm.movePreSynchTimestamps();
 		}
 
-		// The revolution counter drives the ASE and cranking-cycle tables, so it
-		// must count REAL engine cycles only. Two guards:
-		//  - a disturbed cycle boundary is not a real cycle (a phase re-sync
-		//    shifted it): its RPM sample is discarded by the guard above, and
-		//    the counter must skip the same cycle;
-		//  - only a sync with the exact expected tooth count proves a real
-		//    crank revolution - false gap pairs mid-revolution always have a
-		//    count mismatch. On m74_9 the false-sync storms raced the counter
-		//    ~2x ahead of real time while RPM held steady.
-		// The revolution counter drives ASE and the cranking-taper tables, so it
-		// must track REAL revolutions. Clean-flagged syncs are not enough: at
-		// the first-combustion catch a noise storm re-syncs the decoder several
-		// times per real revolution (each with an exact event count once the
-		// cycle anchor drifts), racing the counter ~5x ahead on m74_9.
-		// Rate-limit by real time instead: a real revolution cannot complete
-		// faster than ~30/rpm seconds (2x acceleration slack over the real
-		// 60/rpm). The rpm sample itself updates every undisturbed cycle, so
-		// the gate follows real acceleration/deceleration within one
-		// revolution; an extreme >2x-per-revolution transient (only the catch)
-		// delays the count by a single revolution - the safe direction (ASE /
-		// taper last longer). An rpmRate-based prediction was tried and
-		// reverted: at the catch the measured acceleration opened the gate to
-		// the storm rate (23:18 log, counter +24 in ~0.2 s). Until the first
-		// cycle RPM is measured there is no rate reference, so the clean-sync
-		// gate applies alone (the first revolution has no storm to reject
-		// anyway).
-		if (!cyclePeriodDisturbed && engine->triggerCentral.triggerState.lastSyncWasClean) {
-			float gateRpm = rpmState->getCachedRpm();
-			bool gateOpen = true;
-			if (gateRpm > 0) {
-				if (gateRpm < 100.0f) {
-					// slow-crank floor: ~300 ms bound, still tight enough to reject
-					// the catch storm and loose enough for real cranking revolutions
-					gateRpm = 100.0f;
-				}
-				efitick_t minPeriodNt = US2NT((uint32_t)(US_PER_SECOND_F / gateRpm * 30.0f));
-				gateOpen = !rpmState->hasCountedRevolution ||
-					(nowNt - rpmState->lastCountedRevolutionNt) >= minPeriodNt;
-			}
-			if (gateOpen) {
-				rpmState->onNewEngineCycle();
-				rpmState->lastCountedRevolutionNt = nowNt;
-				rpmState->hasCountedRevolution = true;
-			}
-		}
+		rpmState->onNewEngineCycle();
 	}
 
 
@@ -438,50 +390,21 @@ static void onTdcCallback() {
 #endif /* EFI_UNIT_TEST */
 
 	float rpm = Sensor::getOrZero(SensorType::Rpm);
-	if (getTriggerCentral()->isEngineSnifferEnabled) {
-		addEngineSnifferTdcEvent(static_cast<int>(rpm));
-	}
+	addEngineSnifferTdcEvent(static_cast<int>(rpm));
 #if EFI_TOOTH_LOGGER
 	LogTriggerTopDeadCenter(getTimeNowNt());
 #endif /* EFI_TOOTH_LOGGER */
-
-	// Once-per-engine-cycle executor hook: the MAP averaging window planner and
-	// the misfire segment planner were moved OUT of the handoff (the
-	// engineModules.apply_all removal, 2026-09-23) and run from here, at
-	// TIM5-executor priority, once per engine cycle.
-#if EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
-	engine->module<MapAveragingModule>()->scheduleNextCycleWindows();
-#endif // EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
-#if EFI_MISFIRE_DETECTION
-	engine->module<MisfireController>()->scheduleNextCycleSegments();
-#endif // EFI_MISFIRE_DETECTION
 }
 #endif // EFI_ENGINE_CONTROL
 
 /**
  * This trigger callback schedules the actual physical TDC callback in relation to trigger synchronization point.
  */
-TRIGGER_RAM_CODE void tdcMarkCallback(
+void tdcMarkCallback(
 		uint32_t trgEventIndex, efitick_t nowNt) {
 #if EFI_ENGINE_CONTROL
 	bool isTriggerSynchronizationPoint = trgEventIndex == 0;
-
-	// The MAP-averaging window planner and the misfire segment planner were
-	// moved OUT of the handoff: they run from the once-per-cycle TDC executor
-	// event (onTdcCallback). Schedule that event without the sniffer too when
-	// either planner is enabled - with both disabled the previous behavior is
-	// preserved exactly (no extra executor insert in the handoff).
-	bool needEngineCyclePlanning = false;
-#if EFI_MAP_AVERAGING && defined(MODULE_MAP_AVERAGING)
-	// The window planner is off in the instant-at-arm (variant B) mode - it has
-	// no windows to plan, MapFast is published at the 200 Hz tick.
-	needEngineCyclePlanning = needEngineCyclePlanning || (engineConfiguration->isMapAveragingEnabled && !isMapInstantAtArm());
-#endif
-#if EFI_MISFIRE_DETECTION
-	needEngineCyclePlanning = needEngineCyclePlanning || engineConfiguration->misfireDetectionEnabled;
-#endif
-
-	if (isTriggerSynchronizationPoint && (getTriggerCentral()->isEngineSnifferEnabled || needEngineCyclePlanning)) {
+	if (isTriggerSynchronizationPoint && getTriggerCentral()->isEngineSnifferEnabled) {
 
 #if EFI_UNIT_TEST
 		if (!engine->tdcMarkEnabled) {
@@ -515,7 +438,7 @@ TRIGGER_RAM_CODE void tdcMarkCallback(
  *
  * @return tick time of scheduled action
  */
-TRIGGER_RAM_CODE efitick_t scheduleByAngle(scheduling_s *timer, efitick_t nowNt, angle_t angle, action_s const& action) {
+efitick_t scheduleByAngle(scheduling_s *timer, efitick_t nowNt, angle_t angle, action_s const& action) {
 	float delayUs = engine->rpmCalculator.oneDegreeUs * angle;
 
 	efitick_t actionTimeNt = sumTickAndFloat(nowNt, USF2NT(delayUs));

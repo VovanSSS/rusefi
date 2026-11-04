@@ -12,7 +12,6 @@
 #include "trigger_input.h"
 #include "can_hw.h"
 #include "hardware.h"
-#include "angle_clock.h"
 #include "rtc_helper.h"
 #include "bench_test.h"
 #include "yaw_rate_sensor.h"

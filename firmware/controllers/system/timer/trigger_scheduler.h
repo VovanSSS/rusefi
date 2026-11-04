@@ -18,13 +18,9 @@ public:
 	void cancel(AngleBasedEvent* event);
 
     // scheduleForActualTimeBasedExecution using underlying time-base scheduler
-    // With EFI_ANGLE_CLOCK, events due in [nextPhase, nextNextPhase) are
-    // armed one tooth ahead on the TMR2 angle clock instead of the
-    // time-based executor.
-    void scheduleEventsUntilNextTriggerTooth(float rpm,
-							 efitick_t edgeTimestamp,
-							 float currentPhase, float nextPhase,
-							 float nextNextPhase);
+	void scheduleEventsUntilNextTriggerTooth(float rpm,
+						 efitick_t edgeTimestamp,
+						 float currentPhase, float nextPhase);
 
 #if EFI_UNIT_TEST
 	AngleBasedEvent * getElementAtIndexForUnitTest(int index);

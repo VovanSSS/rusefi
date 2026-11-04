@@ -74,7 +74,6 @@ TESTS_SRC_CPP = \
 	tests/trigger/test_override_gaps.cpp \
 	tests/trigger/test_injection_scheduling.cpp \
 	tests/trigger/test_instant_rpm.cpp \
-	tests/trigger/test_angle_clock.cpp \
 	tests/trigger/test_teeth_to_logicdata.cpp \
 	tests/trigger/test_logicdata_to_csv.cpp \
 	tests/sent/test_sent.cpp \
@@ -270,7 +269,6 @@ TESTS_SRC_CPP = \
 	tests/core/test_main_loop.cpp \
 	tests/test_trip_odometer.cpp \
 	tests/controllers/modules/map_averaging/test_map_averaging.cpp \
-	tests/controllers/modules/map_averaging/test_map_instant_arm.cpp \
 	tests/util/test_utils.cpp \
 	tests/controllers/algo/test_engine_cylinder.cpp \
 	tests/controllers/algo/test_closed_loop_idle.cpp \

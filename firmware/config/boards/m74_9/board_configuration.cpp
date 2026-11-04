@@ -17,9 +17,7 @@
 #include "pwm_generator_logic.h"
 #include "ignition_controller.h"
 #include "thermistors.h"
-#include "angle_clock.h"
 #include "spark_logic.h"
-#include "injection_close_hw.h"
 
 // PB14 is error LED, configured in board.mk
 Gpio getCommsLedPin() {
@@ -854,41 +852,6 @@ static __attribute__((aligned(256), noinline)) uint32_t flashperfLoop() {
 	return acc;
 }
 
-// Printable name of an executor command class. A helper instead of an
-// in-lambda array because commas outside parentheses split macro arguments
-// (addConsoleAction is a function-like macro).
-static const char* m74_9ExecKindName(int kind) {
-	switch (kind) {
-	case (int)ExecEventKind::Dwell:
-		return "dwell";
-	case (int)ExecEventKind::Spark:
-		return "spark";
-	case (int)ExecEventKind::Overdwell:
-		return "overdwell";
-	case (int)ExecEventKind::Fuel:
-		return "fuel";
-	default:
-		return "other";
-	}
-}
-
-#if EFI_ANGLE_CLOCK
-// Printable name of an angle-clock channel (event type). Same helper pattern
-// as m74_9ExecKindName (macros vs commas, see above).
-static const char* m74_9AngclkChannelName(int ch) {
-	switch (ch) {
-	case ANGLE_CLOCK_CH_DWELL:
-		return "dwell";
-	case ANGLE_CLOCK_CH_SPARK:
-		return "spark";
-	case ANGLE_CLOCK_CH_OPEN:
-		return "open";
-	default:
-		return "?";
-	}
-}
-#endif // EFI_ANGLE_CLOCK
-
 void setup_custom_board_overrides() {
 #if EFI_PROD_CODE
 	initM749BootloaderHandoff();
@@ -1136,41 +1099,6 @@ void setup_custom_board_overrides() {
 		printRuntimeStats();
 		resetMaxValues();
 
-		// Event execution lateness: proves whether scheduled commands
-		// (spark, injection, dwell) go out at their scheduled moment. A
-		// large maxLateUs or a fat >=16us bucket means the TIM5 dispatch
-		// was delayed - the command timing floats and the engine misfires.
-		// A clean histogram (<4us) means the executor is deterministic and
-		// any misfire jitter comes from upstream (trigger edge timing).
-		auto& sched = engine->scheduler;
-		efiPrintf("sched exec=%u late>=10us=%u maxLateUs=%u hist<1/1-4/4-16/16-64/64-256/256-1k/>=1k us: %u %u %u %u %u %u %u",
-			(unsigned)sched.executedEventCount, (unsigned)sched.lateEventCount,
-			(unsigned)(sched.maxLateNt / (NT_PER_SECOND / 1000000)),
-			(unsigned)sched.lateHistogram[0], (unsigned)sched.lateHistogram[1], (unsigned)sched.lateHistogram[2],
-			(unsigned)sched.lateHistogram[3], (unsigned)sched.lateHistogram[4], (unsigned)sched.lateHistogram[5],
-			(unsigned)sched.lateHistogram[6]);
-
-		// Per-command-class breakdown: WHICH commands float. On the angle-clock
-		// (TRUE) build dwell/spark/inj-start fire from TMR2/3/4 (prio 3, NVIC
-		// entry only) and never appear here; the TIM5 executor (prio 5, below
-		// the fires and the handoff) carries injection close, overdwell rescue,
-		// MAP/knock and 'other' periodic events where a few us of jitter is
-		// harmless. In the FALSE build dwell/spark/overdwell/fuel ARE on the
-		// executor and must show late>=10us=0 and small maxLateUs - the executor
-		// is preemptible by the fires (3) and the handoff (4), so a fat >=16us
-		// bucket there means the command timing floats and the engine misfires;
-		// a clean histogram (<4us) means it is deterministic and any misfire
-		// jitter comes from upstream (trigger edge timing).
-		// NOTE: commas outside parentheses split macro arguments, so the
-		// kind name comes from a helper, not an in-lambda array.
-		for (int i = 0; i < (int)ExecEventKind::Count; i++) {
-			const auto& k = sched.kindStats[i];
-			efiPrintf("sched %s: n=%u late>=10us=%u maxLateUs=%u cbmaxUs=%u",
-				m74_9ExecKindName(i), (unsigned)k.executedEventCount, (unsigned)k.lateEventCount,
-				(unsigned)(k.maxLateNt / (NT_PER_SECOND / 1000000)),
-				(unsigned)(sched.maxCbDurationNt[i] / (NT_PER_SECOND / 1000000)));
-		}
-
 		// Ground truth for the interrupt-priority ladder: read the NVIC
 		// priority registers directly. IRQ numbers per the Artery CMSIS:
 		// EXTI9_5=23 (raw trigger capture, want 0), I2C1_EV=31 (trigger
@@ -1182,20 +1110,6 @@ void setup_custom_board_overrides() {
 			(unsigned)((NVIC->IP[23] >> 4) & 0xF), (unsigned)((NVIC->IP[31] >> 4) & 0xF),
 			(unsigned)((NVIC->IP[50] >> 4) & 0xF), (unsigned)((NVIC->IP[19] >> 4) & 0xF),
 			(unsigned)((NVIC->IP[20] >> 4) & 0xF), (unsigned)((NVIC->IP[18] >> 4) & 0xF));
-
-		// What the unclassified 'other' events actually are: raw callback
-		// addresses, mapped to function names with arm-none-eabi-nm on the
-		// matching build.
-		for (int i = 0; i < 8; i++) {
-			const auto& s = sched.otherCbStats[i];
-			if (s.cbAddr == 0) {
-				break;
-			}
-			efiPrintf("sched othercb %08x: n=%u late>=10us=%u maxLateUs=%u maxDurUs=%u",
-					(unsigned)s.cbAddr, (unsigned)s.count, (unsigned)s.lateCount,
-					(unsigned)(s.maxLateNt / (NT_PER_SECOND / 1000000)),
-					(unsigned)(s.maxDurationNt / (NT_PER_SECOND / 1000000)));
-		}
 
 		// Which soft-PWM channels are loading the executor: they all share the
 		// static timerCallback address above, so name them individually here.
@@ -1327,8 +1241,6 @@ void setup_custom_board_overrides() {
 		resetInjectionCC2Counters();
 		angleClockResetStats();
 #endif // EFI_ANGLE_CLOCK
-
-		sched.resetExecutionLatenessStats();
 	});
 	// Systemic CPU speed probe: reads the AT32 flash performance/divider/
 	// continue-read registers and times a fixed 1M-iteration loop. At 288 MHz

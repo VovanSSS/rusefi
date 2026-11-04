@@ -37,7 +37,6 @@ bool needEvent(const int currentIndex, const MultiChannelStateSequence & mcss, i
 #include "trigger_emulator_algo.h"
 #include "trigger_central.h"
 #include "trigger_simulator.h"
-#include "angle_clock.h"
 
 TriggerEmulatorHelper::TriggerEmulatorHelper() {
 }
@@ -62,7 +61,7 @@ void TriggerEmulatorHelper::handleEmulatorCallback(int channel, const MultiChann
 				// TMR2 directly here (the edge "happens" at this callback instant;
 				// the helper returns 0 on non-angle-clock builds where the value
 				// is unused).
-				handleShaftSignal(i, isRise, stamp, angleClockSyntheticEdgeTick());
+				handleShaftSignal(i, isRise, stamp, 0);
 			} else {
 				handleVvtCamSignal(isRise ? TriggerValue::RISE : TriggerValue::FALL, stamp, INDEX_BY_BANK_CAM(channel - 1, i));
 			}

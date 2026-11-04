@@ -1,7 +1,6 @@
 #include "pch.h"
 
 #include "event_queue.h"
-#include "trigger_central.h"
 
 bool TriggerScheduler::assertNotInList(AngleBasedEvent *head, AngleBasedEvent *element) {
 	/* this code is just to validate state, no functional load*/
@@ -27,7 +26,7 @@ bool TriggerScheduler::assertNotInList(AngleBasedEvent *head, AngleBasedEvent *e
 	return false;
 }
 
-TRIGGER_RAM_CODE void TriggerScheduler::schedule(const char *msg, AngleBasedEvent* event, angle_t angle, action_s const& action) {
+void TriggerScheduler::schedule(const char *msg, AngleBasedEvent* event, angle_t angle, action_s const& action) {
 	event->setAngle(angle);
 
 	schedule(msg, event, action);
@@ -39,7 +38,7 @@ TRIGGER_RAM_CODE void TriggerScheduler::schedule(const char *msg, AngleBasedEven
  * @return true if event corresponds to current tooth and was time-based scheduler
  *         false if event was put into queue for scheduling at a later tooth
  */
-TRIGGER_RAM_CODE bool TriggerScheduler::scheduleOrQueue(const char *msg, AngleBasedEvent *event,
+bool TriggerScheduler::scheduleOrQueue(const char *msg, AngleBasedEvent *event,
 		efitick_t edgeTimestamp,
 		angle_t angle,
 		action_s action,
@@ -65,7 +64,7 @@ TRIGGER_RAM_CODE bool TriggerScheduler::scheduleOrQueue(const char *msg, AngleBa
 	}
 }
 
-TRIGGER_RAM_CODE void TriggerScheduler::schedule(const char *msg, AngleBasedEvent* event, action_s const& action) {
+void TriggerScheduler::schedule(const char *msg, AngleBasedEvent* event, action_s const& action) {
 	if (event->getAngle() < 0) {
 	    // at the moment we expect API consumer to wrap angle. shall we do the wrapping in the enginePhase setter?
 	    // i.e. what is the best level to take care of the range constraint?
@@ -110,72 +109,74 @@ void TriggerScheduler::cancel(AngleBasedEvent* event) {
 	event->nextToothEvent = nullptr;
 }
 
-TRIGGER_RAM_CODE void TriggerScheduler::scheduleEventsUntilNextTriggerTooth(float rpm,
-							   efitick_t edgeTimestamp, float currentPhase, float nextPhase,
-							   float nextNextPhase) {
-	UNUSED(nextNextPhase);  // EFI_ANGLE_CLOCK: spark not in angle queue, VVT/AuxActor use current-window only
+void TriggerScheduler::scheduleEventsUntilNextTriggerTooth(float rpm,
+							   efitick_t edgeTimestamp, float currentPhase, float nextPhase) {
 
 	if (rpm == 0) {
-			 // this might happen for instance in case of a single trigger event after a pause
+		 // this might happen for instance in case of a single trigger event after a pause
 		return;
 	}
 
-	AngleBasedEvent *current, *tmp, *keephead;
-	AngleBasedEvent *keeptail = nullptr;
-
 	{
+		// Move due events onto the pending-promotion list, keeping both lists
+		// consistent at every point. The main list is never detached wholesale:
+		// a concurrent cancel() - most notably overdwell protection's
+		// overFireSparkAndPrepareNextSchedule() executing from the timer ISR or
+		// from the executor's inline drain during scheduleByAngle() below -
+		// always finds the event it is canceling and takes effect,
+		// see https://github.com/rusefi/rusefi/issues/9435
 		chibios_rt::CriticalSectionLocker csl;
 
-		keephead = m_angleBasedEventsHead;
-		m_angleBasedEventsHead = nullptr;
-	}
+		AngleBasedEvent *current, *tmp;
+		AngleBasedEvent **dueTail = &m_dueEventsHead;
 
-	LL_FOREACH_SAFE2(keephead, current, tmp, nextToothEvent)
-	{
-		if (current->shouldSchedule(currentPhase, nextPhase)) {
-			// time to fire a spark which was scheduled previously
-
-			// Yes this looks like O(n^2), but that's only over the entire engine
-			// cycle.  It's really O(mn + nn) where m = # of teeth and n = # events
-			// fired per cycle.  The number of teeth outweigh the number of events, at
-			// least for 60-2....  So odds are we're only firing an event or two per
-			// tooth, which means the outer loop is really only O(n).  And if we are
-			// firing many events per teeth, then it's likely the events before this
-			// one also fired and thus the call to LL_DELETE2 is closer to O(1).
-			LL_DELETE2(keephead, current, nextToothEvent);
-
-			scheduling_s * sDown = &current->eventScheduling;
-
-#if SPARK_EXTREME_LOGGING
-			efiPrintf("time to invoke [%.1f, %.1f) %d %d",
-				  currentPhase, nextPhase, getRevolutionCounter(), time2print(getTimeNowUs()));
-#endif /* SPARK_EXTREME_LOGGING */
-
-			// In case this event was scheduled by overdwell protection, cancel it so
-			// we can re-schedule at the correct time
-			// [tag:overdwell]
-			engine->scheduler.cancel(sDown);
-
-			// Under EFI_ANGLE_CLOCK: spark events no longer enter the angle queue
-			// (spark is armed from turnSparkPinHighStartCharging via
-			// angleClockArmSparkFromNow). Only VVT/AuxActor events reach here.
-			scheduleByAngle(
-				sDown,
-				edgeTimestamp,
-				current->getAngleFromNow(currentPhase),
-				current->action
-			);
-		} else {
-			keeptail = current; // Used for fast list concatenation
+		LL_FOREACH_SAFE2(m_angleBasedEventsHead, current, tmp, nextToothEvent)
+		{
+			if (current->shouldSchedule(currentPhase, nextPhase)) {
+				// time to fire an event which was scheduled previously
+				LL_DELETE2(m_angleBasedEventsHead, current, nextToothEvent);
+				current->nextToothEvent = nullptr;
+				*dueTail = current;
+				dueTail = &current->nextToothEvent;
+			}
 		}
 	}
 
-	if (keephead) {
-		chibios_rt::CriticalSectionLocker csl;
+	// Now promote the due events to the time-based scheduler, taking them one at
+	// a time so that a cancel() arriving mid-loop still finds any event that has
+	// not been promoted yet
+	while (true) {
+		AngleBasedEvent *current;
 
-		// Put any new entries onto the end of the keep list
-		keeptail->nextToothEvent = m_angleBasedEventsHead;
-		m_angleBasedEventsHead = keephead;
+		{
+			chibios_rt::CriticalSectionLocker csl;
+
+			current = m_dueEventsHead;
+			if (!current) {
+				break;
+			}
+			m_dueEventsHead = current->nextToothEvent;
+			current->nextToothEvent = nullptr;
+		}
+
+		scheduling_s * sDown = &current->eventScheduling;
+
+#if SPARK_EXTREME_LOGGING
+		efiPrintf("time to invoke [%.1f, %.1f) %d %d",
+			  currentPhase, nextPhase, getRevolutionCounter(), time2print(getTimeNowUs()));
+#endif /* SPARK_EXTREME_LOGGING */
+
+		// In case this event was scheduled by overdwell protection, cancel it so
+		// we can re-schedule at the correct time
+		// [tag:overdwell]
+		engine->scheduler.cancel(sDown);
+
+		scheduleByAngle(
+			sDown,
+			edgeTimestamp,
+			current->getAngleFromNow(currentPhase),
+			current->action
+		);
 	}
 }
 

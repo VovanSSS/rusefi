@@ -18,7 +18,6 @@
 #if EFI_PROD_CODE && HAL_USE_PWM
 
 #include "port_microsecond_timer.h"
-#include "injection_close_hw.h"
 
 void portSetHardwareSchedulerTimer(efitick_t nowNt, efitick_t setTimeNt) {
 	// This implementation doesn't need the current time, only the target time
@@ -60,7 +59,7 @@ static void hwTimerCallback(PWMDriver*) {
 	assertInterruptPriority(__func__, EFI_IRQ_SCHEDULING_TIMER_PRIORITY);
 }
 
-static const PWMConfig timerConfig = {
+static constexpr PWMConfig timerConfig = {
 	.frequency = SCHEDULER_TIMER_FREQ,
 	/* wanted timer period = 2^32 counts,
 	 * but driver set (period - 1) value to register
@@ -70,7 +69,7 @@ static const PWMConfig timerConfig = {
 	.callback = nullptr,		// No update callback
 	.channels = {
 		{PWM_OUTPUT_DISABLED, hwTimerCallback},		   // CC1: NT executor
-		{PWM_OUTPUT_DISABLED, hwInjectionCloseCallback},  // CC2: injection close mini-queue
+		{PWM_OUTPUT_DISABLED, nullptr},
 		{PWM_OUTPUT_DISABLED, nullptr},
 		{PWM_OUTPUT_DISABLED, nullptr}
 	},
@@ -87,11 +86,7 @@ void portInitMicrosecondTimer() {
 	// (which would take 358 seconds at 12mhz timer speed), so we have to use normal upcounting
 	// output compare mode instead.
 	// CC1: executor (OC1M=1 = set-on-match, software comparator, CCxE=0 no pin output)
-	// CC2: injection close mini-queue (OC2M=1, same mode) - on the angle-clock
-	// build the OPEN fires from TMR2 and the CLOSE is queued here (2026-10-09).
-	SCHEDULER_TIMER_DEVICE->CCMR1 = STM32_TIM_CCMR1_OC1M(1)
-	                               | STM32_TIM_CCMR1_OC2M(1)
-		;
+	SCHEDULER_TIMER_DEVICE->CCMR1 = STM32_TIM_CCMR1_OC1M(1);
 
 	/* TODO: implement for all possible TIMs */
 	if (SCHEDULER_TIMER_DEVICE == TIM5) {

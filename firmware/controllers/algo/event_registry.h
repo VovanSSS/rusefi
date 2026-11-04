@@ -71,24 +71,6 @@ public:
 	// Track whether coil charge was canceled due to overcharge
 	bool wasSparkCanceled = false;
 
-	// True once this cycle's dwell start has been scheduled (one tooth ahead
-	// on the angle clock or time-based). Cleared in
-	// prepareCylinderIgnitionSchedule when the next cycle's angles are
-	// computed at spark fire - prevents the current-tooth window of the
-	// following tooth from scheduling the dwell a second time.
-	bool dwellStartArmed = false;
-
-#if EFI_ANGLE_CLOCK
-	// Redundant-rescue idempotency (angle clock): set when this charge's fire
-	// has executed (coil discharged), cleared when the next charge actually
-	// starts. The overdwell rescue stays armed on TIM5 after an angle-clock
-	// fire and no-ops on this flag - the fire and the rescue are two writers
-	// of the same coil-off, and only the first may act (a double fire would
-	// double-run prepareCylinderIgnitionSchedule).
-	bool sparkFiredSinceCharge = false;
-
-#endif // EFI_ANGLE_CLOCK
-
 	/**
 	 * Desired timing advance
 	 */
