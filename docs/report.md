@@ -1,5 +1,66 @@
 # Work Report
 
+## 2026-11-04 (2) - m74_9: align branch to master (code + tests), keep m74_9 features
+
+Following up on the incomplete 460fb51cbf revert (it promised to strip the angle
+clock / injection-MAP rework but left dead plumbing and stale tests behind), the
+branch is being pulled back toward master while keeping the m74_9 VRS/trigger/board
+bring-up (position gate, VR model, tooth diag, vehicle CAN, LIN, L9779, AT32, ZW
+placement).
+
+CODE:
+- Stripped the dead acTimestamp angle-clock parameter from the trigger input path
+  (always 0 since EFI_ANGLE_CLOCK=FALSE, unused in every consumer):
+  digital_input_exti.{h,cpp} (ExtiCallback, ExtiQueueEntry, fast-IRQ push/drain),
+  trigger_input_{exti,adc,comp}.cpp, trigger_emulator_algo.cpp, trigger_central.{h,cpp}.
+  The m74_9 fast-IRQ pin-level capture (bool level) stays.
+- Reverted MAP Variant A mass-pipeline leftovers to master: engine2.cpp
+  (referenceMap / injectionMassMapBasis / massForCyl), engine_state.txt,
+  default_base_engine.cpp, torque_estimator.cpp.
+- Reverted ignition_state.cpp updateDwell to master (instantRpm basis was an
+  angle-clock leftover; instantRpm itself is generic and stays).
+
+TESTS:
+- unit_tests/tests + test-framework reset to master; the 3 m74_9-only tests
+  (test_60_2_cranking_transition, test_60_2_early_gap_latch, test_cam_phase_drift)
+  are dropped; test_digital_input_exti restored with its callbacks adapted to the
+  m74_9 ExtiCallback (bool level); PAL_NOLINE kept in the host adapter.
+
+KNOWN REMAINING (not addressed now, per user):
+- 4 trigger tests fail on the m74_9 decoder position gate (m74_9 feature vs master
+  test expectations: renix44 115 vs 84, noisy-trigger 29/26 vs 25/22, finder 29 vs 27).
+- StorageBoardGate.DefersAllRecordsWhileRunning - the !EFI_UNIT_TEST storage gate
+  (m74_9 internal-flash) conflicts with the master test.
+- 10 IsoTpFlowControl tests - can_msg_tx/isotp flow-control changes vs master tests.
+- FuelMath.postCrankingFactorAxis - fails when the unit tests build against the
+  m74_9 generated config (CRANKING_ENRICH_COUNT=14 vs 6): the m74_9 board build
+  regenerates the shared firmware/controllers/generated/ headers, and the unit-test
+  build then consumes them; touch firmware/integration/rusefi_config.txt +
+  config_page_4.txt before the unit-test build to regenerate the default layout.
+
+## 2026-11-04 - m74_9: restore strict ZW-coverage check + noinline on the hot path
+
+The 460fb51cbf revert (angle clock + injection/MAP rework back to master) weakened
+check_zw_coverage.sh to treat "symbol not found" as "inlined OK", and dropped
+TRIGGER_RAM_CODE (= noinline, since EFI_TRIGGER_IN_RAM=FALSE) from the per-tooth hot
+functions. LTO then inlined them into their callers, so nm could no longer resolve
+them and a strict check would fail on 5 symbols. The weakened check masked this by
+coincidence of caller naming (the inlined code still lands in ZW only because the
+caller's section name matches a .m749_fast_text glob), not by guarantee.
+
+FIX:
+- check_zw_coverage.sh: "not found" is fail=1 again; turnInjectionPinHigh ->
+  startInjection (the function was renamed by the revert, the old symbol no longer
+  exists).
+- Re-added TRIGGER_RAM_CODE (noinline, no .fast_text section) to
+  mainTriggerCallback, InjectionEvent::onTriggerTooth,
+  TriggerScheduler::scheduleEventsUntilNextTriggerTooth, turnSparkPinHighStartCharging
+  (spark_logic.cpp) and startInjection (fuel_schedule.cpp), so the .m749_fast_text
+  name globs keep placing them in ZW by guarantee rather than by luck.
+
+VALIDATION: m74_9 three-stage image builds; check_zw_coverage.sh passes
+(ZW-COVERAGE: OK - all checked symbols in ZW flash or the RAM fast copy).
+
 ## 2026-11-03 (3) - libfirmware: rebase .fast_text Timer fix onto current upstream - DONE, m74_9 builds
 
 LIBFIRMWARE (VovanSSS/libfirmware):
