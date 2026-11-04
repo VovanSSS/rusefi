@@ -55,6 +55,15 @@ CRC-32/MPEG-2 at 0x080FFFFC:
 firmware/config/boards/m74_9/compile_m74_9.sh
 ```
 
+> **⚠️ NEVER build m74_9 with a bare `gmake -j12` from `firmware/`.** The main-app
+> `gmake` only works because the compile script sources
+> `common_script_read_meta_env.inc <meta-info.env>` FIRST (that sets `PROJECT_BOARD` /
+> the board config). A bare `gmake -j12` skips that step and builds the WRONG board:
+> default STM32F4 linker script, no AT32 stubs → link fails with
+> `undefined reference to assertInterruptPriority`, and it silently pollutes `build/`.
+> Always run `bash firmware/config/boards/m74_9/compile_m74_9.sh` (or source the
+> meta-info env yourself before `gmake`). Learned 2026-11-04.
+
 - Steps: `gmake -j12` (main app, links at 0x08010000/0x08090000) ->
   `gmake -C bootloader -r SUBMAKE=yes` (OpenBLT second-stage, vectors 0x08001000,
   entry 0x08080000) -> `config/boards/m74_9/bin/m749_image.py` merges BOTH ELFs
