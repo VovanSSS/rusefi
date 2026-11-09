@@ -16,6 +16,13 @@
 
 #include "hal_mfs.h"
 
+/* The settings record (and its backup) are stored in MFS on boards that set
+ * EFI_STORAGE_INT_FLASH=FALSE (m74_9, at_start_f435). Catch a config struct
+ * that grows past MFS_CFG_MAX_RECORD_SIZE at compile time instead of an
+ * mfsWriteRecord() parameter assert on the bench/car. */
+static_assert(sizeof(persistent_config_container_s) <= MFS_CFG_MAX_RECORD_SIZE,
+	"persistent_config_container_s exceeds MFS_CFG_MAX_RECORD_SIZE - bump it in use_higher_level_flash_api.mk");
+
 class SettingStorageMFS : public SettingStorageBase {
 public:
 	bool isReady() override;

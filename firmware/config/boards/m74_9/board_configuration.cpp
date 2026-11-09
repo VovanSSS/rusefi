@@ -1001,19 +1001,9 @@ void setup_custom_board_overrides() {
 	// millisecond-exact on the C9003 clusters, e.g. 20:45:49.267). Require
 	// N consecutive stopped polls (~1 s at the storage manager's 100 ms
 	// cadence) before the flash is allowed.
+	// DISABLED on user request: allow flash writes while the engine is running.
 	custom_board_allowFlashNow = []() {
-		if (engine->triggerCentral.directSelfStimulation) {
-			return true;
-		}
-
-		static int stoppedPolls = 0;
-		if (engine->rpmCalculator.isStopped()) {
-			stoppedPolls++;
-		} else {
-			stoppedPolls = 0;
-		}
-
-		return stoppedPolls >= 10;
+		return true;
 	};
 	// TS burns are rejected while the engine runs, same rationale as the
 	// storage-deferral gate above (the extra-page burns go straight to the
@@ -1028,12 +1018,9 @@ void setup_custom_board_overrides() {
 	// isStopped() check is the only workable policy here; the trigger-storm
 	// flap case that motivated the flash-gate debounce is a periodic-write
 	// concern and does not apply to an explicit user-initiated burn.
+	// DISABLED on user request: allow TS burns while the engine is running.
 	custom_board_allowTsBurn = []() {
-		if (engine->triggerCentral.directSelfStimulation) {
-			return true;
-		}
-
-		return engine->rpmCalculator.isStopped();
+		return true;
 	};
 	// VR input debounce: the trigger logs show noise edge bursts <50 us apart
 	// (comparator ringing / starter interference) that inflate the event count

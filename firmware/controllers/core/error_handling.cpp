@@ -571,9 +571,9 @@ static void writeAssertCrashMarker(int line, const char* msg, const char* file) 
 	 * identifier ("SV#4", "not ready", "not owner", ...), so pack it into
 	 * the backup registers: BKP2R..BKP5R = msg (16 bytes), BKP6R..BKP8R =
 	 * file (12 bytes). */
-	uint32_t m0, m1, m2, m3, f0, f1, f2;
+	uint32_t m0, m1, m2, m3, f0, f1, f2, f3;
 	packStringIntoWords(msg, &m0, &m1, &m2, &m3);
-	packStringIntoWords(file, &f0, &f1, &f2, &m3 /* dummy */);
+	packStringIntoWords(file, &f0, &f1, &f2, &f3);
 	crashMarkerEnableWrite();
 	RTC->BKP0R = CRASH_MARKER_MAGIC_ASSERT;
 	RTC->BKP1R = (uint32_t)line;
