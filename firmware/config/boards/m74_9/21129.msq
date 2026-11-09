@@ -172,7 +172,7 @@
          13.5 14.6 14.6 14.6
          13.5 14.6 14.6 14.6
 </constant>
-        <constant name="alwaysInstantRpm">"yes"</constant>
+        <constant name="alwaysInstantRpm">"no"</constant>
         <constant name="alwaysWriteSdCard">"no"</constant>
         <constant name="ambientTempSensor_adcChannel">"NONE"</constant>
         <constant digits="1" name="ambientTempSensor_bias_resistor" units="Ohm">0.0</constant>
@@ -1115,8 +1115,8 @@
         <constant name="etbIo2_disablePin">"NONE"</constant>
         <constant digits="0" name="etbJamDetectThreshold" units="%">10</constant>
         <constant digits="2" name="etbJamTimeout" units="sec">0.0</constant>
-        <constant digits="0" name="etbMaximumPosition" units="%">90</constant>
-        <constant digits="1" name="etbMinimumPosition" units="%">2.5</constant>
+        <constant digits="0" name="etbMaximumPosition" units="%">98</constant>
+        <constant digits="1" name="etbMinimumPosition" units="%">1.0</constant>
         <constant digits="0" name="etbNeutralPosition" units="%">0</constant>
         <constant digits="0" name="etbRevLimitRange" units="rpm">250</constant>
         <constant digits="0" name="etbRevLimitStart" units="rpm">0</constant>
@@ -2632,7 +2632,7 @@
         <constant name="isForcedInduction">"no"</constant>
         <constant name="isIgnitionEnabled">"enabled"</constant>
         <constant name="isInjectionEnabled">"enabled"</constant>
-        <constant name="isMapAveragingEnabled">"enabled"</constant>
+        <constant name="isMapAveragingEnabled">"disabled"</constant>
         <constant name="isPhaseSyncRequiredForIgnition">"no"</constant>
         <constant name="isSdCardEnabled">"disabled"</constant>
         <constant digits="0" name="issFilterReciprocal" units="">2</constant>
@@ -4970,7 +4970,7 @@
          0.0
          0.0
 </constant>
-        <constant name="useAbsolutePressureForLagTime">"yes"</constant>
+        <constant name="useAbsolutePressureForLagTime">"no"</constant>
         <constant name="useAdvanceCorrectionsForCranking">"no"</constant>
         <constant name="useAuxSpeedForSlipRatio">"no"</constant>
         <constant name="useBiQuadOnAuxSpeedSensors">"no"</constant>
@@ -5278,22 +5278,22 @@
          6250
 </constant>
         <constant cols="30" digits="1" name="veTable" rows="16" units="%">
-         45.6 47.6 49.2 50.9 58.5 60.2 61.8 63.5 65.1 66.7 67.9 69.0 69.9 67.3 69.0 71.8 76.3 80.2 81.5 74.3 73.5 72.6 71.6 70.7 69.8 68.9 68.1 62.6 61.8 61.6
-         47.8 50.0 51.2 52.9 60.6 59.1 60.8 62.4 64.2 66.3 68.2 69.4 70.8 68.3 69.5 72.6 75.7 78.6 83.5 76.7 76.8 74.9 69.2 68.3 72.9 66.7 65.9 70.5 64.5 64.5
-         49.0 51.6 52.8 51.9 58.9 60.6 62.3 64.1 67.7 69.3 68.2 71.8 71.2 71.2 71.5 74.1 74.5 80.1 74.7 73.9 73.0 72.2 71.3 70.5 69.6 68.7 67.9 71.7 66.4 66.0
-         50.1 47.4 48.3 53.8 60.6 63.6 65.8 65.5 69.3 68.7 70.0 73.6 73.7 73.9 76.3 77.6 76.5 77.0 76.7 75.9 75.0 74.1 73.2 72.4 71.5 70.6 69.7 68.9 68.2 67.5
-         51.7 51.3 52.5 56.3 61.9 63.8 67.5 67.3 69.1 70.6 74.5 75.6 78.5 77.6 80.0 80.9 83.2 84.1 78.9 78.1 82.3 76.2 75.3 74.4 73.5 72.6 71.7 70.8 70.1 69.6
-         50.9 52.0 55.1 56.2 63.7 65.5 67.4 71.4 73.1 74.7 76.3 77.7 78.1 81.6 83.7 85.3 81.1 86.3 86.8 80.4 79.5 78.5 77.6 76.6 75.7 74.7 73.8 72.9 72.2 71.7
-         52.3 54.6 56.6 57.9 65.7 67.4 71.4 73.4 75.2 76.9 76.1 79.8 83.8 83.9 91.6 82.3 88.3 88.8 83.6 82.8 81.8 85.4 79.9 78.9 77.9 76.9 76.0 75.0 74.3 73.8
-         55.8 56.3 57.5 59.6 69.8 72.1 74.0 75.9 78.3 80.4 82.4 83.3 87.9 87.1 89.1 90.5 85.9 86.4 86.0 85.2 84.2 83.2 82.1 81.1 80.1 79.1 78.1 77.2 81.6 75.9
-         59.1 57.9 59.4 61.4 72.5 74.5 76.5 78.5 81.2 83.9 84.9 86.7 90.6 89.3 91.5 93.1 94.4 88.8 94.4 87.5 86.5 85.5 84.4 83.4 82.4 81.3 80.3 79.3 78.5 78.0
-         60.7 59.5 61.0 63.1 74.3 76.5 79.5 81.5 84.6 86.9 90.5 90.7 96.4 91.8 93.9 95.7 90.7 91.2 90.9 89.9 94.9 87.8 86.7 85.7 84.6 83.5 82.5 81.5 80.6 80.1
-         62.3 61.1 62.7 64.8 76.6 80.2 82.1 84.4 88.8 91.4 92.4 94.7 96.9 88.6 96.5 91.8 93.1 98.9 99.6 92.3 91.2 95.5 89.0 87.9 86.8 85.7 84.6 83.6 82.7 82.2
-         63.9 62.6 64.2 66.4 77.7 80.1 85.0 87.9 87.0 95.2 90.9 98.8 100.7 90.8 98.7 100.5 95.3 95.9 95.5 94.5 99.9 92.3 91.1 90.0 88.9 87.8 86.6 85.6 84.7 84.3
-         65.2 64.0 65.7 67.9 81.2 81.7 84.0 86.4 93.4 97.2 92.7 100.9 108.7 92.8 101.0 96.1 103.3 98.0 104.3 96.6 95.4 94.3 93.1 92.0 90.8 89.7 88.5 87.4 86.6 86.0
-         66.4 65.4 67.0 69.3 80.7 83.2 85.6 88.0 90.4 99.0 94.5 109.1 97.9 94.6 103.1 104.8 99.4 99.9 112.4 105.3 97.3 96.2 95.0 93.8 92.6 91.5 90.3 89.2 88.3 87.6
-         67.7 66.6 68.3 70.7 82.2 84.6 90.0 93.1 97.4 100.9 102.9 104.8 106.6 109.3 105.1 106.9 108.4 102.0 101.5 107.7 99.2 98.0 96.8 95.6 94.4 93.2 92.0 90.9 89.9 89.3
-         69.0 67.0 69.5 72.1 83.6 86.1 88.7 91.2 98.1 102.9 104.7 113.0 115.0 111.4 113.3 115.4 117.4 118.7 120.2 118.1 109.1 107.9 106.6 97.4 96.2 95.0 93.8 99.1 91.3 91.0
+         41.6 43.6 45.2 46.9 58.5 60.2 61.8 63.5 65.1 66.7 67.9 69.0 69.9 67.3 69.0 71.8 76.3 80.2 81.5 74.3 73.5 72.6 71.6 70.7 69.8 68.9 68.1 62.6 61.8 61.6
+         43.8 46.0 47.2 48.9 60.6 59.1 60.8 62.4 64.2 66.3 68.2 69.4 70.8 68.3 69.5 72.6 75.7 78.6 83.5 76.7 76.8 74.9 69.2 68.3 72.9 66.7 65.9 70.5 64.5 64.5
+         45.0 47.6 48.8 47.9 58.9 60.6 62.3 64.1 67.7 69.3 68.2 71.8 71.2 71.2 71.5 74.1 74.5 80.1 74.7 73.9 73.0 72.2 71.3 70.5 69.6 68.7 67.9 71.7 66.4 66.0
+         46.1 43.4 44.3 49.8 60.6 63.6 65.8 65.5 69.3 68.7 70.0 73.6 73.7 73.9 76.3 77.6 76.5 77.0 76.7 75.9 75.0 74.1 73.2 72.4 71.5 70.6 69.7 68.9 68.2 67.5
+         47.7 47.3 48.5 52.3 61.9 63.8 67.5 67.3 69.1 70.6 74.5 75.6 78.5 77.6 80.0 80.9 83.2 84.1 78.9 78.1 82.3 76.2 75.3 74.4 73.5 72.6 71.7 70.8 70.1 69.6
+         46.9 48.0 51.1 52.2 63.7 65.5 67.4 71.4 73.1 74.7 76.3 77.7 78.1 81.6 83.7 85.3 81.1 86.3 86.8 80.4 79.5 78.5 77.6 76.6 75.7 74.7 73.8 72.9 72.2 71.7
+         48.3 50.6 52.6 53.9 65.7 67.4 71.4 73.4 75.2 76.9 76.1 79.8 83.8 83.9 91.6 82.3 88.3 88.8 83.6 82.8 81.8 85.4 79.9 78.9 77.9 76.9 76.0 75.0 74.3 73.8
+         51.8 52.3 53.5 55.6 69.8 72.1 74.0 75.9 78.3 80.4 82.4 83.3 87.9 87.1 89.1 90.5 85.9 86.4 86.0 85.2 84.2 83.2 82.1 81.1 80.1 79.1 78.1 77.2 81.6 75.9
+         55.1 53.9 55.4 57.4 72.5 74.5 76.5 78.5 81.2 83.9 84.9 86.7 90.6 89.3 91.5 93.1 94.4 88.8 94.4 87.5 86.5 85.5 84.4 83.4 82.4 81.3 80.3 79.3 78.5 78.0
+         56.7 55.5 57.0 59.1 74.3 76.5 79.5 81.5 84.6 86.9 90.5 90.7 96.4 91.8 93.9 95.7 90.7 91.2 90.9 89.9 94.9 87.8 86.7 85.7 84.6 83.5 82.5 81.5 80.6 80.1
+         58.3 57.1 58.7 60.8 76.6 80.2 82.1 84.4 88.8 91.4 92.4 94.7 96.9 88.6 96.5 91.8 93.1 98.9 99.6 92.3 91.2 95.5 89.0 87.9 86.8 85.7 84.6 83.6 82.7 82.2
+         59.9 58.6 60.2 62.4 77.7 80.1 85.0 87.9 87.0 95.2 90.9 98.8 100.7 90.8 98.7 100.5 95.3 95.9 95.5 94.5 99.9 92.3 91.1 90.0 88.9 87.8 86.6 85.6 84.7 84.3
+         61.2 60.0 61.7 63.9 81.2 81.7 84.0 86.4 93.4 97.2 92.7 100.9 108.7 92.8 101.0 96.1 103.3 98.0 104.3 96.6 95.4 94.3 93.1 92.0 90.8 89.7 88.5 87.4 86.6 86.0
+         62.4 61.4 63.0 65.3 80.7 83.2 85.6 88.0 90.4 99.0 94.5 109.1 97.9 94.6 103.1 104.8 99.4 99.9 112.4 105.3 97.3 96.2 95.0 93.8 92.6 91.5 90.3 89.2 88.3 87.6
+         63.7 62.6 64.3 66.7 82.2 84.6 90.0 93.1 97.4 100.9 102.9 104.8 106.6 109.3 105.1 106.9 108.4 102.0 101.5 107.7 99.2 98.0 96.8 95.6 94.4 93.2 92.0 90.9 89.9 89.3
+         65.0 63.0 65.5 68.1 83.6 86.1 88.7 91.2 98.1 102.9 104.7 113.0 115.0 111.4 113.3 115.4 117.4 118.7 120.2 118.1 109.1 107.9 106.6 97.4 96.2 95.0 93.8 99.1 91.3 91.0
 </constant>
         <constant name="vRefAdcChannel">"NONE"</constant>
         <constant name="vrThreshold1_pin">"NONE"</constant>
@@ -5505,7 +5505,7 @@
         <constant digits="2" name="wastegatePositionClosedVoltage" units="v">0.0</constant>
         <constant digits="2" name="wastegatePositionOpenedVoltage" units="v">5.0</constant>
         <constant name="wastegatePositionSensor">"NONE"</constant>
-        <constant name="watchOutForLinearTime">"yes"</constant>
+        <constant name="watchOutForLinearTime">"no"</constant>
         <constant name="widebandOnSecondBus">"CAN1"</constant>
         <constant name="wizardCamTrigger">"yes"</constant>
         <constant name="wizardCltSensor">"yes"</constant>
@@ -5641,7 +5641,7 @@
 </constant>
         <constant name="yesUnderstandLocking">"no"</constant>
     </page>
-    <versionInfo firmwareInfo="20261103" nPages="1" signature="rusEFI maccan-tx-fix.2026.11.03.m74_9.669483117" version="5.0"/>
+    <versionInfo firmwareInfo="20261103" nPages="1" signature="rusEFI maccan-tx-fix.2026.11.09.m74_9.3205755648" version="5.0"/>
     <bibliography author="rusEFI 20261103" writeDate="date"/>
     <settings/>
     <userComments/>
