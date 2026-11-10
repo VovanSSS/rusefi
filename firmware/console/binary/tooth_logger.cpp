@@ -248,9 +248,6 @@ static void SetNextCompositeEntry(efitick_t timestamp) {
 
 #endif // not EFI_UNIT_TEST
 
-#define JSON_TRG_PID 4
-#define JSON_CAM_PID 10
-
 static void LogTriggerTooth(efitick_t timestamp) {
 	// bail if we aren't enabled
 	if ((!ToothLoggerEnabled)
