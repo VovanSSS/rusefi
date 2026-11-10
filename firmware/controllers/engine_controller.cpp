@@ -120,7 +120,7 @@ class PeriodicFastController : public PeriodicTimerController {
 	}
 
 	int getPeriodMs() override {
-		return FAST_CALLBACK_PERIOD_MS;
+		return static_cast<int>(FAST_CALLBACK_PERIOD_MS);
 	}
 };
 
@@ -131,7 +131,7 @@ class PeriodicSlowController : public PeriodicTimerController {
 
 	int getPeriodMs() override {
 		// no reason to have this configurable, looks like everyone is happy with 20Hz
-		return SLOW_CALLBACK_PERIOD_MS;
+		return static_cast<int>(SLOW_CALLBACK_PERIOD_MS);
 	}
 };
 
@@ -211,7 +211,7 @@ static void doPeriodicSlowCallback() {
 
 #if EFI_PROD_CODE
 	// single-shot reset all counter after 5 second of happines
-	static unsigned int slow_counter = 5 * 1000 / SLOW_CALLBACK_PERIOD_MS;
+	static unsigned int slow_counter = static_cast<unsigned int>(5 * 1000 / SLOW_CALLBACK_PERIOD_MS);
 	if ((slow_counter) && (--slow_counter == 0)) {
 		errorHandlerResetCounters();
 	}
