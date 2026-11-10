@@ -37,57 +37,18 @@
  * is TRUE - other boards keep the old behavior). */
 #define EFI_TRIGGER_CONFIG_RUNTIME_RELOAD FALSE
 
-/* Per-tooth trigger input debounce gate (custom_board_triggerDebounceUs) is
- * compiled out: on m74_9 no board override is installed (the assignment is
- * commented out in board_configuration.cpp) yet the gate still executed a
- * get_board_override_result dispatch on EVERY decoded tooth. The gate is also
- * not wanted at high rpm (the 100 us per-polarity floor collides with the
- * 68 us half-tooth at 7000 rpm - documented in CLAUDE.md). Shared default is
- * TRUE in trigger_central.cpp; unit tests install the override at runtime and
- * keep the gate. */
-#define EFI_TRIGGER_DEBOUNCE FALSE
-
 /* Per-tooth tooth-timing plausibility check (isToothExpectedNow in
  * trigger_central.cpp, C9007/C9008) is compiled out: the check estimates the
  * current engine phase from the last tooth and rejects teeth deviating >10 deg
  * from the expected next phase, on EVERY decoded tooth (~5 us of the
  * trgPreDecode budget). m74_9 runs the same class of handoff-trim work as
- * EFI_TRIGGER_DEBOUNCE / EFI_TRIGGER_CONFIG_RUNTIME_RELOAD above; the decoder
+ * EFI_TRIGGER_CONFIG_RUNTIME_RELOAD above; the decoder
  * already validates gaps and teeth harder than a 10 deg phase check
  * (gap-ratio windows + custom_board_syncAcceptToothLoss / syncEarlyGapWhileCranking
  * + the tooth-loss tolerance), and the L9779 VRS time filter shifts the decode
  * edge, which the check does not model. Shared default is TRUE in
  * trigger_central.cpp - other boards keep the check. */
 #define EFI_TRIGGER_CHECK_TOOTH_TIMING FALSE
-
-/* TMR2 hardware angle clock (OC channels as software comparators, events
- * programmed one tooth ahead, fired by a priority-3 ISR): removes the
- * trigger-decode/handoff latency from the spark/injection timing chain.
- * Must be defined BEFORE the stm32f4ems include - that header defaults the
- * flag to FALSE. See hw_layer/angle_clock/angle_clock.h.
- *
- * HISTORY: disabled 2026-08-30 after the first car start blew the 15A fuse
- * (C9012 out-of-order coil off + C9351-4 overcharge 4.5-8.2 ms at the
- * catch). Re-enabled 2026-08-31 on the sleep-gate theory (rccEnableTIM2
- * false->true) - the fuse blew AGAIN at the first crank attempt, so the
- * sleep gate was NOT the cause (or not the only one). Re-enabled again
- * 2026-08-31 after the redesign (angle-domain arming + per-tooth refresh,
- * charge-anchored overdwell rescue) and the car defect fix (no
- * angleClockCancelAll on the rpm==0 storm flap - see CLAUDE.md "THE CAR
- * DEFECT (2026-08-31 evening)"). Disabled again 2026-08-31 (the car
- * caught and stalled: the per-tooth basis armed the catch fires late,
- * the rescue discharged first). RE-ENABLED 2026-08-31 with the FINAL
- * basis: the angle clock now arms with the 90-degree-window rpm average
- * (oneDegreeUs - the same basis the proven time-based path uses), and
- * the overdwell rescue margin is 2.5x dwell so it never steals a fire
- * that is merely late. The per-tooth basis and its clamp are gone. With
- * the flag FALSE the early windows compile out and ignition/fuel return
- * to the proven time-based paths. */
-/* DISABLED 2026-11-04: back to the standard time-based TIM5 executor path.
- * The three-timer angle clock (TMR2/TMR3/TMR4) and its .fast_text RAM code
- * are compiled out; ignition/fuel scheduling runs on TIM5 as in the stock
- * rusEFI build. ZW placement (.m749_fast_text) is kept for hot code. */
-#define EFI_ANGLE_CLOCK FALSE
 
 /* Console log buffer (double-buffered, 2x this, static). The stm32f4ems
  * default of 6500 truncates the 'pins' output mid-line: the pin report +

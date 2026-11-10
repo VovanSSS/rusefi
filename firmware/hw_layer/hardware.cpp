@@ -91,7 +91,6 @@ std::optional<setup_custom_bool_type> custom_board_syncGapAnchorCorrection;
 std::optional<setup_custom_bool_type> custom_board_mapInstantAtArm;
 std::optional<setup_custom_get_float_type> custom_board_vrGapShiftPitch;
 std::optional<setup_custom_get_float_type> custom_board_vvtDriftLimit;
-std::optional<setup_custom_get_float_type> custom_board_triggerDebounceUs;
 
 std::optional<setup_custom_bool_type> custom_board_getAcrState;
 
@@ -301,15 +300,6 @@ void initHardwareNoConfig() {
 	// it's important to initialize this pretty early in the game before any scheduling usages
 	initSingleTimerExecutorHardware();
 #endif // EFI_PROD_CODE && EFI_SIGNAL_EXECUTOR_ONE_TIMER
-
-#if EFI_ANGLE_CLOCK
-	// The TMR2 angle clock is its own free-running time base: it is started here
-	// (right after the executor, before any trigger processing) and measured
-	// once against TIM5 at boot - that measurement is the ONLY TIM5 touch in the
-	// angle clock. At runtime the fast EXTI IRQ captures TMR2->CNT alongside the
-	// NT timestamp, and all arming is done in pure TMR2 ticks.
-	initAngleClock();
-#endif // EFI_ANGLE_CLOCK
 
 #if EFI_PROD_CODE && EFI_RTC
 	initRtc();

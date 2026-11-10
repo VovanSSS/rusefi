@@ -36,18 +36,6 @@ WaveChart waveChart;
 
 #define TRIGGER_WAVEFORM(x) getTriggerCentral()->triggerShape.x
 
-// Per-tooth input debounce gate (custom_board_triggerDebounceUs, see
-// handleShaftSignal below). The gate works through a runtime board-override
-// dispatch (get_board_override_result) executed on EVERY decoded tooth - even
-// when no board installs an override (the default is 0). Boards that do not
-// use the hook compile the gate out so the trigger handoff never does the
-// dispatch; boards that do install the hook keep the default TRUE.
-// Unit tests set the override at runtime (test_60_2_cranking_transition.cpp),
-// so the default must stay TRUE for the host build.
-#ifndef EFI_TRIGGER_DEBOUNCE
-#define EFI_TRIGGER_DEBOUNCE TRUE
-#endif
-
 // Per-tooth tooth-timing plausibility check (isToothExpectedNow, see
 // handleShaftSignal below): estimates the current engine phase from the last
 // tooth and rejects teeth deviating more than 10 deg from the expected next
@@ -984,28 +972,6 @@ angle_t TriggerCentral::findNextTriggerToothAngle(int p_currentToothIndex) {
  */
 __attribute__((noinline)) void TriggerCentral::handleShaftSignal(trigger_event_e signal, efitick_t timestamp) {
 	uint32_t t0 = getTimeNowLowerNt();
-	// Board opt-in input debounce (m74_9): VR comparator ringing and starter
-	// noise arrive as edge bursts far below the real tooth period. Dropping
-	// them here keeps the event count honest, so the position gate and the
-	// tooth-count sync validation see real teeth only. The window is applied
-	// PER POLARITY: a burst is a same-polarity double edge, while the
-	// OPPOSITE edge of a real tooth arrives sooner than the window at high
-	// rpm (the L9779 output duty compresses - at 295 rpm the short half-tooth
-	// is ~1.16 ms against the ~1.17 ms threshold), so any-edge debounce eats
-	// real useful edges there and shifts the decoder's phase basis. A real
-	// same-polarity edge is a full tooth away, far above toothUs/3.
-#if EFI_TRIGGER_DEBOUNCE
-	float debounceUs = get_board_override_result(custom_board_triggerDebounceUs, 0.0f);
-	if (debounceUs > 0) {
-		int polarity = isTriggerUpEvent(signal) ? 0 : 1;
-		if (lastDebouncedTriggerEdgeNt[polarity] != 0 && timestamp - lastDebouncedTriggerEdgeNt[polarity] < US2NT(debounceUs)) {
-			triggerDebounceDropCount++;
-			return;
-		}
-		lastDebouncedTriggerEdgeNt[polarity] = timestamp;
-	}
-#endif // EFI_TRIGGER_DEBOUNCE
-
 	if (triggerShape.shapeDefinitionError) {
 		// trigger is broken, we cannot do anything here
 		warning(ObdCode::CUSTOM_ERR_UNEXPECTED_SHAFT_EVENT, "Shaft event while trigger is mis-configured");

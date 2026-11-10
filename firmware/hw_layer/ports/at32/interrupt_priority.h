@@ -70,16 +70,6 @@
 #define EFI_IRQ_SCHEDULING_TIMER_PRIORITY 5
 #define STM32_PWM_TIM5_IRQ_PRIORITY       EFI_IRQ_SCHEDULING_TIMER_PRIORITY
 
-// The hardware angle-clock timer, at the TOP kernel priority (3), ABOVE
-// the trigger handoff (4) since 2026-09-28: its ISR executes dwell/spark/
-// injection actions directly and must fire with only NVIC entry latency -
-// it never waits for the decode (the 2026-09-23 +1 shift put the fires at 4
-// below the handoff; a fire then waited for a running decode and maxLateUs
-// grew to the decode duration).
-//   TMR2 (32-bit, VectorB0, IRQ 28) -> dwell CC1 / spark CC2 / injection
-//   open CC3 / injection close CC4 (single-timer consolidation 2026-09-29).
-#define EFI_IRQ_ANGLE_CLOCK_PRIORITY      3
-
 // The L9779 WDA feed (free-running auto-reload TMR7): BELOW the executor. Its
 // ~100 us polled-SPI burst runs once per ~28 ms and must never delay the
 // angle-clock fires or the executor's injection closes: at 6 the burst is

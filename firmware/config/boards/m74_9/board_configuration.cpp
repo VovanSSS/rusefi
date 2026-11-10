@@ -1022,18 +1022,6 @@ void setup_custom_board_overrides() {
 	custom_board_allowTsBurn = []() {
 		return true;
 	};
-	// VR input debounce: the trigger logs show noise edge bursts <50 us apart
-	// (comparator ringing / starter interference) that inflate the event count
-	// and false-sync the decoder mid-crank. The threshold is RPM-adaptive
-	// (m74_9TriggerDebounceUs): ~1.2 ms at cranking to thin noise storms,
-	// scaling down to the 100 us floor as the tooth rate rises - the software
-	// half of the stock ECU's adaptive VR conditioning (we cannot move the
-	// fixed comparator threshold on this board).
-	// DISABLED 2026-08-22: stock-rollback test - no software debounce (the
-	// default 0.0f in trigger_central.cpp skips the window entirely).
-	// Re-enable if edge-burst noise storms return (event count inflation /
-	// mid-crank false syncs).
-	// custom_board_triggerDebounceUs = m74_9TriggerDebounceUs;
 	// Tooth profile learning: the load/save housekeeping is switched off
 	// (stock-rollback test), and since 2026-08-23 the decoder CONSUMPTION is
 	// off too - triggerGetToothProfileFactor() in m74_9_tooth_diag.cpp returns
@@ -1069,12 +1057,6 @@ void setup_custom_board_overrides() {
 	addConsoleAction("toothdump", m74_9ToothDump);
 	addConsoleAction("toothsave", m74_9ToothSave);
 	addConsoleAction("synctrace", m74_9SyncTrace);
-#if EFI_ANGLE_CLOCK
-	// Spark schedule event ring: dump the last N dwell schedules (window kind,
-	// angle offsets, ticks-per-degree basis, gap correction, sync counter) to
-	// name the C9009 double-schedule root cause after a c9009diag burst.
-	addConsoleAction("sparkring", [](){ printSparkScheduleRing(64); });
-#endif // EFI_ANGLE_CLOCK
 	// one-shot multi-clock dump: run twice with a known wall-clock gap to
 	// verify which timebase (if any) diverges
 	addConsoleAction("timecheck", m74_9TimeCheck);
@@ -1102,132 +1084,6 @@ void setup_custom_board_overrides() {
 		// static timerCallback address above, so name them individually here.
 		printPwmStats();
 
-#if EFI_ANGLE_CLOCK
-		// Single-timer angle clock (TMR2, 32-bit, prio 3): CC1=dwell CC2=spark
-		// CC3=injection open. The injection CLOSE lives on the TIM5 CC2
-		// mini-queue (injCC2 line below). lateArm: the arm failed and the
-		// caller fell back to TIM5 (1:1 with the sched dwell/fuel fallback counts);
-		// busy: the channel still held a pending event of the same type (wasted
-		// spark / batch / storm over-arm - never hits in sequential mode).
-		for (int ch = 0; ch < 3; ch++) {
-			efiPrintf("angclk %s fired=%u lateArm=%u busy=%u",
-				m74_9AngclkChannelName(ch),
-				(unsigned)angleClockFiredCount(ch),
-				(unsigned)angleClockLateArmCount(ch),
-				(unsigned)angleClockBusyCount(ch));
-		}
-		// Injection close on the TIM5 CC2 mini-queue (2026-10-09): scheduled =
-		// closes queued by turnInjectionPinHigh, fired = CC2 ISR dispatches.
-		// scheduled == fired in stable running; a slot's pendingCount overlap
-		// (duty overlap / double-open) does not lose either close.
-		efiPrintf("injCC2 scheduled=%u fired=%u (close on TIM5 CC2 mini-queue)",
-			(unsigned)getInjectionCC2ScheduledCount(),
-			(unsigned)getInjectionCC2FiredCount());
-		efiPrintf("angclk maxLateUs=%u immediate=%u initRate=%u/%u psc=%u nvic T2=%u (want 3)",
-			(unsigned)(angleClockMaxLateTicks() / (NT_PER_SECOND / 1000000)),
-			(unsigned)angleClockImmediateFireCount(),
-			(unsigned)angleClockInitAcDelta(), (unsigned)angleClockInitNtDelta(),
-			(unsigned)angleClockInitPsc(),
-			(unsigned)((NVIC->IP[28] >> 4) & 0xF));
-		// Per-channel ISR-entry lateness attribution (2026-09-30): the pooled
-		// maxLateUs above cannot say WHICH channel floats nor WHY. handoff = the
-		// late fires that waited for the running trigger decode (prio 4); ser =
-		// the fires whose CCR had already matched when the previous TMR2 entry
-		// ended (single-vector serialization on the long action bodies, e.g. the
-		// injection-close model recompute); the rest is the fast EXTI / short
-		// kernel-CS sections / same-entry channel ordering.
-		efiPrintf("angclk xsec dwell n=%u handoff=%u ser=%u maxUs=%u | spark n=%u handoff=%u ser=%u maxUs=%u | open n=%u handoff=%u ser=%u maxUs=%u (ISR-entry >=10us per type)",
-			(unsigned)angleClockLateGt10usCount(ANGLE_CLOCK_CH_DWELL),
-			(unsigned)angleClockLateHandoffCount(ANGLE_CLOCK_CH_DWELL),
-			(unsigned)angleClockLateSerializedCount(ANGLE_CLOCK_CH_DWELL),
-			(unsigned)(angleClockLateMaxTicks(ANGLE_CLOCK_CH_DWELL) / (NT_PER_SECOND / 1000000)),
-			(unsigned)angleClockLateGt10usCount(ANGLE_CLOCK_CH_SPARK),
-			(unsigned)angleClockLateHandoffCount(ANGLE_CLOCK_CH_SPARK),
-			(unsigned)angleClockLateSerializedCount(ANGLE_CLOCK_CH_SPARK),
-			(unsigned)(angleClockLateMaxTicks(ANGLE_CLOCK_CH_SPARK) / (NT_PER_SECOND / 1000000)),
-			(unsigned)angleClockLateGt10usCount(ANGLE_CLOCK_CH_OPEN),
-			(unsigned)angleClockLateHandoffCount(ANGLE_CLOCK_CH_OPEN),
-			(unsigned)angleClockLateSerializedCount(ANGLE_CLOCK_CH_OPEN),
-			(unsigned)(angleClockLateMaxTicks(ANGLE_CLOCK_CH_OPEN) / (NT_PER_SECOND / 1000000)));
-		// Capture-at-entry instrumentation (2026-10-03): the xsec handoff=/ser=
-		// split leaves the UNCLASSIFIED remainder as the majority, and by the
-		// verified ladder (fires prio 3, unlocked ISRs) that class needs a
-		// BASEPRI/PRIMASK window outside the handoff. The body maxes name the
-		// ser= tail source; the ring snapshots record what was true at entry of
-		// every late>=10us fire (primask/basepri/mask reads, the handoff via
-		// NVIC IABR bit 31, immediate-origin flag, the ser= window delta) so the
-		// next lockstats pins the masker instead of guessing.
-		efiPrintf("angclk body maxUs dwell=%u late=%u | spark=%u late=%u | open=%u late=%u (action-body wall time incl. EXTI preemption)",
-			(unsigned)(angleClockBodyMaxTicks(ANGLE_CLOCK_CH_DWELL) / (NT_PER_SECOND / 1000000)),
-			(unsigned)(angleClockBodyMaxLateTicks(ANGLE_CLOCK_CH_DWELL) / (NT_PER_SECOND / 1000000)),
-			(unsigned)(angleClockBodyMaxTicks(ANGLE_CLOCK_CH_SPARK) / (NT_PER_SECOND / 1000000)),
-			(unsigned)(angleClockBodyMaxLateTicks(ANGLE_CLOCK_CH_SPARK) / (NT_PER_SECOND / 1000000)),
-			(unsigned)(angleClockBodyMaxTicks(ANGLE_CLOCK_CH_OPEN) / (NT_PER_SECOND / 1000000)),
-			(unsigned)(angleClockBodyMaxLateTicks(ANGLE_CLOCK_CH_OPEN) / (NT_PER_SECOND / 1000000)));
-		const uint32_t ringTotal = angleClockLateCaptureTotal();
-		const int printCount = (ringTotal < ANGLE_CLOCK_LATE_CAPTURE_RING) ? (int)ringTotal : ANGLE_CLOCK_LATE_CAPTURE_RING;
-		efiPrintf("angclk late>=10us captures=%u (last %d, newest first; imm=refresh due-now arm, iabr bit31=handoff active, bit28=TMR2 itself)",
-			(unsigned)ringTotal, printCount);
-		for (int i = 0; i < printCount; i++) {
-			AngleClockLateCapture e;
-			if (!angleClockLateCaptureGet(i, e)) break;
-			efiPrintf("  ch=%s late=%uus imm=%u prim=%u base=0x%02x reent=%d dccr-stamp=%d iabr=0x%08x",
-				m74_9AngclkChannelName(e.ch),
-				(unsigned)(e.lateTicks / (NT_PER_SECOND / 1000000)),
-				(unsigned)e.immediate, (unsigned)e.primask, (unsigned)e.basepri,
-				(int)e.triggerReentrant, (int)e.dueCcrMinusStamp, (unsigned)e.iabr);
-		}
-		// Refresh write-split telemetry (2026-09-26): skip = armed CCR already
-		// optimal (steady no-op, ~2 x teeth); write = re-anchors that pulled the
-		// event EARLIER by more than the deadband - only real accel/decel
-		// corrections, since sub-deadband pulls are per-tooth basis jitter and are
-		// absorbed into jitter=; jitter = the absorbed sub-2us pulls (the "armed
-		// tick slightly late vs freshest basis" population); pending = channels
-		// whose CCxIF was latched (TMR ISR about to fire - refresh left them
-		// alone). maxPullUs = worst |fresh - armed| gap seen in us: if it stays
-		// large while write stays high the ARM basis is genuinely stale (next
-		// lever is the arm side, not refresh); if jitter dominates and maxPullUs
-		// is a few us the old write count was just basis jitter.
-		efiPrintf("angclk refresh skip=%u write=%u jitter=%u pending=%u maxPullUs=%u (2 angle ch/tooth; skip=steady no-op)",
-			(unsigned)angleClockRefreshSkip(), (unsigned)angleClockRefreshReanchored(),
-			(unsigned)angleClockRefreshJitter(),
-			(unsigned)angleClockRefreshPending(),
-			(unsigned)(angleClockRefreshMaxPullTicks() / (NT_PER_SECOND / 1000000)));
-		// LOOKAHEAD (2026-09-26): early-window arms whose target landed in the
-		// extended band [nextNextPhase, nextNextPhase + 6 deg) - the boundary
-		// events that used to fall to the current-window arm at rem ~ 0 and fire
-		// past-due (immediate). Engaged when > 0; compare against immediate= in
-		// the maxLateUs line (expect immediate ~ 0 over a drive when engaged).
-		efiPrintf("angclk lookahead dwell=%u open=%u (boundary targets armed 1 tooth early)",
-			(unsigned)angleClockLookaheadDwell(), (unsigned)angleClockLookaheadOpen());
-		// Dwell refusal split: which arm-failure branch fires, plus the
-		// last-refusal phase snapshot to measure the caller-vs-angle-clock
-		// phase divergence directly.
-		efiPrintf("angclk dwell lateArm split: guard=%u tickPast=%u",
-			(unsigned)angleClockLateArmDwellGuard(),
-			(unsigned)angleClockLateArmDwellTickPast());
-		// Injection-open split (guard = phase/basis refusal, tickPast = handoff
-		// stall). The growing angclk open lateArm is one of these two.
-		efiPrintf("angclk open lateArm split: guard=%u tickPast=%u",
-			(unsigned)angleClockLateArmOpenGuard(),
-			(unsigned)angleClockLateArmOpenTickPast());
-		{
-			const DwellArmRefusal& r = angleClockDwellRefusal();
-			if (r.branch != 0xFF) {
-				efiPrintf("angclk dwell refusal branch=%u win=%u target=%.1f callerPh=%.1f/%.1f curPh=%.1f cycle=%.1f tpd=%.1f rem=%.1f atTick=%u cnt=%u tot=%u",
-					(unsigned)r.branch, (unsigned)r.window,
-					r.targetAngle, r.callerPhase, r.callerNextPhase,
-					r.currentPhase, r.cycleDeg, r.ticksPerDegree, r.remaining,
-					(unsigned)r.atTick, (unsigned)r.ccrCnt, (unsigned)r.lateArmTotal);
-			} else {
-				efiPrintf("angclk dwell refusal: none this window");
-			}
-		}
-		// TMR2 runtime clock sanity (the 2026-09-20 dwell lateArm root cause).
-		angleClockTimerDiag();
-		resetInjectionCC2Counters();
-		angleClockResetStats();
-#endif // EFI_ANGLE_CLOCK
 	});
 	// Systemic CPU speed probe: reads the AT32 flash performance/divider/
 	// continue-read registers and times a fixed 1M-iteration loop. At 288 MHz

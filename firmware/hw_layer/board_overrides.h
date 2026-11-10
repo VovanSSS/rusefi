@@ -331,14 +331,6 @@ extern std::optional<setup_custom_bool_type> custom_board_mapInstantAtArm;
 // (m74_9 used to set 15 for its fixed cam, removed with the cam-sync disable).
 extern std::optional<setup_custom_get_float_type> custom_board_vvtDriftLimit;
 
-// When set and returning a positive interval (microseconds), trigger edges
-// arriving sooner than that after the previous accepted edge are dropped as
-// noise before decoding - VR comparator ringing / starter interference that
-// would inflate the event count and false-sync the decoder mid-revolution
-// (m74_9: 100 us; noise bursts measure <50 us, and 100 us stays below the
-// 125 us tooth period of a 60-2 wheel at 8000 rpm on RiseOnly).
-extern std::optional<setup_custom_get_float_type> custom_board_triggerDebounceUs;
-
 extern std::optional<setup_custom_bool_type> custom_board_getAcrState;
 // Return true to replace the complete ACR strategy, including the movement
 // and additive-hold gates. Outputs correspond to acrPin and acrPin2.

@@ -84,7 +84,6 @@ public:
 	// the decoder (m74_9 trigger diagnostics, exposed via the board 'synctrace'
 	// console command). The rawtrg board capture sees the pin BEFORE these
 	// drops, so rawtrg-vs-decoder discrepancies localize the culprit stage.
-	uint32_t triggerDebounceDropCount = 0;
 	uint32_t triggerNoiseFilterDropCount = 0;
 
 	// Sync-anchor correction (degrees, board opt-in via
@@ -236,16 +235,6 @@ private:
 	// At what engine phase do we expect the next tooth to arrive?
 	// Used for checking whether your trigger pattern is correct.
 	expected<float> expectedNextPhase = unexpected;
-
-	// Input debounce (see custom_board_triggerDebounceUs): per-polarity
-	// timestamps of the last accepted trigger edge. Edges arriving sooner than
-	// the board's minimum interval after the previous edge OF THE SAME
-	// POLARITY are dropped as noise. Same-polarity comparison only: a noise
-	// burst is a same-polarity double edge, while the OPPOSITE edge of a real
-	// tooth arrives sooner than the window at high rpm (the L9779 output duty
-	// compresses - at 295 rpm the short half-tooth is ~1.16 ms against the
-	// ~1.17 ms threshold), so any-edge debounce eats real useful edges there.
-	efitick_t lastDebouncedTriggerEdgeNt[2] = {0, 0};
 };
 
 void triggerInfo(void);
